@@ -297,7 +297,9 @@ pub fn snapshot(wt: &Path, session_id: &str, reason: &str) -> Result<Option<Stri
     if !add.ok {
         return Err(format!("git add: {}", add.stderr.trim()));
     }
-    let message = format!("notch snapshot: {reason} (session {session_id})");
+    // Canonical string agreed with A3 (a3_liveness.rs:496): every WIP
+    // snapshot, hook or fallback, must contain `notch: WIP snapshot (<reason>)`.
+    let message = format!("notch: WIP snapshot ({reason}) — {session_id}");
     let commit = git_run(
         &[
             "-c",

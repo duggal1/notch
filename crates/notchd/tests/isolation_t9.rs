@@ -277,8 +277,28 @@ fn snapshot_commits_wip_and_dirty_removal_is_refused() {
 #[derive(Default)]
 struct Capture {
     split_args: Mutex<Vec<Vec<String>>>,
+    /// Signalled by the fake on the LAST herdr call of a detached spawn, so
+    /// tests can wait deterministically (no sleep-as-synchronisation).
+    done: Mutex<bool>,
+    cv: std::sync::Condvar,
 }
 impl Capture {
+    fn signal_done(&self) {
+        *self.done.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    fn wait_done(&self) {
+        let mut done = self.done.lock().unwrap();
+        while !*done {
+            let (guard, _) = self
+                .cv
+                .wait_timeout(done, std::time::Duration::from_secs(10))
+                .unwrap();
+            done = guard;
+        }
+    }
+
     fn herdr(self: &Arc<Self>) -> Herdr {
         let cap = Arc::clone(self);
         Herdr::with_runner(move |args: &[String]| {
@@ -295,7 +315,13 @@ impl Capture {
             } else if sub == "agent" && sub2 == "start" {
                 Ok(r#"{"id":"cli:agent:start","result":{"type":"agent_started","agent":{"pane_id":"w9:p1","agent_status":"working","revision":1}}}"#.to_string())
             } else if sub == "agent" && sub2 == "prompt" {
-                Ok(r#"{"id":"cli:agent:prompt","result":{"type":"agent_prompted","agent":{"pane_id":"w9:p1","agent_status":"working","revision":2}}}"#.to_string())
+                let out = r#"{"id":"cli:agent:prompt","result":{"type":"agent_prompted","agent":{"pane_id":"w9:p1","agent_status":"working","revision":2}}}"#;
+                cap.signal_done();
+                Ok(out.to_string())
+            } else if sub == "agent" && sub2 == "list" {
+                Ok(r#"{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"pane_id":"w9:p1","agent_status":"working","revision":1}]}}"#.to_string())
+            } else if sub == "agent" && sub2 == "read" {
+                Ok("working\n".to_string())
             } else if sub == "pane" && sub2 == "close" {
                 Ok(r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#.to_string())
             } else {
@@ -342,8 +368,12 @@ fn pane_env_has_tmpdir_and_isolated_build_target() {
         None,
         None,
     );
-    std::env::remove_var("NOTCH_ISOLATE_BUILD");
     assert!(ack.ok, "submit_task failed: {:?}", ack.error);
+    // submit_task acks before the detached worker calls herdr; keep the env
+    // opt-in set until the worker has actually built the pane env.
+    capture.wait_done();
+    std::env::remove_var("NOTCH_ISOLATE_BUILD");
+    daemon.poll_once();
     let id = ack.session_id.unwrap();
     let splits = capture.split_args.lock().unwrap();
     assert!(!splits.is_empty(), "pane split must be invoked");
@@ -474,6 +504,8 @@ fn kill_snapshots_wip_before_cleanup() {
     );
     assert!(ack.ok, "{:?}", ack.error);
     let id = ack.session_id.unwrap();
+    capture.wait_done();
+    daemon.poll_once(); // apply the detached SpawnOutcome (cwd/worktree fields)
     let meta = worktree::load(&cfg.tmp_dir, &id).expect("worktree metadata persisted");
 
     std::fs::write(meta.path.join("unsaved.rs"), "fn unsaved() {}\n").unwrap();
@@ -482,7 +514,10 @@ fn kill_snapshots_wip_before_cleanup() {
 
     // WIP was committed to this session's branch before the dir was removed.
     let msg = git_ok(meta.base_repo.as_path(), &["log", "-1", "--format=%s", &meta.branch]);
-    assert!(msg.starts_with("notch snapshot:") && msg.contains(&id), "snapshot commit missing: {msg}");
+    assert!(
+        msg.starts_with("notch: WIP snapshot (") && msg.contains(&id),
+        "canonical snapshot commit missing: {msg}"
+    );
     assert!(!meta.path.exists(), "clean worktree dir removed after snapshot");
 }
 
@@ -510,6 +545,8 @@ fn daemon_conflicts_use_merge_tree_not_filenames() {
         assert!(ack.ok, "{:?}", ack.error);
         ids.push(ack.session_id.unwrap());
     }
+    capture.wait_done();
+    daemon.poll_once(); // apply all three detached SpawnOutcomes
 
     // 1 and 2 edit the SAME line (real conflict); 1 and 3 edit DIFFERENT
     // lines (no conflict) — yet all three touched the same file name.
@@ -563,6 +600,8 @@ fn non_git_spawn_warns_loudly() {
         None,
     );
     assert!(ack.ok, "{:?}", ack.error);
+    capture.wait_done();
+    daemon.poll_once(); // detached worker's warning is applied here
     let snap = daemon.snapshot();
     assert!(
         snap.warnings.iter().any(|w| w.contains("not a git") && w.contains("heuristic")),
