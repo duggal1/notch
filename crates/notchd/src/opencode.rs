@@ -12,9 +12,150 @@
 
 use crate::herdr::HerdrError;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 type Runner = Arc<dyn Fn(&[String]) -> Result<String, HerdrError> + Send + Sync>;
+
+/// Default hard deadline for a single opencode subprocess call (milliseconds).
+pub const DEFAULT_TIMEOUT_MS: u64 = 1500;
+/// Environment override for the per-call deadline.
+pub const TIMEOUT_ENV: &str = "NOTCH_OPENCODE_TIMEOUT_MS";
+/// Short grace for reaping a child that has already closed its pipes.
+const REAP_GRACE_MS: u64 = 250;
+
+/// Resolve the per-call deadline safely. Missing, non-numeric, zero or
+/// overflowing values fall back to [`DEFAULT_TIMEOUT_MS`] and warn on stderr
+/// (the daemon captures stderr into its logs).
+pub fn timeout_ms() -> u64 {
+    let Ok(raw) = std::env::var(TIMEOUT_ENV) else {
+        return DEFAULT_TIMEOUT_MS;
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(ms) if ms > 0 => ms,
+        Ok(_) => {
+            eprintln!(
+                "opencode: {TIMEOUT_ENV}={raw:?} must be > 0; using default {DEFAULT_TIMEOUT_MS}ms"
+            );
+            DEFAULT_TIMEOUT_MS
+        }
+        Err(e) => {
+            eprintln!(
+                "opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {DEFAULT_TIMEOUT_MS}ms"
+            );
+            DEFAULT_TIMEOUT_MS
+        }
+    }
+}
+
+/// `true` when `e` is the typed timeout error from the subprocess seam.
+pub fn is_timeout_error(e: &HerdrError) -> bool {
+    matches!(e, HerdrError::Io(msg) if msg.starts_with("opencode timeout after "))
+}
+
+fn timeout_error(ms: u64) -> HerdrError {
+    HerdrError::Io(format!("opencode timeout after {ms}ms"))
+}
+
+/// Poll `try_wait` until the child exits or `deadline` passes. Avoids an
+/// unbounded `wait()` if a child closes its pipes but lingers.
+fn wait_bounded(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Option<std::process::ExitStatus> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {}
+            Err(_) => return None,
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Run one opencode CLI call behind a hard deadline.
+///
+/// A single reader thread drains stdout then stderr so a hung child cannot
+/// wedge the caller; `recv_timeout` caps the wait. On expiry the child is
+/// killed and reaped before the typed timeout error is returned. The reader
+/// thread observes pipe EOF once the child dies and exits on its own, so no
+/// thread is leaked per call.
+fn invoke_process(argv: &[String]) -> Result<String, HerdrError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let ms = timeout_ms();
+    let timeout = Duration::from_millis(ms);
+
+    let mut child = Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| HerdrError::Io(format!("{}: {e}", argv[0])))?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| HerdrError::Io("opencode: missing stdout pipe".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| HerdrError::Io("opencode: missing stderr pipe".into()))?;
+    let (tx, rx) = mpsc::channel();
+    // Detached: on kill the pipes close, the reads return EOF, the thread ends.
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        let _ = stderr.read_to_end(&mut err);
+        let _ = tx.send((out, err));
+    });
+
+    let (out, err) = match rx.recv_timeout(timeout) {
+        Ok(pair) => pair,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            let _ = child.wait(); // reap: no zombie/orphan left behind
+            return Err(timeout_error(ms));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            // Reader died unexpectedly; never wedge the poll because of it.
+            let grace = Instant::now() + Duration::from_millis(REAP_GRACE_MS);
+            if wait_bounded(&mut child, grace).is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(timeout_error(ms));
+            }
+            (Vec::new(), Vec::new())
+        }
+    };
+
+    let status = match wait_bounded(
+        &mut child,
+        Instant::now() + Duration::from_millis(REAP_GRACE_MS),
+    ) {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(timeout_error(ms));
+        }
+    };
+
+    if !status.success() {
+        return Err(HerdrError::Failed {
+            args: argv[1..].to_vec(),
+            code: status.code(),
+            stderr: String::from_utf8_lossy(&err).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&out).to_string())
+}
 
 #[derive(Clone)]
 pub struct Opencode {
@@ -46,18 +187,7 @@ impl Opencode {
         if let Some(runner) = &self.runner {
             return runner(argv);
         }
-        let out = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .output()
-            .map_err(|e| HerdrError::Io(format!("{}: {e}", argv[0])))?;
-        if !out.status.success() {
-            return Err(HerdrError::Failed {
-                args: argv[1..].to_vec(),
-                code: out.status.code(),
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        invoke_process(argv)
     }
 
     pub fn api_session_list(&self) -> Result<Vec<ApiSession>, HerdrError> {
