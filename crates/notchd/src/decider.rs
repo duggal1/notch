@@ -203,10 +203,12 @@ pub fn parse_decider_output(raw: &str) -> DeciderVerdict {
     }
     if upper.starts_with("CONTINUE:") {
         let rest = line["CONTINUE:".len()..].trim();
-        if rest.is_empty() {
-            return DeciderVerdict::Unparseable { head: line.to_string() };
-        }
-        return DeciderVerdict::Continue { instruction: rest.to_string() };
+        // A shell-shaped instruction is not a usable next step: it takes the
+        // honest unparseable-strike path instead of being typed into a pane.
+        let Some(instruction) = sanitize_instruction(rest) else {
+            return DeciderVerdict::Unparseable { head: line.chars().take(120).collect() };
+        };
+        return DeciderVerdict::Continue { instruction };
     }
     if upper.starts_with("STUCK:") {
         let rest = line["STUCK:".len()..].trim();
@@ -220,7 +222,10 @@ pub fn parse_decider_output(raw: &str) -> DeciderVerdict {
         return DeciderVerdict::Done { evidence: line[4..].trim().to_string() };
     }
     if upper == "CONTINUE" || upper.starts_with("CONTINUE ") {
-        return DeciderVerdict::Continue { instruction: line[8..].trim().to_string() };
+        let Some(instruction) = sanitize_instruction(&line[8..]) else {
+            return DeciderVerdict::Unparseable { head: line.chars().take(120).collect() };
+        };
+        return DeciderVerdict::Continue { instruction };
     }
     if upper == "STUCK" || upper.starts_with("STUCK ") {
         return DeciderVerdict::Stuck { blocker: line[5..].trim().to_string() };
