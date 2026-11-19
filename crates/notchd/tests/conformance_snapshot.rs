@@ -37,6 +37,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // ---------- canonical key lists (checked in; mirror bridge.md §1.3 v1.3) ----------
 
@@ -525,7 +526,16 @@ fn build_fixture(tag: &str) -> Fixture {
     // decider call fires in later polls.
     oc.set_api_idle(&pane1, false);
 
-    // Poll 2: S1-OC01 done; S1-OC02 blocked strike 1 -> one re-prompt.
+    // P1 DoD gate: herdr `done` is NOT a verdict. When herdr reports done for
+    // a DoD-bearing session, supervise.rs reverts it and submits a Judge job;
+    // a DONE verdict creates a PendingVerify + Verify job; apply_verify on a
+    // later drain tick logs `decision{action:"done"}` and finally sets Done.
+    // The fake runner pops one string per `run --model` call, in this order.
+    oc.push_decision("DONE: the audit-signoff file exists and matches the checklist");
+    oc.push_decision("YES: verified the real sign-off file");
+
+    // Poll 2: S1-OC01 herdr-done -> gate reverts + Judge job; S1-OC02 blocked
+    // strike 1 -> one re-prompt.
     fake.set_agents(vec![
         agent_entry(&pane1, "done", 3),
         agent_entry(&pane2, "blocked", 3),
@@ -533,13 +543,31 @@ fn build_fixture(tag: &str) -> Fixture {
     ]);
     daemon.poll_once();
 
-    // Poll 3: S1-OC02 blocked strike 2 -> failed (blocked_waiting) + escalation.
+    // Poll 3: S1-OC02 stays idle (the human owns the permission decision).
+    // A second `blocked` sample would log a second needs_you escalation, so
+    // from here on herdr reports idle for that pane.
     fake.set_agents(vec![
         agent_entry(&pane1, "done", 3),
-        agent_entry(&pane2, "blocked", 4),
+        agent_entry(&pane2, "idle", 4),
         agent_entry(&pane3, "working", 4),
     ]);
     daemon.poll_once();
+
+    // Drain the bounded JudgePool: Judge result -> Verify job -> DONE. The
+    // fake clock must NOT advance here (that would trip the stall guard); the
+    // wait is only for real worker threads to finish.
+    let drain_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        daemon.poll_once();
+        let done = daemon.snapshot().sessions.iter().any(|s| {
+            s.id == "S1-OC01" && s.status == Status::Done
+        });
+        if done {
+            break;
+        }
+        assert!(Instant::now() < drain_deadline, "verifier never produced a DONE decision");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     // One bus message (handoff S1-OC01 -> S2-OC01).
     let bus = daemon.message(
@@ -589,13 +617,18 @@ fn assert_fixture_prereqs(v: &Value) {
     assert_eq!(s1["iterations"], 1);
     assert_eq!(s1["maxIterations"], 8);
     assert_eq!(s1["wallClockDeadline"], T0 + RESTART_MS);
+    // DONE now arrives through the verifier, so the last supervisor action is
+    // the evidence-backed `done:` decision, not the earlier re-prompt.
     assert!(s1["lastSupervisorAction"]
         .as_str()
         .unwrap()
-        .starts_with("reprompt:"));
+        .starts_with("done:"));
 
     let s2 = &sessions[1];
-    assert_eq!(s2["status"], "failed");
+    // P3.8: `blocked` means waiting on a human, not a failed session. The
+    // pane/temp dir are kept and the session stays idle with a needs_you
+    // escalation — never a re-prompt into the permission dialog.
+    assert_eq!(s2["status"], "idle");
     assert_eq!(s2["failureReason"], "blocked_waiting");
 
     let s3 = &sessions[2];
@@ -612,8 +645,8 @@ fn assert_fixture_prereqs(v: &Value) {
     assert!(actions.contains(&"escalate"), "expected an escalate decision: {actions:?}");
 
     let escalations = v["escalations"].as_array().unwrap();
-    assert_eq!(escalations.len(), 1);
-    assert_eq!(escalations[0]["kind"], "blocked");
+    assert_eq!(escalations.len(), 1, "escalations: {escalations:?}");
+    assert_eq!(escalations[0]["kind"], "needs_you");
     assert_eq!(escalations[0]["session"], "S1-OC02");
 
     let bus = v["busMessages"].as_array().unwrap();
