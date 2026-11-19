@@ -316,6 +316,37 @@ fn t2_large_output_is_drained_and_capped() {
     }
 }
 
+/// A5 finding: under heavy parallel load the 500 ms pipe grace expired for a
+/// successful fast `git` call and stdout came back empty. Eight simultaneous
+/// successful calls must each return their exact output.
+#[test]
+fn successful_fast_calls_never_lose_output_under_load() {
+    // Intentionally NOT taking run_lock: this test must overlap the shim
+    // tests to reproduce the loaded-host race A5 observed.
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let marker = format!("marker-{i}");
+                let args: Vec<String> = vec![marker.clone()];
+                let env: Vec<(String, String)> = Vec::new();
+                let spec = Spec {
+                    cmd: "/bin/echo",
+                    args: &args,
+                    cwd: None,
+                    env: &env,
+                    timeout: std::time::Duration::from_secs(2),
+                    max_out: 4096,
+                };
+                let out = run(&spec).expect("echo must succeed under load");
+                assert_eq!(out.stdout.trim(), marker, "successful call lost its stdout");
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("worker panicked");
+    }
+}
+
 /// 3.1: the real `Herdr` client is bounded too — a hung `herdr agent list`
 /// returns at the 5 s deadline with a typed timeout and leaves no survivors
 /// in its process group (the fake-runner seam is bypassed here).

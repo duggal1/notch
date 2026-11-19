@@ -122,6 +122,29 @@ fn take_pipe(rx: mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     rx.recv_timeout(PIPE_EOF_GRACE).unwrap_or_default()
 }
 
+/// Normal-exit variant: once the child is reaped its pipes are at EOF, so a
+/// reader thread that has not delivered inside the grace is merely descheduled
+/// (seen under heavy parallel test load). Wait for it to finish with a bounded
+/// safety cap instead of returning empty output for a successful call.
+fn take_pipe_after_exit(
+    rx: mpsc::Receiver<Vec<u8>>,
+    handle: thread::JoinHandle<()>,
+) -> Vec<u8> {
+    match rx.recv_timeout(PIPE_EOF_GRACE) {
+        Ok(buf) => {
+            let _ = handle.join();
+            buf
+        }
+        Err(_) => {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !handle.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(2));
+            }
+            rx.recv_timeout(Duration::from_millis(100)).unwrap_or_default()
+        }
+    }
+}
+
 /// Run one child under a hard deadline. See module docs.
 pub fn run(spec: &Spec) -> Result<Out, ProcError> {
     let mut command = Command::new(spec.cmd);
@@ -159,10 +182,10 @@ pub fn run(spec: &Spec) -> Result<Out, ProcError> {
     let (tx_err, rx_err) = mpsc::channel();
     // Detached: after the group is killed every pipe reaches EOF and the
     // thread exits on its own. No thread is joined on a blocking read.
-    thread::spawn(move || {
+    let out_handle = thread::spawn(move || {
         let _ = tx_out.send(drain_capped(stdout_pipe, cap));
     });
-    thread::spawn(move || {
+    let err_handle = thread::spawn(move || {
         let _ = tx_err.send(drain_capped(stderr_pipe, cap));
     });
 
@@ -207,8 +230,8 @@ pub fn run(spec: &Spec) -> Result<Out, ProcError> {
 
     // Bounded grace for pipe EOF. If a detached descendant still holds a
     // pipe, we return with an empty capture instead of blocking forever.
-    let stdout_bytes = take_pipe(rx_out);
-    let stderr_bytes = take_pipe(rx_err);
+    let stdout_bytes = take_pipe_after_exit(rx_out, out_handle);
+    let stderr_bytes = take_pipe_after_exit(rx_err, err_handle);
     let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
 
