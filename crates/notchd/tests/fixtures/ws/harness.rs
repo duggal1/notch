@@ -187,6 +187,23 @@ impl WsClient {
         let _ = self.ws.close(None);
     }
 
+    /// Drain exactly `n` frames without parsing; returns how many arrived.
+    pub fn drain_frames(&mut self, n: usize, timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        let mut got = 0usize;
+        while got < n && Instant::now() < deadline {
+            match self.ws.read() {
+                Ok(Message::Text(_) | Message::Binary(_) | Message::Ping(_) | Message::Pong(_)) => got += 1,
+                Ok(Message::Close(_)) => break,
+                Err(WsError::Io(e))
+                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                Err(_) => break,
+                Ok(Message::Frame(_)) => {}
+            }
+        }
+        got
+    }
+
     /// Read the next JSON frame or `None` on deadline/EOF.
     pub fn read_value_within(&mut self, timeout: Duration) -> Option<Value> {
         let deadline = Instant::now() + timeout;
