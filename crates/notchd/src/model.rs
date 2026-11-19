@@ -60,6 +60,18 @@ pub struct SessionState {
     /// are treated as untracked (their dirs survive unless empty).
     #[serde(rename = "tempDir", default)]
     pub temp_dir: Option<String>,
+    // Isolation fields (HARDENING §2, A5). Additive and back-compatible: old
+    // state files omit all three; deserialization yields None and the daemon
+    // never treats a missing worktree as an error. Schema owner: A4.
+    /// Absolute path of this session's private git worktree.
+    #[serde(default)]
+    pub worktree: Option<String>,
+    /// Branch backing the worktree (`notch/<session id>`).
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Revision the worktree was forked from; attribution is "commits since".
+    #[serde(default)]
+    pub base_rev: Option<String>,
     /// Set when an escalation is recorded for this session; it is then
     /// excluded from the decision loop (watchdog still applies).
     #[serde(default)]

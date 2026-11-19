@@ -2,12 +2,15 @@
 //! `registry.json` (bridge.md §5).
 //!
 //! Every write is:
-//! 1. A rotation of the rolling backup chain: `path` → `path.bak1`,
-//!    `path.bak1` → `path.bak2`, `path.bak2` → `path.bak3`. The previous
-//!    `path.bak3` is dropped. The live file is *copied* (not moved) into
-//!    `bak1`, so there is never an instant where `path` does not exist.
-//!    Backups are best-effort: a failure in the backup chain never aborts
-//!    the real write.
+//! 1. A time-spaced refresh of the rolling backup chain `path.bak1..3`.
+//!    A tier is refreshed only when its own age reaches 60 s / 900 s /
+//!    3600 s (or the file is missing), propagating content from the tier
+//!    below: `live → bak1 → bak2 → bak3`. With 1 Hz state writes this yields
+//!    three backups of genuinely different ages instead of three copies of
+//!    the last few seconds. The deepest tier is dropped past depth 3.
+//!    The live file is *copied* (not moved) into `bak1`, so there is never an
+//!    instant where `path` does not exist. Backups are best-effort: a failure
+//!    in the backup chain never aborts the real write.
 //! 2. Write of the new bytes to `path.tmp` in the same directory, followed
 //!    by `fsync` of that file.
 //! 3. An atomic `rename(path.tmp, path)`.
@@ -21,14 +24,48 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Depth of the rolling backup chain (`path.bak1` … `path.bakN`).
 const BACKUPS: usize = 3;
+
+/// Minimum age of `bak1` / `bak2` / `bak3` before that tier is refreshed.
+/// The old code rotated on *every* write, which at 1 Hz produced three
+/// near-identical snapshots seconds apart (HARDENING §3.5, defect 9).
+pub(crate) const BACKUP_TIERS_MS: [u64; BACKUPS] = [60_000, 900_000, 3_600_000];
+
+fn wall_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn mtime_ms(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
 
 /// The temp file written and synced before the atomic rename. Same
 /// directory as `path` so the rename never crosses a filesystem.
 pub(crate) fn tmp_path(path: &Path) -> PathBuf {
     path.with_extension("tmp")
+}
+
+/// Files considered during recovery, newest tier first. The `.tmp` file is
+/// deliberately NEVER included: a torn write may leave it half-written and
+/// adopting it would resurrect ids that were never committed (T5).
+pub(crate) fn read_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![path.to_path_buf()];
+    for n in 1..=BACKUPS {
+        candidates.push(backup_path(path, n));
+    }
+    candidates
 }
 
 /// `path` with `.bak<n>` appended to the full file name
@@ -39,34 +76,51 @@ fn backup_path(path: &Path, n: usize) -> PathBuf {
     PathBuf::from(os)
 }
 
-/// Shift the rolling backup chain. Best-effort: every step that fails is
-/// skipped so a broken backup can never take the real write down with it.
-fn rotate_backups(path: &Path) {
-    let deepest = backup_path(path, BACKUPS);
-    if deepest.is_file() {
-        let _ = fs::remove_file(&deepest);
-    }
-    for n in (1..BACKUPS).rev() {
-        let from = backup_path(path, n);
-        if from.is_file() {
-            let _ = fs::rename(&from, backup_path(path, n + 1));
+/// Refresh whichever backup tiers are due, deepest first so content moves
+/// exactly one tier per write. Best-effort: every step that fails is skipped
+/// so a broken backup can never take the real write down with it.
+fn rotate_backups_at(path: &Path, now: u64) {
+    for n in (1..=BACKUPS).rev() {
+        let dest = backup_path(path, n);
+        // Tier 1 pulls from live; deeper tiers pull from the tier above.
+        // Copy, not move: both source and destination must stay readable.
+        let source = if n == 1 {
+            path.to_path_buf()
+        } else {
+            backup_path(path, n - 1)
+        };
+        if !source.is_file() {
+            continue;
         }
-    }
-    if path.is_file() {
-        // Copy, not move: `path` must exist at every instant.
-        let _ = fs::copy(path, backup_path(path, 1));
+        let tier = BACKUP_TIERS_MS[n - 1];
+        let due = match mtime_ms(&dest) {
+            // bak1 is established on the second write. A deeper tier is only
+            // created once its source is old enough — otherwise a burst of
+            // writes would fill all three slots with second-old snapshots.
+            None => n == 1 || mtime_ms(&source).is_some_and(|t| now.saturating_sub(t) >= tier),
+            Some(written) => now.saturating_sub(written) >= tier,
+        };
+        if due {
+            let _ = fs::copy(&source, &dest);
+        }
     }
 }
 
-/// Write `bytes` to `path` atomically and durably, rotating the backup
-/// chain first. Creates missing parent directories.
+/// Write `bytes` to `path` atomically and durably, refreshing due backup
+/// tiers first (wall clock). Creates missing parent directories.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_at(path, bytes, wall_ms())
+}
+
+/// Same as [`write_atomic`] with an injected wall-clock value, so the tier
+/// logic is testable without sleeping. `now` is milliseconds since epoch.
+pub(crate) fn write_atomic_at(path: &Path, bytes: &[u8], now: u64) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
         }
     }
-    rotate_backups(path);
+    rotate_backups_at(path, now);
     let tmp = tmp_path(path);
     {
         let mut f = fs::File::create(&tmp)?;
@@ -115,18 +169,39 @@ mod tests {
         }
     }
 
+    fn age(path: &Path, secs: u64) {
+        use std::time::{Duration, SystemTime};
+        if path.exists() {
+            set_mtime(path, SystemTime::now() - Duration::from_secs(secs));
+        }
+    }
+
     #[test]
     fn backups_rotate_in_order_and_never_exceed_depth() {
+        // Rotation is driven by tier age, not by write count. Age the tiers
+        // explicitly so the test exercises the same chain the 1 Hz writer gets
+        // after 60 s / 900 s / 3600 s have elapsed.
         let dir = test_dir("rotate");
         let path = dir.join("state.json");
-        for v in [b"v1".as_slice(), b"v2", b"v3", b"v4", b"v5"] {
-            write_atomic(&path, v).unwrap();
+        write_atomic(&path, b"v1").unwrap();
+        write_atomic(&path, b"v2").unwrap(); // bak1 = v1
+        for (live, a1, a2) in [
+            (b"v3".as_slice(), 61, 0),
+            (b"v4", 901, 3601),
+            (b"v5", 901, 3601),
+            (b"v6", 901, 3601),
+            (b"v7", 901, 3601),
+            (b"v8", 901, 3601),
+        ] {
+            age(&backup_path(&path, 1), a1);
+            age(&backup_path(&path, 2), a2);
+            write_atomic(&path, live).unwrap();
         }
-        assert_eq!(fs::read(&path).unwrap(), b"v5");
-        assert_eq!(fs::read(backup_path(&path, 1)).unwrap(), b"v4");
-        assert_eq!(fs::read(backup_path(&path, 2)).unwrap(), b"v3");
-        assert_eq!(fs::read(backup_path(&path, 3)).unwrap(), b"v2");
-        // v1 has rolled off the end of the chain.
+        assert_eq!(fs::read(&path).unwrap(), b"v8");
+        assert_eq!(fs::read(backup_path(&path, 1)).unwrap(), b"v7");
+        assert_eq!(fs::read(backup_path(&path, 2)).unwrap(), b"v6");
+        assert_eq!(fs::read(backup_path(&path, 3)).unwrap(), b"v5");
+        // Depth is capped at 3: older snapshots rolled off the end.
         assert!(!backup_path(&path, 4).exists());
     }
 
@@ -167,7 +242,7 @@ mod tests {
         let dir = test_dir("live");
         let path = dir.join("state.json");
         write_atomic(&path, b"original").unwrap();
-        rotate_backups(&path);
+        rotate_backups_at(&path, wall_ms());
         assert_eq!(
             fs::read(&path).unwrap(),
             b"original",
