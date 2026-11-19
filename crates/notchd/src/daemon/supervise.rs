@@ -27,7 +27,7 @@ use crate::model::DecisionEntry;
 use crate::opencode::Opencode;
 use crate::status::Status;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -117,7 +117,15 @@ impl JudgePool {
                     let guard = client.lock().unwrap_or_else(|e| e.into_inner());
                     guard.clone()
                 };
-                let (raw, path, ms) = judge(oc.as_ref(), &job.model, &job.prompt);
+                let session_id = job.ctx.seed.id.clone();
+                let session_cwd = job.ctx.seed.cwd.clone();
+                let cwd = if session_cwd.is_empty() {
+                    None
+                } else {
+                    Some(Path::new(&session_cwd))
+                };
+                let (raw, path, ms) =
+                    judge(oc.as_ref(), &job.model, &job.prompt, &session_id, cwd);
                 let finished = Finished {
                     session: job.session,
                     kind: job.kind,
@@ -227,6 +235,8 @@ fn judge(
     client: Option<&Opencode>,
     model: &str,
     prompt: &str,
+    session_id: &str,
+    cwd: Option<&Path>,
 ) -> (Result<String, String>, DecisionPath, u64) {
     let start = Instant::now();
     let Some(oc) = client else {
@@ -236,14 +246,16 @@ fn judge(
         return (Err("decider client not configured".to_string()), path, ms);
     };
 
-    let sid = decider::decider_session_id();
-    let (result, path) = match oc.run_decider_session(model, &sid, prompt) {
+    // A1's per-notch-session id + real cwd: the judge must read this
+    // session's worktree, not a shared context in the daemon's cwd.
+    let sid = decider::decider_session_id_for(session_id);
+    let (result, path) = match oc.run_decider_session_in(model, &sid, prompt, cwd) {
         Ok(raw) => (Ok(raw), DecisionPath::Persistent),
         Err(persist_err) => {
             // Session reuse failed (bad id, corrupt context, quota on that
             // session, …). Fall back to the original cold path — never lose a
             // judgment because the optimization broke.
-            match oc.run_decider(model, prompt) {
+            match oc.run_decider_in(model, prompt, cwd) {
                 Ok(raw) => (Ok(raw), DecisionPath::Cold),
                 Err(cold_err) => (
                     Err(format!(
@@ -975,7 +987,7 @@ impl Daemon {
             if pool.in_flight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
                 continue; // one judgment per session, no spin
             }
-            let (goal, dod, model, iterations, max_iterations) = {
+            let (goal, dod, model, iterations, max_iterations, session_cwd) = {
                 let inner = lock(&self.inner);
                 let Some(s) = inner.sessions.iter().find(|s| s.id == id) else {
                     continue;
@@ -986,6 +998,7 @@ impl Daemon {
                     s.model.clone().unwrap_or_else(|| decider::DECIDER_MODEL.to_string()),
                     s.iterations,
                     s.max_iterations,
+                    s.cwd.clone(),
                 )
             };
             // herdr IO happens with no locks held.
@@ -1008,7 +1021,7 @@ impl Daemon {
                     seed: Seed {
                         id,
                         sup,
-                        cwd: String::new(),
+                        cwd: session_cwd,
                         status: Status::Working,
                         goal,
                         dod,

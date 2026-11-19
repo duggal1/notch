@@ -115,6 +115,9 @@ impl Daemon {
         };
         // 3.2: the pool's worker threads get the same client seam.
         daemon.set_judge_client(Some(opencode));
+        // A5: exact WIP snapshot before any kill, including sessions that
+        // were re-adopted on restart (they never pass through spawn_one).
+        crate::worktree::register_snapshot_hook();
         Ok(daemon)
     }
 
