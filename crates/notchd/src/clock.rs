@@ -20,8 +20,7 @@ pub fn mono_ms_now() -> u64 {
         .get_or_init(Instant::now)
         .elapsed()
         .as_millis()
-        .as_u64()
-        .unwrap_or(u64::MAX)
+        .min(u128::from(u64::MAX)) as u64
 }
 
 pub trait Clock: Send + Sync {
