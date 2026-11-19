@@ -2,7 +2,7 @@
 
 Three parties, one contract. If any of the three disagrees with this file, the implementation is wrong.
 
-Version: **1.1** (2026-11-19). v1.1: user stack override — Tauri v2 replaces the Swift/WKWebView host; §3 rewritten (JS ↔ Tauri commands/events instead of `webkit.messageHandlers`); §4 ownership rows updated. §1 (snapshot, IDs, status) and §2 (socket) unchanged. Changes require lead sign-off.
+Version: **1.1.1** (2026-11-19). v1.1: user stack override — Tauri v2 replaces the Swift/WKWebView host; §3 rewritten (JS ↔ Tauri commands/events instead of `webkit.messageHandlers`); §4 ownership rows updated. v1.1.1: `herdr pane close` takes a **positional** pane id, not `--pane` (corrected from Agent A's build report; the old text made the watchdog impossible). §1 (snapshot, IDs, status) unchanged. Changes require lead sign-off.
 
 ---
 
@@ -92,11 +92,11 @@ Frame = one NDJSON object per line, either direction. Server sends `{ "event": "
 | `snapshot` | — | `{ "event": "snapshot", "snapshot": {…} }` |
 | `subscribe` | — | `{ "event": "ack", "cmd": "subscribe", "ok": true }` then a fresh `snapshot` event immediately, then on every change (debounced 100 ms) |
 | `run_plan` | `path: string` | spawns orchestrator plan; acks `{ ok, spawned: ["SV-1","SV-2"] }` or `{ ok:false, error }` |
-| `kill` | `id: string, reason?: string` | ack; kills via `herdr pane close`; session → `failed` with reason; cleanup hook runs |
+| `logs` | `id: string, tail?: number` (default 200) | `{ "event": "logs", "id": …, "lines": […] }` |
 | `reprompt` | `id: string, text: string` | ack; `herdr agent prompt <target> <text>` |
 | `cleanup` | `id?: string` | one session or global sweep; ack with `removed: n` |
-| `logs` | `id: string, tail?: number` (default 200) | `{ "event": "logs", "id": …, "lines": […] }` |
 | `focus` | `id: string` | ack; `herdr agent focus <target>` — moves focus to that pane, never opens a window |
+| `kill` | `id: string, reason?: string` | ack; kills via `herdr pane close <paneId>` (positional arg); session → `failed` with reason; cleanup hook runs |
 | `spawn` | `supervisor: string, prompt: string, cwd: string, title: string` | ack with allocated `session.id` |
 | `status` | — | `{ "event": "status", "pid": …, "sessions": n, "uptimeS": s }` |
 
@@ -104,7 +104,7 @@ Errors: `{ "event": "ack", "cmd": …, "ok": false, "error": "<machine-readable 
 
 ### herdr invocation surface (what the daemon is allowed to call)
 
-`herdr pane list` · `herdr agent list` · `herdr pane split --direction right --cwd <cwd>` · `herdr agent start <name> --kind opencode --pane <paneId>` · `herdr agent prompt <target> <text> [--wait]` · `herdr agent read <target>` · `herdr agent wait <target> --until idle --until done --until blocked` · `herdr pane close --pane <paneId>` · `herdr agent focus <target>`.
+`herdr pane list` · `herdr agent list` · `herdr pane split --direction right --cwd <cwd>` · `herdr agent start <name> --kind opencode --pane <paneId>` · `herdr agent prompt <target> <text> [--wait]` · `herdr agent read <target>` · `herdr agent wait <target> --until idle --until done --until blocked` · `herdr pane close <paneId>`   ← positional argument, NOT `--pane` (v1.1.1 correction from Agent A's report; passing `--pane` errors out and the watchdog could never kill) · `herdr agent focus <target>`.
 
 Nothing else. The daemon never creates windows, never touches panes it doesn't own, never runs `open` or `screencapture`.
 
@@ -162,4 +162,4 @@ The webview receives ONLY: `core:event:allow-listen` / `allow-emit` (for snapsho
 
 ## 6. Process layout
 
-`notchd serve` = long-lived daemon (also `notchd run-plan <file>`, `notchd snapshot`, `notchd kill …` etc. as thin CLI wrappers over the same code). Swift app connects on launch, `subscribe`s, reconnects with backoff (0.5 s, 1 s, … cap 5 s). Daemon stays up when the app quits. Killing the daemon never kills OpenCode sessions (they're in herdr panes) — it just stops supervising; next start re-adopts panes that still carry `NOTCH_SESSION_ID` in their environment, else marks them `done` by inspection and moves on.
+`notchd serve` = long-lived daemon (also `notchd run-plan <file>`, `notchd snapshot`, `notchd kill …` etc.). The Tauri app (`app/`) embeds the same engine in-process; the CLI talks to a reachable daemon over the socket when one is running, else acts in-process. Killing the daemon never kills OpenCode sessions (they're in herdr panes) — it stops supervising; next start re-adopts panes recorded in `state.json`, vanished panes → sessions marked `done`.
