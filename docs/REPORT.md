@@ -1,0 +1,104 @@
+# notch — build report
+
+Date: 2026-11-19 · Working dir: `/Users/harshitduggal/workspace/notch` · Status: **build-verified, live-exercised; NOT declared DONE** (eight-agent backend hardening in flight; final independent review + audit pending)
+
+This file is the truthful ledger: what was asked, what exists, what the evidence shows, what is broken, blocked, or unproven. Read `docs/PLAN.md` for the agreed architecture, `docs/bridge.md` (v1.3) for the wire contract, `DESIGN.md`/`TASTE.md`/`DESIGN-RULES.md`/`FONT.md` for the visual law.
+
+---
+
+## 1. What was asked (recap of your directives)
+
+1. Build a thin orchestration layer over **OpenCode + herdr + Ghostty** in the MacBook notch: permanent IDs, watchdog, supervisor, communication discipline, forced cleanup. Never reimplement the agent runtime.
+2. OpenCode = brain and hands; notch adds only (A) bus comms and (B) an autonomous agent multiplexer. Both delivered on that shape.
+3. Stack, after your correction: **Tauri v2 + Rust + React 19 + TS strict + Tailwind v4 + Vite 8** (Swift host deleted).
+4. **DESIGN.md/FONT.md applied brutally**; typography overrides: Inter only, weights 400/500, sentence case (no all caps), tracking tied to size, grayscale-AA smoothing. Darker flat cards (`#171826`), pointer everywhere, zero slop (zero templates), SF Symbols rendered **on-device** only.
+5. A **standard macOS app** too — regular window, Dock icon, ⌘Tab, real composer; plus the notch popover.
+6. Testing with headless **`opencode run --model opencode/hy4-flash-free`** discipline; panes run the machine default (`opencode/inkling-2-small-free` variant `max`, user-set).
+7. "Open it up for me" — the app has been compiled, rebuilt, and **opened on your screen** (pid-verified).
+8. Backend finished by ≥ 6 sub-agents with aggressive headless testing; code quality genuinely better. **Eight agents launched** (see §7); not all have reported.
+
+## 2. What exists
+
+```
+notch/
+  crates/notchd/     Rust engine — lib + CLI/daemon: registry, supervisor, watchdog,
+                     bus, activity probe (opencode api GET /api/session), cleanup,
+                     attribution (git status, capped), NDJSON socket, embedded by Tauri
+  ui/                React 19 + Tailwind v4 + Vite 8 — popover + standard app (4 tabs:
+                     Tree / Multiplexer / Comms / Escalations)
+  app/               Tauri v2 shell (src-tauri) — notch window, tray, 18 commands,
+                     on-device SF Symbol rasterizer, borderless always-on-top popover
+  docs/              PLAN.md, bridge.md v1.3 (frozen contract), this file
+  examples/          two-by-two.json
+  tools/             window-shot.sh, opencode-default-model.sh, contract-check.mjs (agent 5)
+  FONT.md            type law (weights 400/500, sentence case, size-tied tracking)
+  DESIGN.md          skin law (v1.1: darker flat blur cards #171826, zero-slop rule 19)
+  notch_frontend_bundle.py   single-file verbatim copy of the entire frontend (sha256
+                     verified, byte-identical re-extraction proven)
+```
+
+## 3. Evidence (what was actually run)
+
+| Check | Result | Evidence |
+|---|---|---|
+| `cargo test -p notchd` (engine) | 54/54 pass (targeted) | acceptance.rs + fixtures; v1.3 suite |
+| `cargo test --manifest-path app/src-tauri/Cargo.toml` | 35/35 pass | frame/trayfmt/symbols/engine-integration… |
+| `npm run test` (ui) | 15/15 | snapshot validator, TYPE_COLOR totality, demos valid |
+| `npx tauri build --debug` | bundle produced (39 MB, ad-hoc signed) | app/src-tauri/target/debug/bundle/macos/Notch.app |
+| Hidden launch (`open -g -j`) | no focus stolen; process alive | tools/window-shot.sh + pid checks |
+| Screen-pixel capture | **UNVERIFIED — Screen Recording permission missing** | all window captures black (3 attempts) |
+| Live two-by-two run (fresh state) | both sessions wrote `RESULT-*.md` exactly as specified ("acceptance point 1"/"2") | `.proof/agents/acceptance/RESULT-*.md` |
+| Autonomous supervisor, live | decider fired once with a real instruction ("continue: …"); iterations=1 | snapshot dump in report thread + `.proof/agents/acceptance/` |
+| Bus comms, live | handoff `S1-OC01 → S1-OC02` logged (`msg_1`) and visible in comms view | snapshot.busMessages |
+| Handoff to done sessions | accepted; pid-verified panes closed | pane list back to baseline |
+| Kill switch ruling | done panes persisted → `kill_switch` now closes done panes too (agent A, tested) | tests `kill_switch_*` |
+| Sweep data-loss bug | found (`notch-*` prefix deleted non-engine dirs) → fixed: exact `notch-S<..>-OC<nn>` + tracked-or-empty predicate + regression tests | `sweep_never_deletes_non_engine_dirs` red→green |
+
+UI screenshots live in `.proof/agents/web-ui/` (rest/peek/open × 6 demos, pill crops at 1512/1728/fallback, dashboard × 4 tabs, both review passes). Honest flags from the build: orb presets at level 1.0 render near-white squircles (DESIGN.md implemented verbatim, flagged not "fixed"), SwiftShader frame-times are software-GL numbers (real WKWebView/Metal unmeasured — needs on-screen run).
+
+## 4. The build that opened on your screen
+
+`Notch.app` (Debug profile) was `open`ed after this report's rebuild. First launch is intentionally empty (fresh state; prior proof records archived at `.proof/archive/notch-state-2026-11-19-idlelab/`). Popover = black pill fused to the top edge (fallback 200×32 centered on this notchless M1). Dock icon = regular app. Menu bar ring glyph = zero-in-flight icon; left-click toggles popover, right-click = menu (N in flight / Open dashboard / Show·hide popover / Kill all sessions / Sweep temp orphans / Quit).
+
+## 5. What is broken, blocked, or unproven (named, no softening)
+
+- **Screen Recording permission missing** — every native-window pixel capture is black. Grant it to the OpenCode/terminal host app and verify; until then, that check ships UNVERIFIED.
+- **Six-step acceptance test** — steps 1–4 live-proven; step 5 (loop escalation) and step 6 (DONE only after evidence) **not live-proven** (fast-finishing sessions bypass the verifier path — the DoD was satisfied in fact but the decider's evidence gate was not observed). Agent e2e-live is running both runs now.
+- **Attribution after-baseline edits in a shared cwd** double-attribute and record a conflict — git cannot isolate the editor; filed as `#[ignore]`d test + engine limitation.
+- **Idle detection** — proven once on a live session (busy=1795103275747 idle=1795103296312, outcome=succeeded); not yet a two-run or stressed proof.
+- **Frame probe** — numbers exist (avg ~202 ms software-GL, dsf 1 ~41–49 ms) but real-metal numbers are unmeasurable until the app runs on-screen.
+- **`notch_frontend_bundle.py`** — single-file verbatim copy of the frontend (user request); not committed.
+- **Death by prefix** — the global cleanup bug (ours) deleted this session's scratch root; artifacts were copied out first; fix landed with regression tests.
+
+## 6. Architecture discipline (unchanged)
+
+OpenCode is a black box. notch never touches its sub-agents/tool loop. All OpenCode traffic goes through herdr CLI, `opencode api GET /api/session` (read-only), `opencode models` (read-only), and `opencode run --model …` for supervisor decider calls only (free model `hy4-flash-free`). No new multiplexer, no new windows, no Ghostty fight; panes stay in herdr; "Open in herdr" focuses them.
+
+## 7. The eight backend agents (requested ≥ 6; running concurrently)
+
+| # | Agent | Scope / status at writing |
+|---|---|---|
+| 1 | e2e-live | live six-step acceptance, 2 runs — running |
+| 2 | harden-engine | daemon.rs split, typed errors, atomic state writes — running |
+| 3 | watchdog-deep | stuck-kill boundaries, 50-session timing, unicode floods — running (compile fix routed) |
+| 4 | socket-fuzz | NDJSON fuzz + 200-client storm + slow-reader — running |
+| 5 | contract-drift | key-set/enum/back-compat conformance — running |
+| 6 | soak | 300-poll × 20-session invariants, event rotation — running |
+| 7 | attribution-deep | real git repos (unborn/worktree/submodule/fsmonitor) — **DONE** (15/15 +1 ignored) |
+| 8 | fault-injection | shims: exit1/hang/bad_json/429/5xx/empty/wrong_schema — running |
+
+Each must land with evidence or it does not count. No `cargo clean` anywhere; no test weakening; any found bug → `#[ignore]` + report, never silent patch.
+
+## 8. If you do exactly five things
+
+1. Grant Screen Recording to your terminal/OpenCode host (one check, unblocks window screenshots).
+2. `open /Users/harshitduggal/workspace/notch/app/src-tauri/target/debug/bundle/macos/Notch.app` (it's open now).
+3. In the popover: click → type a job in the composer → `Assign` (or in the dashboard, ⌘K then Enter) and watch `SV-1 / S1-OC01` appear.
+4. `notchd snapshot | python3 -m json.tool` for the raw truth at any moment.
+5. Read `.proof/agents/*/NOTES.md` and this file after the final audit for the evidence chain.
+
+## 9. Known open questions for you (not blockers, your call)
+
+- Release bundle + notarization + distribution (requires Apple Developer identity; not attempted).
+- The pane model is your machine default by design; if you want per-pane model control beyond the config default, that's an OpenCode change, not a notch one.
+- "Playground" — nothing by that name exists in this repo; if you meant a separate scratch surface, say the word and it gets scoped.
