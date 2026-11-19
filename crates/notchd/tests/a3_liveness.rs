@@ -6,6 +6,7 @@
 
 use notchd::clock::{Clock, FakeClock, SystemClock};
 use notchd::status::Status;
+use notchd::supervisor::{decide_on_failure_with_reason, FailureAction};
 use notchd::watchdog::{Liveness, Obs, Watchdog};
 
 const T0: u64 = 1_763_520_000_000;
@@ -121,4 +122,34 @@ fn suspect_action_is_once_per_episode_and_reset_on_revision_change() {
     assert!(w.take_suspect_action("S1-OC01", 50_000), "new episode re-arms nudge");
     assert!(w.take_stuck_action("S1-OC01", 70_000));
     assert!(!w.take_stuck_action("S1-OC01", 75_000), "stuck escalation is once per episode");
+}
+
+// ---------- section 3.8: blocked is waiting on a human ----------
+
+#[test]
+fn blocked_is_needs_human_on_first_and_later_failures() {
+    for count in [0, 1, 7] {
+        match decide_on_failure_with_reason(Some("blocked_waiting"), count, Some("tail".into())) {
+            FailureAction::NeedsHuman { reason } => {
+                assert!(reason.contains("blocked_waiting"), "reason carries the cause: {reason}");
+            }
+            other => panic!("blocked must never reprompt or plain-escalate (count {count}): {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn non_blocked_failures_keep_reprompt_then_escalate() {
+    assert!(matches!(
+        decide_on_failure_with_reason(None, 0, Some("tail".into())),
+        FailureAction::Reprompt { .. }
+    ));
+    assert!(matches!(
+        decide_on_failure_with_reason(Some("other_reason"), 0, None),
+        FailureAction::Reprompt { .. }
+    ));
+    assert!(matches!(
+        decide_on_failure_with_reason(None, 1, None),
+        FailureAction::Escalate
+    ));
 }
