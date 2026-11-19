@@ -174,10 +174,10 @@ fn rank_state(s: &StateFile) -> (usize, usize, u64, u64) {
 fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<StateFile> {
     let mut best: Option<StateFile> = None;
     for candidate in durable::read_candidates(path) {
-        match std::fs::read(&candidate) {
-            Ok(bytes) => match serde_json::from_slice::<StateFile>(&bytes) {
+        if let Ok(bytes) = std::fs::read(&candidate) {
+            match serde_json::from_slice::<StateFile>(&bytes) {
                 Ok(state) => {
-                    if best.as_ref().map_or(true, |b| rank_state(&state) > rank_state(b)) {
+                    if best.as_ref().is_none_or(|b| rank_state(&state) > rank_state(b)) {
                         best = Some(state);
                     }
                 }
@@ -185,8 +185,7 @@ fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<S
                     "{} parse failed: {e}; trying backup",
                     candidate.display()
                 )),
-            },
-            Err(_) => {}
+            }
         }
     }
     best.ok_or_else(|| {

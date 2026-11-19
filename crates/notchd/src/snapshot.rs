@@ -90,7 +90,7 @@ pub struct SessionSnapshot {
 /// the `message` command and by `bus_drain`'s event log) collapse to one entry.
 pub fn cap_bus_messages_newest_first(entries: &[BusMessageEntry], cap: usize) -> Vec<BusMessageEntry> {
     let mut out = entries.to_vec();
-    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out.sort_by_key(|e| std::cmp::Reverse(e.at));
     out.dedup_by(|a, b| {
         a.from == b.from && a.to == b.to && a.kind == b.kind && a.preview == b.preview && a.at == b.at
     });

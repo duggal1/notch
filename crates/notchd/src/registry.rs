@@ -95,8 +95,9 @@ impl Registry {
         let mut best: Option<Registry> = None;
         let mut warnings: Vec<String> = Vec::new();
         for candidate in super::durable::read_candidates(path) {
-            match std::fs::read(&candidate) {
-                Ok(bytes) => match serde_json::from_slice::<Registry>(&bytes) {
+            // A missing candidate is normal; only parse files that exist.
+            if let Ok(bytes) = std::fs::read(&candidate) {
+                match serde_json::from_slice::<Registry>(&bytes) {
                     Ok(mut reg) => {
                         reg.path = Some(path.to_path_buf());
                         if is_more_advanced(&reg, best.as_ref()) {
@@ -107,8 +108,7 @@ impl Registry {
                         "{} parse failed: {e}; using backup",
                         candidate.display()
                     )),
-                },
-                Err(_) => {} // a missing candidate is normal
+                }
             }
         }
         match best {
