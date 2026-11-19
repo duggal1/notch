@@ -147,11 +147,8 @@ impl Daemon {
             return Vec::new();
         };
         let mut out = Vec::new();
-        loop {
-            match channel.rx.try_recv() {
-                Ok(outcome) => out.push(outcome),
-                Err(_) => break,
-            }
+        while let Ok(outcome) = channel.rx.try_recv() {
+            out.push(outcome);
         }
         out
     }
