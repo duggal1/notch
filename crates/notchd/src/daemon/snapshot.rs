@@ -1,10 +1,62 @@
 //! Snapshot production (bridge.md §1.3) and the socket-facing
 //! subscriber list (register/unregister/debounced flush).
-use super::types::{lock, Daemon, DEBOUNCE_MS};
-use crate::model::AttributionEntry;
+use super::types::{lock, Daemon, BUS_MESSAGES_CAP, DEBOUNCE_MS};
+use crate::model::{AttributionEntry, BusMessageEntry};
 use crate::snapshot::{OrchestratorSnapshot, SessionSnapshot, Snapshot, SupervisorSnapshot};
 use crate::status::Status;
+use std::path::Path;
 use std::sync::mpsc::Receiver;
+
+/// Project routed bus traffic from `events.jsonl` into the frozen v1.3
+/// `busMessages` shape. `bus_drain` logs `bus FROM->TO: KIND DETAIL`;
+/// the `message` command records its own entry directly in the tree. Merging
+/// both here means the dashboard comms tab shows real traffic, not just
+/// fixture data. Malformed or unrelated lines are skipped.
+fn bus_events_from_log(path: &Path) -> Vec<BusMessageEntry> {
+    let mut out = Vec::new();
+    let Ok(bytes) = std::fs::read(path) else {
+        return out;
+    };
+    for line in bytes.split(|b| *b == b'\n') {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("kind").and_then(|k| k.as_str()) != Some("status") {
+            continue;
+        }
+        let Some(detail) = value.get("detail").and_then(|d| d.as_str()) else {
+            continue;
+        };
+        let Some(rest) = detail.strip_prefix("bus ") else {
+            continue;
+        };
+        let Some((route, body)) = rest.split_once(": ") else {
+            continue;
+        };
+        let Some((from, to)) = route.split_once("->") else {
+            continue;
+        };
+        let mut parts = body.splitn(2, ' ');
+        let kind = parts.next().unwrap_or("").to_string();
+        if !crate::bus::is_valid_message_type(&kind) {
+            continue;
+        }
+        let preview: String = parts.next().unwrap_or("").chars().take(140).collect();
+        out.push(BusMessageEntry {
+            id: format!(
+                "bus_{}_{}",
+                value.get("ts").and_then(|t| t.as_u64()).unwrap_or(0),
+                out.len()
+            ),
+            from: from.to_string(),
+            to: to.to_string(),
+            kind,
+            preview,
+            at: value.get("ts").and_then(|t| t.as_u64()).unwrap_or(0),
+        });
+    }
+    out
+}
 
 impl Daemon {
     /// Bump the snapshot version and mark a change pending; subscribers are
@@ -114,7 +166,15 @@ impl Daemon {
             attribution,
             decisions: inner.decisions.iter().take(12).cloned().collect(),
             escalations: inner.escalations.clone(),
-            bus_messages: inner.bus_messages.iter().take(30).cloned().collect(),
+            bus_messages: crate::snapshot::cap_bus_messages_newest_first(
+                &inner
+                    .bus_messages
+                    .iter()
+                    .cloned()
+                    .chain(bus_events_from_log(self.event_log.path()))
+                    .collect::<Vec<_>>(),
+                BUS_MESSAGES_CAP,
+            ),
             warnings: inner.warnings.clone(),
         }
     }

@@ -275,6 +275,7 @@ impl Daemon {
 
     /// Clone of the daemon's single registry instance. Allocation itself goes
     /// through `alloc_session` / `alloc_supervisor` so it stays serialized.
+    #[allow(dead_code)] // kept for callers that still build registries explicitly
     pub(crate) fn registry(&self) -> Registry {
         let registry = registry_for(&self.config.state_dir);
         let clone = lock(&*registry).clone_for_caller();
@@ -297,6 +298,7 @@ impl Daemon {
         crate::registry::allocate_supervisor_at(&self.registry_path())
     }
 
+    #[allow(dead_code)] // kept for callers that still persist registries explicitly
     pub(crate) fn save_registry(&self, reg: &Registry) {
         let _ = crate::registry::persist_locked(reg, &self.registry_path());
     }

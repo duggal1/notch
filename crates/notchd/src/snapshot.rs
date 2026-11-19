@@ -85,6 +85,19 @@ pub struct SessionSnapshot {
     pub model: Option<String>,
 }
 
+/// Newest-first, capped projection of the bus log into the frozen
+/// `snapshot.busMessages` array. Duplicates (the same message recorded both by
+/// the `message` command and by `bus_drain`'s event log) collapse to one entry.
+pub fn cap_bus_messages_newest_first(entries: &[BusMessageEntry], cap: usize) -> Vec<BusMessageEntry> {
+    let mut out = entries.to_vec();
+    out.sort_by(|a, b| b.at.cmp(&a.at));
+    out.dedup_by(|a, b| {
+        a.from == b.from && a.to == b.to && a.kind == b.kind && a.preview == b.preview && a.at == b.at
+    });
+    out.truncate(cap);
+    out
+}
+
 /// Rollup status for a supervisor / the orchestrator.
 /// working if anything is working; else failed if anything is failed;
 /// else done if everything is done (and at least one exists); else idle.

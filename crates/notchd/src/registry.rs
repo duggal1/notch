@@ -139,6 +139,7 @@ impl Registry {
 
     /// Clone handed to a caller that only needs to read / allocate. The path
     /// and warnings are preserved so a later allocation still persists.
+    #[allow(dead_code)] // public contract helper for registry snapshots
     pub(crate) fn clone_for_caller(&self) -> Registry {
         self.clone()
     }
