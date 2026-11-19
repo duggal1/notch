@@ -31,6 +31,7 @@ pub mod socket;
 pub mod status;
 pub mod supervisor;
 pub mod watchdog;
+pub mod worktree;
 pub mod ws;
 
 pub use clock::{Clock, FakeClock, SystemClock};

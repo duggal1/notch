@@ -49,54 +49,48 @@ fn unquote_git_path(p: &str) -> String {
     p.to_string()
 }
 
-/// Run git in `cwd`. Returns relative file paths, or an empty vec on any
-/// failure — never an error. A hung git (e.g. fsmonitor/IPC trouble on a
-/// huge worktree) is killed after 1 second and counts as no signal.
+/// Sample one worktree's exact file set: commits since this session's base
+/// plus porcelain status. Metadata under `<session>/notch-worktree.json`
+/// supplies the base for per-session worktrees; plain repos keep the legacy
+/// porcelain-only behavior. Any git failure is a non-signal, never an error.
 pub fn sample_git(cwd: &Path) -> Vec<String> {
-    let child = std::process::Command::new("git")
-        .args(["--no-optional-locks", "-c", "core.fsmonitor=false", "-C"])
-        .arg(cwd)
-        .args(["status", "--porcelain=v1"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    // Drain stdout on a helper thread so a huge porcelain listing can't
-    // block the child on a full pipe.
-    let mut stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => {
-            let _ = child.kill();
-            return Vec::new();
-        }
-    };
-    let drain = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        use std::io::Read;
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                let out = drain.join().unwrap_or_default();
-                return parse_porcelain(&String::from_utf8_lossy(&out));
-            }
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Vec::new();
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Err(_) => return Vec::new(),
+    let base = crate::worktree::meta_for_cwd(cwd).map(|m| m.base_rev);
+    sample_git_at(cwd, base.as_deref())
+}
+
+/// Exact attribution for `cwd` relative to `base_rev`:
+/// `git diff --name-only <base>..HEAD` (committed by this session) unioned
+/// with `git status --porcelain=v1` (WIP). Sorted, deduped, capped by caller.
+pub fn sample_git_at(cwd: &Path, base_rev: Option<&str>) -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(out) = crate::worktree::git_run(&["status", "--porcelain=v1"], Some(cwd)) {
+        if out.ok {
+            files.extend(parse_porcelain(&out.stdout));
         }
     }
+    if let Some(base) = base_rev {
+        let range = format!("{base}..HEAD");
+        if let Ok(out) = crate::worktree::git_run(&["diff", "--name-only", range.as_str()], Some(cwd)) {
+            if out.ok {
+                files.extend(parse_name_only(&out.stdout));
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// `git diff --name-only` emits bare paths (no `XY ` status prefix).
+fn parse_name_only(out: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in out.lines() {
+        let path = unquote_git_path(line.trim());
+        if !path.is_empty() {
+            files.push(path);
+        }
+    }
+    files
 }
 
 pub const fn per_session_cap() -> usize {

@@ -24,11 +24,34 @@ pub fn session_tmp_dir(root: &Path, id: &str) -> PathBuf {
     root.join(format!("notch-{id}"))
 }
 
-/// Remove one session's temp dir. Returns true if a directory was removed.
+/// Remove one session's temp dir. WIP is snapshotted into its branch BEFORE
+/// anything is deleted; a dirty worktree (snapshot failed) is left intact.
+/// Returns true if a directory was removed.
 pub fn cleanup_session(root: &Path, id: &str) -> io::Result<bool> {
+    if let Some(wt) = crate::worktree::load(root, id) {
+        if wt.path.exists() {
+            if crate::worktree::snapshot(&wt.path, id, "cleanup").is_err() {
+                return Ok(false); // snapshot failed — never delete unseen work
+            }
+        }
+        if crate::worktree::remove(&wt).is_err() {
+            return Ok(false); // dirty or git failure — keep everything
+        }
+    }
     let dir = session_tmp_dir(root, id);
     remove_dir_if_exists(&dir)
 }
+
+/// Configured scratch budget (`NOTCH_MAX_TMP_BYTES`, default 5 GiB).
+pub fn max_tmp_bytes() -> u64 {
+    std::env::var("NOTCH_MAX_TMP_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(crate::worktree::DEFAULT_MAX_TMP_BYTES)
+}
+
+/// Re-export of the worktree-aware budget eviction.
+pub use crate::worktree::enforce_budget;
 
 fn remove_dir_if_exists(dir: &Path) -> io::Result<bool> {
     match std::fs::metadata(dir) {
@@ -125,6 +148,22 @@ pub fn sweep(
 
     // 3. Rotate stale events.jsonl if oversized.
     crate::events::rotate_if_oversized(events_path, events_max_bytes)?;
+
+    // 4. Real disk budget: dead sessions evicted oldest-first. Dirty
+    //    worktrees and live sessions are refused by enforce_budget itself.
+    let before: std::collections::HashSet<PathBuf> = sessions
+        .iter()
+        .filter_map(|s| s.temp_dir.as_ref())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .collect();
+    let (_freed, budget_warnings) = enforce_budget(root, sessions, max_tmp_bytes())?;
+    warnings.extend(budget_warnings);
+    for dir in before {
+        if !dir.exists() {
+            removed += 1;
+        }
+    }
 
     Ok((removed, warnings))
 }

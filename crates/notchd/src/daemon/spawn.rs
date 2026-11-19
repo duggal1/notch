@@ -2,12 +2,97 @@
 //! Every path allocates IDs through the registry, splits a herdr pane,
 //! starts the opencode harness in it, and prompts it with the full text.
 use super::acks::{RunPlanAck, SpawnAck, SubmitTaskAck};
+use super::lifecycle::SpawnOutcome;
 use super::types::{agent_target, lock, push_warning, Daemon};
 use crate::cleanup;
+use crate::herdr::Herdr;
 use crate::model::{single_line, truncate_words, SessionState, SupervisorMeta};
 use crate::plan;
 use crate::status::Status;
 use std::path::Path;
+
+/// The slow part of a spawn, factored out so `submit_task` can return its ack
+/// before herdr agent-start readiness completes. All side effects are pure
+/// data: the caller applies the returned outcome on the poll thread.
+pub(crate) fn spawn_detached(
+    mut session: SessionState,
+    prompt: String,
+    herdr: Herdr,
+    tmp_dir: std::path::PathBuf,
+    sessions: Vec<SessionState>,
+) -> SpawnOutcome {
+    let mut warnings = Vec::new();
+    match cleanup::enforce_budget(&tmp_dir, &sessions, cleanup::max_tmp_bytes()) {
+        Ok((_, ws)) => warnings.extend(ws),
+        Err(e) => warnings.push(format!("scratch budget check failed: {e}")),
+    }
+    let tmp = match crate::worktree::ensure_layout(&tmp_dir, &session.id) {
+        Ok(t) => t,
+        Err(e) => {
+            return SpawnOutcome {
+                session,
+                warnings,
+                error: Some(format!("temp dir: {e}")),
+                pane: None,
+            };
+        }
+    };
+    session.temp_dir = Some(tmp.to_string_lossy().to_string());
+
+    match crate::worktree::create(Path::new(&session.cwd), &session.id, &tmp_dir) {
+        Ok(Some(wt)) => {
+            session.cwd = wt.path.to_string_lossy().to_string();
+            session.worktree = Some(wt.path.to_string_lossy().to_string());
+            session.branch = Some(wt.branch.clone());
+            session.base_rev = Some(wt.base_rev.clone());
+        }
+        Ok(None) => warnings.push(format!(
+            "{}: cwd `{}` is not a git repository; per-session worktree disabled — attribution falls back to the shared-cwd heuristic",
+            session.id, session.cwd
+        )),
+        Err(e) => warnings.push(format!(
+            "{}: worktree setup failed ({e}); spawning in `{}` with shared-cwd heuristic",
+            session.id, session.cwd
+        )),
+    }
+
+    let env = crate::worktree::pane_env(
+        &tmp_dir,
+        &session.id,
+        crate::worktree::isolate_build_enabled(),
+    );
+    let pane = match herdr.pane_split(&session.cwd, &env) {
+        Ok(p) => p,
+        Err(e) => {
+            return SpawnOutcome {
+                session,
+                warnings,
+                error: Some(format!("pane split: {e}")),
+                pane: None,
+            };
+        }
+    };
+    session.pane_id = pane.clone();
+    let agent_name = agent_target(&session.id);
+    if let Err(e) = herdr.agent_start(&agent_name, &pane) {
+        let _ = herdr.pane_close(&pane);
+        return SpawnOutcome {
+            session,
+            warnings,
+            error: Some(format!("agent start: {e}")),
+            pane: Some(pane),
+        };
+    }
+    if let Err(e) = herdr.agent_prompt(&agent_name, &prompt) {
+        warnings.push(format!("{} prompt failed: {e}", session.id));
+    }
+    SpawnOutcome {
+        session,
+        warnings,
+        error: None,
+        pane: Some(pane),
+    }
+}
 
 impl Daemon {
     pub fn run_plan(&self, path: &Path) -> RunPlanAck {
@@ -24,7 +109,6 @@ impl Daemon {
         if let Some(secs) = parsed.stuck_after_secs {
             lock(&self.watchdog).set_stuck_after_secs(secs);
         }
-        let mut reg = self.registry();
         let started_at = self.now();
         let plan_title = path
             .file_stem()
@@ -37,14 +121,14 @@ impl Daemon {
         let mut prompts: Vec<(String, String)> = Vec::new(); // (session id, prompt)
 
         for sessions in &parsed.supervisors {
-            let sup_id = reg.allocate_supervisor();
+            let sup_id = self.alloc_supervisor();
             let sup_number: u32 = sup_id
                 .strip_prefix("SV-")
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(1);
             new_supervisor_ids.push((sup_id.clone(), plan_title.clone()));
             for ses in sessions {
-                let id = reg.allocate_session(sup_number);
+                let id = self.alloc_session(sup_number);
                 let session = SessionState {
                     id: id.clone(),
                     sup: sup_id.clone(),
@@ -71,6 +155,9 @@ impl Daemon {
                     session_ref: None,
                     escalated: false,
                     temp_dir: None,
+                    worktree: None,
+                    branch: None,
+                    base_rev: None,
                     backoff_until_ms: 0,
                     consecutive_decider_failures: 0,
                     stuck_strikes: 0,
@@ -81,7 +168,6 @@ impl Daemon {
                 new_sessions.push(session);
             }
         }
-        self.save_registry(&reg);
 
         // Spawn in plan order. No locks held across herdr IO.
         for session in new_sessions.iter_mut() {
@@ -126,7 +212,7 @@ impl Daemon {
             }
             inner.sessions.sort_by(|a, b| a.id.cmp(&b.id));
             inner.supervisors.sort_by_key(|s| s.number);
-            self.save_state(&inner);
+            self.save_now(&inner);
         }
         for (id, _) in &new_supervisor_ids {
             let _ = self
@@ -143,21 +229,19 @@ impl Daemon {
     }
 
     /// Best-effort, non-fatal pre-spawn hook. Resolves, in order:
-    /// NOTCH_PRE_SPAWN_HOOK (a shell snippet), the repo's
-    /// tools/opencode-default-model.sh (via CARGO_MANIFEST_DIR), then that
-    /// same path relative to the CWD. Missing or failing -> logged, never
-    /// fails the spawn. A 3 s timeout kills a hung hook.
+    /// NOTCH_PRE_SPAWN_HOOK (a shell snippet), then the repo's
+    /// tools/opencode-default-model.sh (via CARGO_MANIFEST_DIR). The old
+    /// relative-path fallback was deleted: it executed a script relative to
+    /// the daemon's unknown cwd (HARDENING §3.1). Missing or failing -> logged,
+    /// never fails the spawn. A 3 s timeout kills a hung hook.
     pub(crate) fn pre_spawn_hook(&self) {
         let candidates: Vec<String> = match std::env::var("NOTCH_PRE_SPAWN_HOOK") {
             Ok(h) if !h.trim().is_empty() => vec![h],
-            _ => vec![
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../../tools/opencode-default-model.sh"
-                )
-                .to_string(),
-                "tools/opencode-default-model.sh".to_string(),
-            ],
+            _ => vec![concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tools/opencode-default-model.sh"
+            )
+            .to_string()],
         };
         for candidate in candidates {
             if !candidate.contains(char::is_whitespace) && !Path::new(&candidate).exists() {
@@ -219,41 +303,37 @@ impl Daemon {
     /// Split a pane, start opencode inside it, prompt it. Creates the
     /// per-session temp dir. Returns Err on failure.
     pub(crate) fn spawn_one(&self, session: &mut SessionState, prompt: &str) -> Result<(), String> {
+        // A3's watchdog closes panes through supervisor::snapshot_worktree;
+        // install our exact snapshot before the first session can be killed.
+        crate::worktree::register_snapshot_hook();
         self.pre_spawn_hook();
-        let tmp = cleanup::session_tmp_dir(&self.config.tmp_dir, &session.id);
-        std::fs::create_dir_all(&tmp).map_err(|e| format!("temp dir {}: {e}", tmp.display()))?;
-        session.temp_dir = Some(tmp.to_string_lossy().to_string());
-
-        let env = vec![("NOTCH_SESSION_ID".to_string(), session.id.clone())];
-        let pane = self
-            .herdr
-            .pane_split(&session.cwd, &env)
-            .map_err(|e| format!("pane split: {e}"))?;
-        session.pane_id = pane.clone();
-
-        // The interactive opencode harness ignores --model (verified 2026-11-19:
-        // twice — a 30 s startup timeout, then agent_name_not_found). The model
-        // field is the DECIDER model only. The interactive session runs the
-        // configured default; never pass --model here.
-        let agent_name = agent_target(&session.id);
-        let start_result = self.herdr.agent_start(&agent_name, &pane);
-        if let Err(e) = start_result {
-            // We own the pane we just made — close it rather than leak it.
-            let _ = self.herdr.pane_close(&pane);
-            return Err(format!("agent start: {e}"));
-        }
-        if let Err(e) = self.herdr.agent_prompt(&agent_target(&session.id), prompt) {
-            // The agent exists; a lost prompt is degraded, not fatal.
-            // The watchdog will catch a session that never makes progress.
-            let mut inner = lock(&self.inner);
-            push_warning(&mut inner, format!("{} prompt failed: {e}", session.id));
-        }
-        let _ = self.event_log.append(
-            Some(session.id.clone()),
-            "spawn",
-            &format!("pane={pane} cwd={}", session.cwd),
+        let sessions = { lock(&self.inner).sessions.clone() };
+        let outcome = spawn_detached(
+            session.clone(),
+            prompt.to_string(),
+            self.herdr.clone(),
+            self.config.tmp_dir.clone(),
+            sessions,
         );
-        Ok(())
+        let SpawnOutcome { session: updated, warnings, error, pane } = outcome;
+        *session = updated;
+        {
+            let mut inner = lock(&self.inner);
+            for warning in warnings {
+                push_warning(&mut inner, warning);
+            }
+        }
+        if let Some(pane) = pane {
+            let _ = self.event_log.append(
+                Some(session.id.clone()),
+                "spawn",
+                &format!("pane={pane} cwd={}", session.cwd),
+            );
+        }
+        match error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     pub fn spawn(&self, supervisor: &str, prompt: &str, cwd: &str, title: &str) -> SpawnAck {
@@ -279,8 +359,7 @@ impl Daemon {
                 error: Some(format!("unknown supervisor `{supervisor}`")),
             };
         };
-        let mut reg = self.registry();
-        let id = reg.allocate_session(sup_number);
+        let id = self.alloc_session(sup_number);
         let now = self.now();
         let mut session = SessionState {
             id: id.clone(),
@@ -308,6 +387,9 @@ impl Daemon {
             session_ref: None,
             escalated: false,
             temp_dir: None,
+            worktree: None,
+            branch: None,
+            base_rev: None,
             backoff_until_ms: 0,
             consecutive_decider_failures: 0,
             stuck_strikes: 0,
@@ -323,12 +405,11 @@ impl Daemon {
                 push_warning(&mut inner, format!("{id} spawn failed: {e}"));
             }
         }
-        self.save_registry(&reg);
         {
             let mut inner = lock(&self.inner);
             inner.sessions.push(session);
             inner.sessions.sort_by(|a, b| a.id.cmp(&b.id));
-            self.save_state(&inner);
+            self.save_now(&inner);
         }
         self.notify_change();
         SpawnAck {
@@ -396,7 +477,6 @@ impl Daemon {
 
         // Resolve the supervisor: reroute into an existing one when
         // `supervisor_id` is set (nothing else allocated), else allocate.
-        let mut reg = self.registry();
         let (sup_id, sup_number, sup_title, allocating_supervisor) = match &supervisor_id {
             Some(id) => {
                 let existing = {
@@ -427,7 +507,7 @@ impl Daemon {
                     .map(|t| truncate_words(t, 48))
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| truncate_words(task_trim, 48));
-                let sup_id = reg.allocate_supervisor();
+                let sup_id = self.alloc_supervisor();
                 let sup_number: u32 = sup_id
                     .strip_prefix("SV-")
                     .and_then(|n| n.parse().ok())
@@ -435,8 +515,7 @@ impl Daemon {
                 (sup_id, sup_number, title_final, true)
             }
         };
-        let session_id = reg.allocate_session(sup_number);
-        self.save_registry(&reg);
+        let session_id = self.alloc_session(sup_number);
 
         let now = self.now();
         let supervisor = SupervisorMeta {
@@ -470,6 +549,9 @@ impl Daemon {
             session_ref: None,
             escalated: false,
             temp_dir: None,
+            worktree: None,
+            branch: None,
+            base_rev: None,
             backoff_until_ms: 0,
             consecutive_decider_failures: 0,
             stuck_strikes: 0,
@@ -477,27 +559,23 @@ impl Daemon {
             last_tails: std::collections::VecDeque::new(),
         };
 
-        // Same spawn path as run-plan. The agent prompt carries the FULL
-        // task text, untruncated.
-        let spawn_result = self.spawn_one(&mut session, &task);
+        // P2 fast ack: persist the allocated id + session FIRST, return the
+        // ack, and let a detached worker do the slow herdr readiness work.
+        // Failures are applied by supervise_once via SpawnOutcome and surface
+        // as snapshot warnings + failed status (never as a late ack error).
+        let spawn_session = session.clone();
+        let spawn_prompt = task.clone();
+        let herdr = self.herdr.clone();
+        let tmp_dir = self.config.tmp_dir.clone();
+        let existing = { lock(&self.inner).sessions.clone() };
+        let tx = self.spawn_sender();
+        std::thread::spawn(move || {
+            let outcome = spawn_detached(spawn_session, spawn_prompt, herdr, tmp_dir, existing);
+            let _ = tx.send(outcome);
+        });
 
-        let mut ok = true;
-        let mut error = None;
-        if let Err(e) = spawn_result {
-            session.status = Status::Failed;
-            session.failure_reason = Some("spawn_failed".to_string());
-            ok = false;
-            error = Some(format!("spawn failed: {e}"));
-            {
-                let mut inner = lock(&self.inner);
-                push_warning(&mut inner, format!("{session_id} spawn failed: {e}"));
-            }
-            let _ = self.event_log.append(
-                Some(session_id.clone()),
-                "escalate",
-                &format!("spawn_failed: {e}"),
-            );
-        }
+        let ok = true;
+        let error: Option<String> = None;
 
         {
             let mut inner = lock(&self.inner);
@@ -507,7 +585,7 @@ impl Daemon {
             inner.sessions.push(session);
             inner.sessions.sort_by(|a, b| a.id.cmp(&b.id));
             inner.supervisors.sort_by_key(|s| s.number);
-            self.save_state(&inner);
+            self.save_now(&inner);
         }
         if allocating_supervisor {
             let _ = self

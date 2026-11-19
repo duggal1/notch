@@ -78,27 +78,29 @@ fn commit_all(wt: &Path, msg: &str) {
     git_ok(wt, &["commit", "-qm", msg]);
 }
 
-/// Real merge in a throwaway worktree: does `branch` merge cleanly into a
-/// fresh checkout of `base_rev`? This is the oracle the predicate must agree
-/// with — no mocking of git's conflict rules.
-fn real_merge_conflicts(repo: &Path, base_rev: &str, branch: &str) -> bool {
-    let scratch = repo.parent().unwrap().join(format!("merge-oracle-{}", branch.replace('/', "_")));
+/// Real merge in a throwaway worktree: start at `base_rev`, merge BOTH
+/// branches. This is the oracle `merge-tree --write-tree A B` must agree with
+/// (the predicate is symmetric); no mocking of git's conflict rules.
+fn real_merge_conflicts(repo: &Path, base_rev: &str, branch_a: &str, branch_b: &str) -> bool {
+    let scratch = repo.parent().unwrap().join(format!(
+        "merge-oracle-{}-{}",
+        branch_a.replace('/', "_"),
+        branch_b.replace('/', "_")
+    ));
     let _ = std::fs::remove_dir_all(&scratch);
     git_ok(
         repo,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            "-d",
-            scratch.to_str().unwrap(),
-            base_rev,
-        ],
+        &["worktree", "add", "-q", "-d", scratch.to_str().unwrap(), base_rev],
     );
-    let out = git(&scratch, &["merge", "--no-edit", branch]);
-    let conflicted = !out.status.success();
-    // Abort a partially applied merge so worktree removal stays clean.
-    let _ = git(&scratch, &["merge", "--abort"]);
+    let mut conflicted = false;
+    for branch in [branch_a, branch_b] {
+        let out = git(&scratch, &["merge", "--no-edit", branch]);
+        if !out.status.success() {
+            conflicted = true;
+            let _ = git(&scratch, &["merge", "--abort"]);
+            break;
+        }
+    }
     git_ok(repo, &["worktree", "remove", "--force", scratch.to_str().unwrap()]);
     conflicted
 }
@@ -161,7 +163,10 @@ fn six_agents_same_file_separate_worktrees_zero_false_attribution() {
             "disjoint-line edit {} must not conflict with agent 0",
             i
         );
-        assert!(!real_merge_conflicts(&repo, &base_rev, &wts[i].branch), "real merge disagrees");
+        assert!(
+            !real_merge_conflicts(&repo, &base_rev, &wts[0].branch, &wts[i].branch),
+            "real merge disagrees"
+        );
     }
 }
 
@@ -195,12 +200,14 @@ fn conflict_predicate_agrees_with_real_merge() {
     let ac = worktree::conflicts(&repo, &base_rev, &a.branch, &c.branch).unwrap();
     assert!(!ab, "disjoint edits must be clean");
     assert!(ac, "same-line edits must conflict (merge-tree exit 1)");
-    assert_eq!(ab, real_merge_conflicts(&repo, &base_rev, &b.branch));
-    assert_eq!(ac, real_merge_conflicts(&repo, &base_rev, &c.branch));
+    assert_eq!(ab, real_merge_conflicts(&repo, &base_rev, &a.branch, &b.branch));
+    assert_eq!(ac, real_merge_conflicts(&repo, &base_rev, &a.branch, &c.branch));
 
-    // No auto-merge: predicate only reads, leaves both worktrees untouched.
-    assert_eq!(sample_git(&a.path), Vec::<String>::new());
-    assert_eq!(sample_git(&b.path), Vec::<String>::new());
+    // No auto-merge: the predicate only reads. Committed work is still
+    // attributed exactly (commits since base), and neither worktree was
+    // modified by the conflict check.
+    assert_eq!(sample_git(&a.path), vec!["shared.rs".to_string()]);
+    assert_eq!(sample_git(&b.path), vec!["shared.rs".to_string()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,11 +327,11 @@ fn pane_env_has_tmpdir_and_isolated_build_target() {
 
     // Pure function first: both branches of the optional build isolation.
     let a = worktree::pane_env(&cfg.tmp_dir, "S1-OC01", false);
-    assert!(a.iter().any(|(k, v)| k == "TMPDIR" && v == cfg.tmp_dir.join("notch-S1-OC01").to_string_lossy()));
+    assert!(a.iter().any(|(k, v)| k == "TMPDIR" && v.as_str() == cfg.tmp_dir.join("notch-S1-OC01").to_string_lossy()));
     assert!(a.iter().any(|(k, v)| k == "NOTCH_SESSION_ID" && v == "S1-OC01"));
     assert!(!a.iter().any(|(k, _)| k == "CARGO_TARGET_DIR"));
     let b = worktree::pane_env(&cfg.tmp_dir, "S1-OC01", true);
-    assert!(b.iter().any(|(k, v)| k == "CARGO_TARGET_DIR" && v == cfg.tmp_dir.join("notch-S1-OC01").join("build").to_string_lossy()));
+    assert!(b.iter().any(|(k, v)| k == "CARGO_TARGET_DIR" && v.as_str() == cfg.tmp_dir.join("notch-S1-OC01").join("build").to_string_lossy()));
 
     std::env::set_var("NOTCH_ISOLATE_BUILD", "1");
     let ack = daemon.submit_task(
@@ -385,6 +392,9 @@ fn fake_session(id: &str, status: Status, started_at: u64, tmp: &Path) -> Sessio
         session_ref: None,
         escalated: false,
         temp_dir: Some(tmp.to_string_lossy().to_string()),
+        worktree: None,
+        branch: None,
+        base_rev: None,
         backoff_until_ms: 0,
         consecutive_decider_failures: 0,
         stuck_strikes: 0,
@@ -417,8 +427,9 @@ fn disk_budget_evicts_dead_oldest_first_and_never_touches_dirty_or_live() {
         assert_eq!(i + 1, sessions.len());
     }
 
-    // Budget allows only ~150 KiB: oldest dead session must be evicted.
-    let (freed, warnings) = enforce_budget(&tmp, &sessions, 150 * 1024).unwrap();
+    // 300 KiB total; budget 200 KiB => only the oldest 100 KiB dead dir is
+    // evicted (remaining 200 KiB fits exactly).
+    let (freed, warnings) = enforce_budget(&tmp, &sessions, 200 * 1024).unwrap();
     assert!(freed >= 100 * 1024, "must free the oldest dead dir, freed={freed}");
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     assert!(!tmp.join("notch-S1-OC01").exists(), "oldest dead must be gone");
@@ -471,12 +482,65 @@ fn kill_snapshots_wip_before_cleanup() {
 
     // WIP was committed to this session's branch before the dir was removed.
     let msg = git_ok(meta.base_repo.as_path(), &["log", "-1", "--format=%s", &meta.branch]);
-    assert!(msg.contains("kill") || msg.contains("test kill"), "snapshot commit missing: {msg}");
+    assert!(msg.starts_with("notch snapshot:") && msg.contains(&id), "snapshot commit missing: {msg}");
     assert!(!meta.path.exists(), "clean worktree dir removed after snapshot");
 }
 
 // ---------------------------------------------------------------------------
-// 8. Non-git spawn warns loudly and falls back to the shared-cwd heuristic.
+// 8. Daemon conflicts come from real merges, not shared file names.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn daemon_conflicts_use_merge_tree_not_filenames() {
+    let root = tmp_root("daemon-conflicts");
+    let repo = init_repo(&root);
+    let cfg = test_config(&root);
+    std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
+    std::fs::create_dir_all(&cfg.state_dir).unwrap();
+    let capture = Arc::new(Capture::default());
+    let daemon = Daemon::open(test_config(&root), capture.herdr(), Arc::new(notchd::FakeClock::new(1_700_000_000_000))).unwrap();
+
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let ack = daemon.submit_task(
+            format!("worker {i}"),
+            Some(repo.to_string_lossy().to_string()),
+            None, None, None, None,
+        );
+        assert!(ack.ok, "{:?}", ack.error);
+        ids.push(ack.session_id.unwrap());
+    }
+
+    // 1 and 2 edit the SAME line (real conflict); 1 and 3 edit DIFFERENT
+    // lines (no conflict) — yet all three touched the same file name.
+    let wt1 = worktree::load(&cfg.tmp_dir, &ids[0]).unwrap();
+    let wt2 = worktree::load(&cfg.tmp_dir, &ids[1]).unwrap();
+    let wt3 = worktree::load(&cfg.tmp_dir, &ids[2]).unwrap();
+    edit_line(&wt1.path, 0, "one-line1");
+    edit_line(&wt2.path, 0, "two-line1");
+    edit_line(&wt3.path, 5, "three-line6");
+    for wt in [&wt1, &wt2, &wt3] {
+        commit_all(&wt.path, "worker edit");
+    }
+    for id in &ids {
+        daemon.record_attribution(id, &["shared.rs".to_string()]);
+    }
+
+    let conflicts = daemon.snapshot().conflicts;
+    let pair = |a: &str, b: &str| {
+        conflicts.iter().find(|c| {
+            c.file == "shared.rs"
+                && c.sessions.len() == 2
+                && c.sessions.iter().any(|s| s == a)
+                && c.sessions.iter().any(|s| s == b)
+        })
+    };
+    assert!(pair(&ids[0], &ids[1]).is_some(), "same-line pair must conflict: {conflicts:?}");
+    assert!(pair(&ids[0], &ids[2]).is_none(), "disjoint pair must NOT conflict: {conflicts:?}");
+}
+
+// ---------------------------------------------------------------------------
+// 9. Non-git spawn warns loudly and falls back to the shared-cwd heuristic.
 // ---------------------------------------------------------------------------
 
 #[test]
