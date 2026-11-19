@@ -227,13 +227,9 @@ impl WsClient {
             if remaining.is_zero() {
                 return None;
             }
-            match self.read_value_within(remaining) {
-                Some(v) => {
-                    if pred(&v) {
-                        return Some(v);
-                    }
-                }
-                None => return None,
+            let v = self.read_value_within(remaining)?;
+            if pred(&v) {
+                return Some(v);
             }
         }
     }
