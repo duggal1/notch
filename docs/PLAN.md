@@ -66,6 +66,13 @@ Latest everything, user-mandated: **Tauri v2 + Rust + React 19 + TypeScript (str
 
 Overlap rule: dirs are disjoint. `docs/bridge.md` is lead-owned; change requires lead sign-off.
 
+## UX (two surfaces + the dashboard the user demanded 2026-11-19)
+
+1. **Menu bar + notch popover** — live counts (working/idle/failed/total). Click any supervisor or OpenCode session ID → status, last action, kill / re-prompt / view logs. Daily driver. Gains one quiet affordance: "Open dashboard" in the header.
+2. **Standard macOS dashboard window** (a regular Tauri window in the same app) — full tree with IDs, status, filter, a **task composer**, per-session transcript + real re-prompts, kill/focus/cleanup, attribution + conflicts. This is where you *talk to the system*: type the job, Supervisor + session appear with permanent IDs.
+
+When you ask “show me how my agents are doing,” it focuses the relevant herdr pane or the dashboard; it never scatters windows.
+
 ## What we explicitly do NOT build
 
 Agent runtime / tool loop / sub-agents; interception of OpenCode internals; new terminal or multiplexer; screenshot/computer-use loops; negotiation protocols; cloud/teams/plugins/themes/marketplace; permanent disk mess; new Ghostty windows.

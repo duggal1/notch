@@ -38,9 +38,14 @@ Rules of engagement with the machine: never `open` a new window; panes are reque
 | Path | What |
 |---|---|
 | `crates/notchd/` | engine (lib + CLI), watchdog, herdr client, event log |
-| `ui/` | React popover implementing DESIGN.md |
-| `app/` | Tauri v2 shell (window, tray, commands/events) |
+| `ui/` | React popover + dashboard, implementing DESIGN.md |
+| `app/` | Tauri v2 shell (notch window, tray, dashboard window, commands/events) |
 | `docs/` | PLAN.md · bridge.md (wire contract) |
 | `examples/two-by-two.json` | prototype plan: 2 supervisors × 2 sessions |
+| `FONT.md` | type contract (weights 400/500, sentence case, tracking tied to size) |
 
-Icons in the popover are a hand-authored stroke family (no Apple assets redistributed). SF Symbols are not used; the one-symbol-family, one-weight discipline is.
+Icons in the UI are a hand-authored stroke family plus **on-device SF Symbols** (rendered by the Rust shell at runtime; never bundled or exported). Haptics via NSHapticFeedbackManager from the shell.
+
+## Talking to it
+
+Dashboard window (regular macOS window, in the dock / ⌘Tab): type the job in the composer, Enter — the orchestrator creates `SV-n` and `S<n>-OC01` with your task, and you can watch it, re-prompt it (real text, not a fixed string), kill it, read its transcript, or focus its herdr pane. The popover is for glance-status; the dashboard is for steering.

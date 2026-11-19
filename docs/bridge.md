@@ -2,7 +2,7 @@
 
 Three parties, one contract. If any of the three disagrees with this file, the implementation is wrong.
 
-Version: **1.1.1** (2026-11-19). v1.1: user stack override — Tauri v2 replaces the Swift/WKWebView host; §3 rewritten (JS ↔ Tauri commands/events instead of `webkit.messageHandlers`); §4 ownership rows updated. v1.1.1: `herdr pane close` takes a **positional** pane id, not `--pane` (corrected from Agent A's build report; the old text made the watchdog impossible). §1 (snapshot, IDs, status) unchanged. Changes require lead sign-off.
+Version: **1.3** (2026-11-19). v1.1: Tauri v2 replaces the Swift/WKWebView host (§3 rewritten). v1.1.1: `herdr pane close` takes a positional pane id. v1.2: user requirement — standard macOS dashboard window + supervisor task flow (`submit_task`, `open_dashboard`, §7). **v1.3: concept correction — notch adds only (A) agent-to-agent communication over our bus and (B) an autonomous, forceful supervisor with goal + definition of done + iteration/wall-clock budgets. The harness (OpenCode) is a black box: we never touch its internals, sub-agents, tool loop. New §8 (supervisor + bus semantics), §3/§2 new commands (`message`, `pause_supervisor`, `resume_supervisor`, `kill_switch`, `list_models`), §1.4 session control fields, §7 dashboard slices (multiplexer / comms / escalations). Snapshot shape §1.3 gains optional best-effort fields; all v1.2 consumers stay source-compatible.** Changes require lead sign-off.
 
 ---
 
@@ -62,21 +62,32 @@ Mapping from herdr (`agent_status`): `working→working`, `idle→idle`, `done�
       "lastAction": "editing src/auth.rs",   // best-effort, single line, from pane output
       "lastRevision": 12,                    // herdr pane revision (heartbeat)
       "latencyMs": 840,                      // rolling avg step latency, or null
-      "failureReason": null                  // string when status == "failed"
+      "failureReason": null,                 // string when status == "failed"
+      "goal": "…",                           // v1.3 optional store: the job text
+      "definitionOfDone": "tests pass + p95 < 200ms",  // v1.3 optional, user-supplied DoD
+      "iterations": 2,                       // v1.3 optional; re-prompts used on this session
+      "maxIterations": 8,                    // v1.3 optional; budget (default 8)
+      "wallClockDeadline": 1763523600000,    // v1.3 optional; ms epoch
+      "lastSupervisorAction": "re-prompt: tests not run",  // v1.3 optional + reason, one line
+      "model": "opencode/hy4-flash-free"     // v1.3 optional
     }
   ],
   "eps": 6.5,                                // bus events/sec, float
   "conflicts": [ { "file": "src/auth.rs", "sessions": ["S1-OC01", "S1-OC02"] } ],
   "attribution": [ { "session": "S1-OC01", "file": "src/auth.rs" } ],   // cap 24, newest first
+  "decisions": [ { "at": 1763520000000, "supervisor": "SV-1", "session": "S1-OC01", "action": "reprompt"|"done"|"escalate"|"verify"|"assign", "reason": "…" } ],  // v1.3, newest-first, cap 12
+  "escalations": [ { "id": "esc_1", "session": "S1-OC01", "supervisor": "SV-1", "kind": "stuck"|"loop_detected"|"budget_exceeded"|"blocked", "reason": "…", "at": 1763520000000 } ],  // v1.3, unresolved only
+  "busMessages": [ { "id": "msg_1", "from": "S1-OC01", "to": "S1-OC02", "type": "task"|"result"|"question"|"handoff"|"escalate", "preview": "…(≤140 chars)", "at": 1763520000000 } ],  // v1.3, newest-first, cap 30
   "warnings": []
 }
 ```
 
 Notes:
-- Extra optional fields may be added; none may be removed or renamed in v1.
+- Extra optional fields may be added; none may be removed or renamed in v1. All v1.3 fields are optional — v1.2 consumers keep working.
 - `supervisors` is ordered by id; `sessions` is ordered by id.
 - Empty tree is legal: `"supervisors": [], "sessions": [], "eps": 0`.
 - JS receives this object verbatim via `window.__push(snapshot)` — keys are `camelCase`.
+- v1.3 optional blocks always present when data exists; the UI must not require them.
 
 ---
 
@@ -92,6 +103,12 @@ Frame = one NDJSON object per line, either direction. Server sends `{ "event": "
 | `snapshot` | — | `{ "event": "snapshot", "snapshot": {…} }` |
 | `subscribe` | — | `{ "event": "ack", "cmd": "subscribe", "ok": true }` then a fresh `snapshot` event immediately, then on every change (debounced 100 ms) |
 | `run_plan` | `path: string` | spawns orchestrator plan; acks `{ ok, spawned: ["SV-1","SV-2"] }` or `{ ok:false, error }` |
+| `submit_task` | `task: string, cwd?: string, title?: string, definitionOfDone?: string, model?: string, supervisorId?: string` | v1.3. If `supervisorId` is set, routes into that existing supervisor (one more session under it); else allocates `SV-<n>` (title = task head ≤ 48 chars). Session `S<n>-OC<nn>` with `task` as the OpenCode prompt; `definitionOfDone` stored on the session and shown in UI; `model` passed to the harness at spawn. Returns `{ ok, supervisorId, sessionId, error? }`. `cwd` validated (must exist, be a dir). Deterministic skeleton — judgment happens only inside OpenCode calls (§8). |
+| `message` | `from: string, to: string, type: "task"\|"result"\|"question"\|"handoff"\|"escalate", body: string` | v1.3. Bus message, logged with FROM/TO, attributed, delivered to the target session as a normal prompt via `herdr agent prompt <target> <body>` (never a direct session→session channel). Ack `{ ok, messageId?, error? }`. |
+| `pause_supervisor` | `id: string` | v1.3. Stops the supervisor's re-prompting/new-work decisions for its sessions; live sessions keep running; `status` preserved (`paused: true` in snapshot). Ack. |
+| `resume_supervisor` | `id: string` | v1.3. Inverse of pause. Ack. |
+| `kill_switch` | — | v1.3. One click: closes every session the daemon manages (`herdr pane close <pane>`), marks them `failed` with reason `kill_switch`, runs cleanup. Ack with `closed: n`. |
+| `list_models` | — | v1.3. Returns `{ models: string[] }` parsed from `opencode models` (read-only), cached 5 min. On failure, `{ models: [], error }` — UI falls back to its default entry. |
 | `logs` | `id: string, tail?: number` (default 200) | `{ "event": "logs", "id": …, "lines": […] }` |
 | `reprompt` | `id: string, text: string` | ack; `herdr agent prompt <target> <text>` |
 | `cleanup` | `id?: string` | one session or global sweep; ack with `removed: n` |
@@ -104,9 +121,9 @@ Errors: `{ "event": "ack", "cmd": …, "ok": false, "error": "<machine-readable 
 
 ### herdr invocation surface (what the daemon is allowed to call)
 
-`herdr pane list` · `herdr agent list` · `herdr pane split --direction right --cwd <cwd>` · `herdr agent start <name> --kind opencode --pane <paneId>` · `herdr agent prompt <target> <text> [--wait]` · `herdr agent read <target>` · `herdr agent wait <target> --until idle --until done --until blocked` · `herdr pane close <paneId>`   ← positional argument, NOT `--pane` (v1.1.1 correction from Agent A's report; passing `--pane` errors out and the watchdog could never kill) · `herdr agent focus <target>`.
+`herdr pane list` · `herdr agent list` · `herdr pane split --direction right --cwd <cwd>` · `herdr agent start <name> --kind opencode --pane <paneId>` · `herdr agent prompt <target> <text> [--wait]` · `herdr agent read <target>` · `herdr agent wait <target> --until idle --until done --until blocked` · `herdr pane close <paneId>`   ← positional argument, NOT `--pane` (v1.1.1 correction from Agent A's report; passing `--pane` errors out and the watchdog could never kill) · `herdr agent focus <target>` · `opencode api GET /api/session`   ← v1.3: read-only activity signal (§8), via the same injectable runner (command: `opencode`) · `opencode models` (read-only, cached 5 min) · `opencode run --model <m> <prompt>` ← v1.3: supervisor decider calls only (§8; free models; black-box; never in the control path of the orchestrator itself).
 
-Nothing else. The daemon never creates windows, never touches panes it doesn't own, never runs `open` or `screencapture`.
+Nothing else. The daemon never creates windows, never touches panes it doesn't own, never runs `open` or `screencapture`. No filesystem access to OpenCode's internals.
 
 ---
 
@@ -123,6 +140,13 @@ Nothing else. The daemon never creates windows, never touches panes it doesn't o
 { "cmd": "cleanup", "id"?: "S1-OC01" }                // id → one session; absent → global sweep; returns { removed: n }
 { "cmd": "spawn", "supervisor": "SV-1", "prompt": "…", "cwd": "/…", "title": "…" }  // → { id }
 { "cmd": "run_plan", "path": "/…/two-by-two.json" }   // → { ok, spawned: […] }
+{ "cmd": "submit_task", "task": "…", "cwd"?: "/…", "title"?: "…", "definitionOfDone"?: "…", "model"?: "…", "supervisorId"?: "SV-1" }  // v1.3 → { ok, supervisorId, sessionId, error? }
+{ "cmd": "message", "from": "…", "to": "…", "type": "task"|"result"|"question"|"handoff"|"escalate", "body": "…" }              // v1.3 → { ok, messageId?, error? }
+{ "cmd": "pause_supervisor", "id": "SV-1" }                // v1.3 → { ok }
+{ "cmd": "resume_supervisor", "id": "SV-1" }               // v1.3 → { ok }
+{ "cmd": "kill_switch" }                                  // v1.3 → { ok, closed: n }
+{ "cmd": "list_models" }                                  // v1.3 → { models: string[], error? }
+{ "cmd": "open_dashboard" }                        // v1.2 → shows + focuses the dashboard window; ack only
 { "cmd": "set_frame", "mode": "rest" | "peek" | "open" } // resizes the notch window instantly; returns the applied rect
 { "cmd": "haptic", "kind": "alignment" | "levelChange" }  // no-op allowed in v0, must not error
 ```
@@ -130,13 +154,60 @@ Nothing else. The daemon never creates windows, never touches panes it doesn't o
 ### app → ui: events (via `listen(<event>, cb)`)
 
 ```jsonc
-"snapshot"  → the §1.3 snapshot object (emitted ~150 ms debounce on change, plus once on subscribe-equivalent)
+"snapshot"        → the §1.3 snapshot object (emitted ~150 ms debounce on change, plus once on subscribe-equivalent; carries decisions/escalations/busMessages caps)
 ```
 
-`logs` returns its payload directly from `invoke` — there is no separate log event in v1.1. `set_frame` resolves after the window is resized. Unknown commands → `Result::Err` with a plain sentence; the webview must treat every error as non-fatal and stay alive.
+`logs` returns its payload directly from `invoke` — there is no separate log event in v1.1+. `set_frame` resolves after the window is resized. Unknown commands → `Result::Err` with a plain sentence; the webview must treat every error as non-fatal and stay alive.
+
+v1.3 event additions (app → ui, same channel style): none beyond `snapshot` — the snapshot is the single source of truth for decisions/escalations/busMessages (capped, newest-first). The dashboard derives the multiplexer, comms and escalations views from it; do not add a second event path without bumping this contract.
+
+## 7. Surfaces (v1.2; v1.3 dashboard slices)
+
+Two webview surfaces ship from the **same** Vite bundle, routed by query string:
+
+- `index.html` (default) — the notch popover. Transparent, borderless, always-on-top; the only surface that calls `set_frame`.
+- `index.html?surface=dashboard` — the standard macOS dashboard window (regular decorations, titled, resizable, min 880×600, 1120×760 default, normal level, dock-visible; v1.3: app is a regular app — no LSUIElement trick, no activation-policy juggling). Never calls `set_frame`. Polls `logs` for live transcript (1 s cadence, only for the selected working session). Dashboard tabs (v1.3): **Tree** (default: sidebar + conversation + inspector, 3 panes), **Multiplexer** (grid of all sessions with live tails), **Comms** (bus log), **Escalations** (inbox of unresolved escalations). One window; tabs, not windows.
+
+The shell (app/) owns creating and focusing both; the frontend route-switch keys off `new URLSearchParams(location.search).get('surface') ?? 'popover'`.
+
+## 8. Supervisor + bus semantics (v1.3 — the only things notch adds)
+
+**OpenCode is a black box.** We never touch or mirror its sub-agents, tool loop, editing, or bash. A harness session is started, prompted, observed, killed. Nothing else.
+
+**A) Agent-to-agent communication.** All traffic goes through our bus → orchestrator/supervisor → the target session as a normal prompt. Never direct session→session channels. Every message is logged (`from`, `to`, `type`, `at`) and attributed, and visible in the UI comms view. Types: `task`, `result`, `question`, `handoff`, `escalate`. `message` command (§2/§3) is the only ingress. Delivery = `herdr agent prompt <target> <body>`.
+
+**B) Agent multiplexer + autonomous supervisor.** The supervisor spawns sessions, assigns each a goal, and keeps them working so the user never babysits.
+
+Per session the supervisor tracks:
+- `goal` — the job text.
+- `definitionOfDone` — a user-supplied, checkable condition (free text; the supervisor must verify it, not trust self-reports).
+- `iterationBudget` — max re-prompts per goal (default **8**). `wallClockBudget` — default 3600 s per goal.
+- `iterationsUsed` — incremented on each re-prompt.
+
+**Idle detection (verify-then-build).** Primary signal: poll `opencode api GET /api/session` (read-only v2 API, verified 2026-11-19: returns `time.busy`/`time.idle` ms, model, tokens, cost, directory, session ids matching herdr `agent_session.value`) every 2 s via the injectable runner; map pid-pane → session-id via `herdr agent list`; session is idle when `time.idle ≥ time.busy`. Secondary: herdr `agent_status` transitions (`working→idle/done`). Fallback: output-quiet heuristic (no `revision` or output change for 90 s while not spawning). **Log which signal fired** (`events.jsonl kind:"idle_signal"`). If primary is unavailable (opencode API unreachable), fall back automatically; never crash the poll loop.
+
+**Supervisor decision loop** (when a session's idle is detected):
+1. Read the session's tail output (`herdr agent read <target>`, last ~200 lines).
+2. Ask an OpenCode call (**free model `opencode/hy4-flash-free`** via `opencode run --model …`, black-box headless) to judge: `done` / `continue` / `stuck` — with the goal, the DoD, the tail output, and the iteration counter. The orchestrator makes **zero** model calls.
+3. `done` → verify DoD via the same call demanding evidence (tests/output/screenshot paths). Only mark session `done` when the verifier accepts evidence; otherwise re-prompt for the missing evidence.
+4. `continue` → paste the next prompt (concrete, specific, references what's missing). `iterations += 1`.
+5. `stuck` → re-prompt with a **different framing** (new instruction, not the same one). If stuck persists across 3 consecutive identical outputs or the same error repeats → **loop detection** → change strategy (fresh framing / new session / model swap) once, then **escalate**.
+6. Budgets: `iterations ≥ maxIterations` or wall-clock exceeded → **escalate**. Rate-limit (429/quota) → backoff with jitter + swap model once, never hammer.
+7. **Never** re-prompt a session that is `working`. **Never** re-prompt during an active tool call.
+8. Concurrent edits: attribute every change to a session id; serialize sessions touching the same files (wait for one to go idle); real conflicts → escalate, never auto-merge.
+9. **Kill switch**: `kill_switch` (§2/§3) — one click, closes all managed panes, marks failed, cleans up. **Pause**: `pause_supervisor` per supervisor. Both always one click, always work.
+10. Every decision is logged with its reason (`kind:"decision"`) and shown in the UI: e.g. `SV-1 re-prompted S1-OC02: tests not run`.
+
+**Acceptance test** (must pass, with logs + screenshots; the live demo for v1):
+1. One supervisor, one goal, with a checkable DoD.
+2. It spawns 2 sessions; one finishes idle with incomplete work.
+3. With zero user input, the supervisor detects idle, pastes a follow-up prompt, the session resumes.
+4. Session 1 sends a `handoff` to session 2 through the bus; it shows in the comms view with FROM/TO.
+5. A deliberately looping session is caught by loop detection and escalated — not retried forever.
+6. The supervisor marks DONE only after verifying the DoD with evidence.
 
 ### Permissions
-The webview receives ONLY: `core:event:allow-listen` / `allow-emit` (for snapshot) and the ten commands above. No fs, shell, dialog, http, or window plugins granted.
+The webview receives ONLY: `core:event:allow-listen` / `allow-emit` (for snapshot) and the commands above. No fs, shell, dialog, http, or window plugins granted.
 
 ---
 
@@ -158,7 +229,7 @@ The webview receives ONLY: `core:event:allow-listen` / `allow-emit` (for snapsho
 
 - State dir: `~/Library/Application Support/notch/` (override with `NOTCH_STATE_DIR`): `registry.json` (ID allocation), `state.json` (tree), `events.jsonl` (append-only event log, rotated at 4 MB), `notch.sock`.
 - Per-session temp dir: `$TMPDIR/notch-<id>/` — removed by cleanup.
-- Event log line: `{ "ts": …, "session": "S1-OC01"|null, "kind": "spawn|kill|status|reprompt|cleanup|conflict|escalate|watchdog", "detail": … }`
+- Event log line: `{ "ts": …, "session": "S1-OC01"|null, "kind": "spawn|kill|status|reprompt|cleanup|conflict|escalate|watchdog|message|decision|idle_signal", "detail": … }`
 
 ## 6. Process layout
 
