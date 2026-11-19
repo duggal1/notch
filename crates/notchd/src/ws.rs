@@ -551,6 +551,9 @@ fn handle_conn(
     // and before any daemon state is touched.
     let expected_token = token.to_string();
     let expected_host = expected_host.to_string();
+    // tungstenite's Callback trait fixes the error type to a by-value
+    // http::Response; boxing it is not possible without forking the trait.
+    #[allow(clippy::result_large_err)]
     let callback = move |req: &Request<()>, response| {
         let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
         let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok());

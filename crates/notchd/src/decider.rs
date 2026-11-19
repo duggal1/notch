@@ -96,7 +96,7 @@ pub fn strip_controls(s: &str) -> String {
             Some('[') => {
                 chars.next();
                 // CSI: parameters/intermediates then one final byte 0x40..0x7E.
-                while let Some(n) = chars.next() {
+                for n in chars.by_ref() {
                     if ('@'..='~').contains(&n) {
                         break;
                     }
