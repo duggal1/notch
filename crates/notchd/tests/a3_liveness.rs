@@ -5,9 +5,19 @@
 //! runners: no sleeps, no real subprocesses, no GUI, no `#[ignore]`.
 
 use notchd::clock::{Clock, FakeClock, SystemClock};
+use notchd::config::Config;
+use notchd::daemon::Daemon;
+use notchd::herdr::{Herdr, HerdrError};
+use notchd::opencode::Opencode;
 use notchd::status::Status;
 use notchd::supervisor::{decide_on_failure_with_reason, FailureAction};
 use notchd::watchdog::{Liveness, Obs, Watchdog};
+
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const T0: u64 = 1_763_520_000_000;
 
@@ -152,4 +162,446 @@ fn non_blocked_failures_keep_reprompt_then_escalate() {
         decide_on_failure_with_reason(None, 1, None),
         FailureAction::Escalate
     ));
+}
+
+// ---------- poll-level fakes and builders ----------
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn tmp_root(tag: &str) -> PathBuf {
+    let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let p = std::env::temp_dir().join(format!("notchd-a3-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).unwrap();
+    p
+}
+
+struct FakeHerdr {
+    calls: Mutex<Vec<Vec<String>>>,
+    agents: Mutex<Vec<Value>>,
+    split_seq: Mutex<u32>,
+}
+
+impl FakeHerdr {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            agents: Mutex::new(Vec::new()),
+            split_seq: Mutex::new(0),
+        })
+    }
+
+    fn set_agents(&self, agents: Vec<Value>) {
+        *self.agents.lock().unwrap() = agents;
+    }
+
+    fn calls(&self) -> Vec<Vec<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn close_count(&self) -> usize {
+        self.calls()
+            .iter()
+            .filter(|c| c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close"))
+            .count()
+    }
+
+    fn prompts(&self) -> Vec<String> {
+        self.calls()
+            .iter()
+            .filter(|c| c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("prompt"))
+            .map(|c| c.get(4).cloned().unwrap_or_default())
+            .collect()
+    }
+
+    fn herdr(self: &Arc<Self>) -> Herdr {
+        let fake = Arc::clone(self);
+        Herdr::with_runner(move |args| fake.run(args))
+    }
+
+    fn run(&self, args: &[String]) -> Result<String, HerdrError> {
+        self.calls.lock().unwrap().push(args.to_vec());
+        let sub = args.get(1).map(String::as_str).unwrap_or("");
+        let sub2 = args.get(2).map(String::as_str).unwrap_or("");
+        match (sub, sub2) {
+            ("agent", "list") => Ok(serde_json::json!({
+                "id": "cli:agent:list",
+                "result": { "agents": self.agents.lock().unwrap().clone() }
+            })
+            .to_string()),
+            ("pane", "split") => {
+                let mut seq = self.split_seq.lock().unwrap();
+                *seq += 1;
+                Ok(serde_json::json!({
+                    "id": "cli:pane:split",
+                    "result": { "pane": { "pane_id": format!("wT:p{seq}") } }
+                })
+                .to_string())
+            }
+            ("agent", "start") | ("agent", "prompt") | ("pane", "close") => {
+                Ok(r#"{"result":{"type":"ok"}}"#.to_string())
+            }
+            ("agent", "read") => Ok("still working on it\n".to_string()),
+            _ => Err(HerdrError::Failed {
+                args: args.to_vec(),
+                code: Some(2),
+                stderr: format!("unexpected herdr call {}", args.join(" ")),
+            }),
+        }
+    }
+}
+
+fn fake_opencode() -> Opencode {
+    Opencode::with_runner(|args| {
+        if args.get(1).map(String::as_str) == Some("api") {
+            Ok(r#"{"cursor":null,"data":[]}"#.to_string())
+        } else {
+            Err(HerdrError::Failed {
+                args: args.to_vec(),
+                code: Some(2),
+                stderr: "no decider expected".to_string(),
+            })
+        }
+    })
+}
+
+fn agent(pane: &str, status: &str, revision: u64) -> Value {
+    serde_json::json!({
+        "pane_id": pane,
+        "agent_status": status,
+        "revision": revision,
+        "agent_session": { "kind": "id", "value": format!("ses_{pane}") },
+        "cwd": "/tmp",
+        "focused": false
+    })
+}
+
+fn config(root: &Path) -> Config {
+    Config {
+        state_dir: root.join("state"),
+        tmp_dir: root.join("tmp"),
+        stuck_after_secs: 15,
+        poll_interval_ms: 2_000,
+        opencode_decider: false,
+    }
+}
+
+fn build(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>) -> Daemon {
+    std::env::set_var("NOTCH_PRE_SPAWN_HOOK", "/bin/true");
+    let cfg = config(root);
+    std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
+    let daemon = Daemon::open(cfg, fake.herdr(), clock).unwrap();
+    daemon.set_opencode(fake_opencode());
+    daemon
+}
+
+fn plan(root: &Path, n: usize) -> PathBuf {
+    let cwd = root.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let sessions: Vec<Value> = (0..n)
+        .map(|i| {
+            serde_json::json!({
+                "title": format!("Task number {i}"),
+                "prompt": format!("Do task number {i}"),
+                "cwd": cwd
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "stuck_after_secs": 15,
+        "supervisors": [{ "sessions": sessions }]
+    });
+    let path = root.join("plan.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    path
+}
+
+fn spawn(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>, n: usize) -> (Daemon, Vec<String>) {
+    let daemon = build(root, fake, clock);
+    assert!(daemon.run_plan(&plan(root, n)).ok);
+    let panes = (1..=n).map(|i| format!("wT:p{i}")).collect();
+    (daemon, panes)
+}
+
+fn session_cwd(root: &Path) -> PathBuf {
+    let bytes = std::fs::read(root.join("state").join("state.json")).unwrap();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    PathBuf::from(v["sessions"][0]["cwd"].as_str().unwrap())
+}
+
+fn escalation_kinds(daemon: &Daemon) -> Vec<String> {
+    daemon
+        .snapshot()
+        .escalations
+        .iter()
+        .map(|e| e.kind.clone())
+        .collect()
+}
+
+// ---------- T3: stall guard + the exact regression ----------
+
+#[test]
+fn stalled_hour_plus_revision_change_in_same_poll_never_kills() {
+    let root = tmp_root("stall-rev");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once(); // prime: timestamp = mono T0
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
+
+    // The daemon did not tick for an hour, AND the session made progress in
+    // the very poll that resumes. Both signals must veto a kill.
+    clock.advance_mono_ms(3_600_000);
+    fake.set_agents(vec![agent(pane, "working", 8)]);
+    daemon.poll_once();
+
+    let snap = daemon.snapshot();
+    assert_eq!(snap.sessions[0].status, Status::Working, "revision change wins over stalled timestamp");
+    assert_eq!(snap.sessions[0].failure_reason, None);
+    assert_eq!(fake.close_count(), 0, "no pane close on a stalled hour + revision change");
+    assert!(!escalation_kinds(&daemon).iter().any(|k| k == "stuck" || k == "stuck_suspect"));
+    assert!(snap.warnings.iter().any(|w| w.contains("watchdog stall")), "stall logged: {:?}", snap.warnings);
+}
+
+#[test]
+fn stall_alone_grants_grace_without_killing() {
+    let root = tmp_root("stall-alone");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once();
+
+    clock.advance_mono_ms(3_600_000); // no revision change at all
+    daemon.poll_once();
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
+    assert_eq!(fake.close_count(), 0);
+    assert!(escalation_kinds(&daemon).is_empty(), "stall grants grace, no escalation");
+    assert!(daemon.snapshot().warnings.iter().any(|w| w.contains("grace granted")));
+}
+
+// ---------- action ladder ----------
+
+#[test]
+fn suspect_nudges_and_escalates_once_without_closing_pane() {
+    let root = tmp_root("suspect");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once();
+
+    clock.advance_ms(15_000); // exactly the suspicion threshold
+    daemon.poll_once();
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
+    assert_eq!(fake.close_count(), 0, "Suspect never closes a pane");
+    assert!(escalation_kinds(&daemon).contains(&"stuck_suspect".to_string()));
+    let prompts = fake.prompts();
+    assert_eq!(prompts.len(), 1, "one nudge, not one per tick: {prompts:?}");
+    assert!(!prompts[0].contains("Diagnose and continue"), "nudge is not a failure re-prompt");
+
+    daemon.poll_once(); // same instant: no repeat nudge
+    assert_eq!(fake.prompts().len(), 1, "nudge deduped within an episode");
+}
+
+#[test]
+fn stuck_escalates_but_keeps_pane_when_kill_is_off() {
+    let root = tmp_root("stuck-keep");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once();
+
+    clock.advance_ms(30_000); // 2x threshold
+    daemon.poll_once();
+    let snap = daemon.snapshot();
+    assert_eq!(snap.sessions[0].status, Status::Working, "Stuck without opt-in is not failed");
+    assert_eq!(fake.close_count(), 0);
+    assert!(escalation_kinds(&daemon).contains(&"stuck".to_string()));
+    assert!(snap.warnings.iter().any(|w| w.contains("kill_on_stuck is OFF")));
+}
+
+#[test]
+fn stuck_with_kill_on_stuck_snapshots_wip_before_close() {
+    let root = tmp_root("stuck-kill");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    let cwd = session_cwd(&root);
+
+    // A real git repo with an uncommitted file: the snapshot must capture it.
+    let run_git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .status()
+                .unwrap()
+                .success(),
+            "git {:?} failed",
+            args
+        );
+    };
+    run_git(&["-C", cwd.to_str().unwrap(), "init", "-q"]);
+    run_git(&["-C", cwd.to_str().unwrap(), "config", "user.email", "a3@example.test"]);
+    run_git(&["-C", cwd.to_str().unwrap(), "config", "user.name", "A3 Test"]);
+    std::fs::write(cwd.join("README.md"), "initial\n").unwrap();
+    run_git(&["-C", cwd.to_str().unwrap(), "add", "-A"]);
+    run_git(&["-C", cwd.to_str().unwrap(), "commit", "-qm", "initial"]);
+    std::fs::write(cwd.join("WIP.txt"), "uncommitted work\n").unwrap();
+
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once();
+    daemon.set_kill_on_stuck(true);
+    clock.advance_ms(30_000);
+    daemon.poll_once();
+
+    let subject = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["-C", cwd.to_str().unwrap(), "log", "-1", "--pretty=%s"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        subject.contains("notch WIP snapshot"),
+        "WIP was snapshotted before close; last commit was {subject:?}"
+    );
+    assert_eq!(fake.close_count(), 1, "opt-in kill closes exactly one pane");
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
+    assert_eq!(daemon.snapshot().sessions[0].failure_reason.as_deref(), Some("stuck"));
+}
+
+// ---------- section 3.8 at the poll level ----------
+
+#[test]
+fn blocked_keeps_pane_and_temp_and_never_types_a_prompt() {
+    let root = tmp_root("blocked-human");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    let temp = root.join("tmp").join("notch-S1-OC01");
+    assert!(temp.exists(), "spawn creates the session temp dir");
+
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once(); // prime
+    fake.set_agents(vec![agent(pane, "blocked", 8)]);
+    clock.advance_ms(1_000);
+    daemon.poll_once();
+
+    let snap = daemon.snapshot();
+    assert!(!snap.sessions[0].status.is_terminal(), "blocked is not failed: {}", snap.sessions[0].status);
+    assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("blocked_waiting"));
+    assert_eq!(fake.prompts(), Vec::<String>::new(), "never type into a permission prompt");
+    assert_eq!(fake.close_count(), 0, "pane kept for the human");
+    assert!(temp.exists(), "temp dir kept for the human");
+    assert!(escalation_kinds(&daemon).contains(&"needs_you".to_string()));
+}
+
+// ---------- T3: 20 sessions, one truly stuck ----------
+
+#[test]
+fn twenty_sessions_one_truly_stuck_zero_false_positives() {
+    let root = tmp_root("twenty");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 20);
+    let stuck_pane = panes[7].clone();
+
+    let mut ticks: Vec<Duration> = Vec::new();
+    for tick in 1..=20u64 {
+        let revision = 100 + tick;
+        let agents = panes
+            .iter()
+            .map(|p| {
+                if p == &stuck_pane {
+                    agent(p, "working", 7) // frozen from the priming poll
+                } else {
+                    agent(p, "working", revision)
+                }
+            })
+            .collect();
+        fake.set_agents(agents);
+        clock.advance_ms(15_000);
+        let t = Instant::now();
+        daemon.poll_once();
+        ticks.push(t.elapsed());
+    }
+
+    let snap = daemon.snapshot();
+    assert_eq!(snap.sessions.len(), 20);
+    assert_eq!(snap.sessions[7].status, Status::Working, "stuck escalation keeps pane by default");
+    let escalated: Vec<&str> = snap
+        .escalations
+        .iter()
+        .filter(|e| e.kind == "stuck" || e.kind == "stuck_suspect")
+        .map(|e| e.session.as_str())
+        .collect();
+    assert!(escalated.contains(&"S1-OC08"), "the one truly stuck session was flagged: {escalated:?}");
+    assert_eq!(escalated.iter().filter(|s| **s != "S1-OC08").count(), 0, "zero false positives: {escalated:?}");
+    assert_eq!(fake.close_count(), 0, "kill_on_stuck default OFF");
+
+    ticks.sort();
+    let p99 = ticks[ticks.len() - 1]; // 20 samples: worst == p99 here
+    let bound = Duration::from_millis(2 * config(&root).poll_interval_ms);
+    assert!(p99 <= bound, "tick gap p99 {p99:?} exceeded 2x poll interval {bound:?}");
+    eprintln!("A3 T3: 20 sessions, 20 ticks, p99={}ms, false_positives=0", p99.as_millis());
+}
+
+// ---------- T4: clock chaos ----------
+
+#[test]
+fn clock_chaos_wall_jumps_never_kill() {
+    let root = tmp_root("clock-chaos");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once();
+
+    // +1h wall jump, only 5s of real elapsed time.
+    clock.set(T0 + 3_600_000);
+    clock.advance_mono_ms(5_000);
+    daemon.poll_once();
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
+    assert_eq!(fake.close_count(), 0);
+
+    // -1h wall jump, another 5s of real elapsed time.
+    clock.set(T0 - 3_600_000);
+    clock.advance_mono_ms(5_000);
+    daemon.poll_once();
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
+    assert_eq!(fake.close_count(), 0);
+    assert!(!escalation_kinds(&daemon).iter().any(|k| k == "stuck"));
+}
+
+#[test]
+fn wall_clock_alone_cannot_age_a_session() {
+    let root = tmp_root("wall-only");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once();
+
+    // A +2h wall jump with zero monotonic elapsed time. All liveness
+    // decisions must be unaffected, even though wall now_ms moved hours.
+    clock.set(T0 + 7_200_000);
+    daemon.poll_once();
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
+    assert!(escalation_kinds(&daemon).is_empty());
+    assert_eq!(fake.close_count(), 0);
 }
