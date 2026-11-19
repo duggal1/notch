@@ -175,4 +175,45 @@ mod tests {
         );
         assert_eq!(fs::read(backup_path(&path, 1)).unwrap(), b"original");
     }
+
+    fn set_mtime(path: &Path, at: std::time::SystemTime) {
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(at).unwrap();
+    }
+
+    #[test]
+    fn backups_are_time_spaced_not_rotated_on_every_write() {
+        use std::time::{Duration, SystemTime};
+        let dir = test_dir("spaced");
+        let path = dir.join("state.json");
+
+        write_atomic(&path, b"v1").unwrap();
+        // A rapid burst (all inside the 60 s tier) must not churn bak2/bak3.
+        // Only bak1 exists, holding the first snapshot.
+        for v in [b"v2".as_slice(), b"v3", b"v4", b"v5"] {
+            write_atomic(&path, v).unwrap();
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"v5");
+        assert_eq!(fs::read(backup_path(&path, 1)).unwrap(), b"v1");
+        assert!(!backup_path(&path, 2).exists(), "bak2 waits for 900 s");
+        assert!(!backup_path(&path, 3).exists(), "bak3 waits for 3600 s");
+
+        // Age bak1 past the 60 s tier: it refreshes from live, bak2 still waits.
+        set_mtime(&backup_path(&path, 1), SystemTime::now() - Duration::from_secs(61));
+        write_atomic(&path, b"v6").unwrap();
+        assert_eq!(fs::read(backup_path(&path, 1)).unwrap(), b"v5");
+        assert!(!backup_path(&path, 2).exists(), "bak2 still waits for 900 s");
+
+        // Age bak1 past the 900 s tier: bak2 is refreshed from bak1.
+        set_mtime(&backup_path(&path, 1), SystemTime::now() - Duration::from_secs(901));
+        write_atomic(&path, b"v7").unwrap();
+        assert!(backup_path(&path, 2).exists(), "bak2 due at 900 s");
+
+        // Age bak2 past the 3600 s tier: bak3 is refreshed from bak2.
+        set_mtime(&backup_path(&path, 2), SystemTime::now() - Duration::from_secs(3601));
+        write_atomic(&path, b"v8").unwrap();
+        assert!(backup_path(&path, 3).exists(), "bak3 due at 3600 s");
+        assert_eq!(fs::read(&path).unwrap(), b"v8");
+        assert!(!tmp_path(&path).exists(), "no .tmp may survive a completed write");
+    }
 }

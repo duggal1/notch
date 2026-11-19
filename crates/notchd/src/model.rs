@@ -283,3 +283,45 @@ impl StateFile {
         }
     }
 }
+
+#[cfg(test)]
+mod a4_tests {
+    //! Schema ownership (HARDENING §2): the isolation fields are additive and
+    //! every one is `#[serde(default)]`. A pre-isolation state file must load
+    //! with all three unset, and a file that carries them must round-trip.
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// Back-compat fixture: a real v1.3 state file written before worktrees
+    /// existed. It has no `worktree` / `branch` / `base_rev` keys.
+    const LEGACY_STATE: &str = include_str!("../tests/fixtures/state/legacy-session.json");
+
+    #[test]
+    fn legacy_state_fixture_loads_with_isolation_fields_unset() {
+        let state: StateFile = serde_json::from_str(LEGACY_STATE).expect("legacy fixture must parse");
+        assert_eq!(state.sessions.len(), 1);
+        let value = serde_json::to_value(&state.sessions[0]).unwrap();
+        // With #[serde(default)] the fields exist on re-serialization and are
+        // null. Before they were added, the keys were absent entirely.
+        assert!(value.get("worktree").is_some(), "worktree key must survive round-trip");
+        assert!(value.get("branch").is_some(), "branch key must survive round-trip");
+        assert!(value.get("base_rev").is_some(), "base_rev key must survive round-trip");
+        assert!(value["worktree"].is_null());
+        assert!(value["branch"].is_null());
+        assert!(value["base_rev"].is_null());
+    }
+
+    #[test]
+    fn isolation_fields_round_trip_when_present() {
+        let mut value: Value = serde_json::from_str(LEGACY_STATE).unwrap();
+        let session = &mut value["sessions"][0];
+        session["worktree"] = json!("/tmp/notch-wt/S1-OC01");
+        session["branch"] = json!("notch/S1-OC01");
+        session["base_rev"] = json!("deadbeefcafe");
+        let parsed: StateFile = serde_json::from_value(value).unwrap();
+        let out = serde_json::to_value(&parsed.sessions[0]).unwrap();
+        assert_eq!(out["worktree"], json!("/tmp/notch-wt/S1-OC01"));
+        assert_eq!(out["branch"], json!("notch/S1-OC01"));
+        assert_eq!(out["base_rev"], json!("deadbeefcafe"));
+    }
+}

@@ -84,3 +84,91 @@ impl Registry {
         }
     }
 }
+
+#[cfg(test)]
+mod a4_tests {
+    //! Crash-consistency contracts for the ID allocator. These tests compile
+    //! against the pre-fix API and FAIL until recovery / persist-before-use
+    //! land (RED first, HARDENING §0.1).
+    use super::*;
+    use crate::clock::SystemClock;
+    use serde_json::Value;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn test_dir(tag: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("notch-reg-{tag}-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn backup(path: &Path, n: usize) -> PathBuf {
+        PathBuf::from(format!("{}.bak{n}", path.display()))
+    }
+
+    #[test]
+    fn load_recovers_ids_from_backup_when_live_is_corrupt() {
+        let dir = test_dir("recover");
+        let path = dir.join("registry.json");
+        let mut reg = Registry::fresh();
+        reg.allocate_supervisor();
+        let a = reg.allocate_session(1);
+        let b = reg.allocate_session(1);
+        reg.save(&path).unwrap();
+        fs::copy(&path, backup(&path, 1)).unwrap();
+
+        // Simulate a torn live file after a crash.
+        fs::write(&path, b"{\"version\":1,\"supervisorC").unwrap();
+        let mut recovered = Registry::load(&path, &SystemClock);
+        assert!(
+            recovered.ids().contains(&a) && recovered.ids().contains(&b),
+            "recovery must find ids in the rolling backup, not reset to SV-1"
+        );
+        // The next allocation must not repeat a recovered id.
+        let c = recovered.allocate_session(1);
+        assert_ne!(c, a);
+        assert_ne!(c, b);
+    }
+
+    #[test]
+    fn load_never_adopts_a_tmp_file() {
+        let dir = test_dir("tmp");
+        let path = dir.join("registry.json");
+        let mut good = Registry::fresh();
+        good.allocate_supervisor();
+        let real = good.allocate_session(1);
+        good.save(&path).unwrap();
+        fs::copy(&path, backup(&path, 1)).unwrap();
+
+        let mut canary = Registry::fresh();
+        canary.allocate_supervisor();
+        let fake = canary.allocate_session(1);
+        fs::write(crate::durable::tmp_path(&path), serde_json::to_vec(&canary).unwrap()).unwrap();
+        fs::write(&path, b"not json").unwrap();
+
+        let recovered = Registry::load(&path, &SystemClock);
+        assert!(recovered.ids().contains(&real), "backup ids must be recovered");
+        assert!(!recovered.ids().contains(&fake), "a .tmp file must NEVER be adopted");
+    }
+
+    #[test]
+    fn allocation_is_persisted_before_the_id_is_returned() {
+        let dir = test_dir("persist");
+        let path = dir.join("registry.json");
+        let mut reg = Registry::fresh();
+        reg.allocate_supervisor();
+        reg.save(&path).unwrap();
+        // Re-load so the registry knows its own path (as open() does).
+        let mut reg = Registry::load(&path, &SystemClock);
+        let id = reg.allocate_session(1);
+        let on_disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            on_disk["ids"].as_array().unwrap().iter().any(|v| v == &id),
+            "the id must be on disk before allocate returns it"
+        );
+    }
+}
