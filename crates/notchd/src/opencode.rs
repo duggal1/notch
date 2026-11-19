@@ -5,47 +5,59 @@
 //! Surfaces used (bridge.md v1.3 §2/§8 — nothing else):
 //! - `opencode api GET /api/session` (read-only; activity signal)
 //! - `opencode models`               (read-only; model list)
-//! - `opencode run --model <m> <prompt>`  (decider calls only; never the
-//!   orchestrator control path)
+//! - `opencode run --model <m> --auto --session ses_notch_<id> <prompt>`
+//!   (decider calls only; never the orchestrator control path)
 //!
-//! All parses are tolerant; failures are `HerdrError`, never panics.
+//! **Every subprocess goes through `crate::proc::run`.** No local spawn, no
+//! local timeout loop. Deadlines come from A2's frozen constants, with
+//! `NOTCH_OPENCODE_TIMEOUT_MS` as an ops/test override.
+//!
+//! Per user override 2026-11-20 the decider has FULL tool access: `--auto` is
+//! intentionally kept so tool calls never block on permission prompts, and
+//! there is no empty scratch dir — the judge runs in the session's real cwd
+//! so it can read real files and command output as evidence.
 
 use crate::herdr::HerdrError;
+use crate::proc::{self, ProcError, Spec, TIMEOUT_DECIDER, TIMEOUT_OPENCODE_API};
 use serde::Deserialize;
-use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 type Runner = Arc<dyn Fn(&[String]) -> Result<String, HerdrError> + Send + Sync>;
 
-/// Default hard deadline for a single opencode subprocess call (milliseconds).
-pub const DEFAULT_TIMEOUT_MS: u64 = 1500;
-/// Environment override for the per-call deadline.
+/// Default hard deadline for `api` / `models` (A2's frozen constant, 8 s).
+pub const DEFAULT_TIMEOUT_MS: u64 = TIMEOUT_OPENCODE_API.as_millis() as u64;
+/// Default hard deadline for a decider `run` (A2's frozen constant, 90 s).
+pub const DEFAULT_DECIDER_TIMEOUT_MS: u64 = TIMEOUT_DECIDER.as_millis() as u64;
+/// Ops/test override for the per-call deadline.
 pub const TIMEOUT_ENV: &str = "NOTCH_OPENCODE_TIMEOUT_MS";
-/// Short grace for reaping a child that has already closed its pipes.
-const REAP_GRACE_MS: u64 = 250;
 
-/// Resolve the per-call deadline safely. Missing, non-numeric, zero or
-/// overflowing values fall back to [`DEFAULT_TIMEOUT_MS`] and warn on stderr
-/// (the daemon captures stderr into its logs).
-pub fn timeout_ms() -> u64 {
+fn timeout_or(default_ms: u64) -> u64 {
     let Ok(raw) = std::env::var(TIMEOUT_ENV) else {
-        return DEFAULT_TIMEOUT_MS;
+        return default_ms;
     };
     match raw.trim().parse::<u64>() {
         Ok(ms) if ms > 0 => ms,
         Ok(_) => {
-            eprintln!(
-                "opencode: {TIMEOUT_ENV}={raw:?} must be > 0; using default {DEFAULT_TIMEOUT_MS}ms"
-            );
-            DEFAULT_TIMEOUT_MS
+            eprintln!("opencode: {TIMEOUT_ENV}={raw:?} must be > 0; using default {default_ms}ms");
+            default_ms
         }
         Err(e) => {
-            eprintln!(
-                "opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {DEFAULT_TIMEOUT_MS}ms"
-            );
-            DEFAULT_TIMEOUT_MS
+            eprintln!("opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {default_ms}ms");
+            default_ms
         }
     }
+}
+
+/// Per-call deadline for the read-only surfaces.
+pub fn timeout_ms() -> u64 {
+    timeout_or(DEFAULT_TIMEOUT_MS)
+}
+
+/// Per-call deadline for a decider judgment.
+pub fn decider_timeout_ms() -> u64 {
+    timeout_or(DEFAULT_DECIDER_TIMEOUT_MS)
 }
 
 /// `true` when `e` is the typed timeout error from the subprocess seam.
@@ -55,106 +67,6 @@ pub fn is_timeout_error(e: &HerdrError) -> bool {
 
 fn timeout_error(ms: u64) -> HerdrError {
     HerdrError::Io(format!("opencode timeout after {ms}ms"))
-}
-
-/// Poll `try_wait` until the child exits or `deadline` passes. Avoids an
-/// unbounded `wait()` if a child closes its pipes but lingers.
-fn wait_bounded(
-    child: &mut std::process::Child,
-    deadline: Instant,
-) -> Option<std::process::ExitStatus> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {}
-            Err(_) => return None,
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
-/// Run one opencode CLI call behind a hard deadline.
-///
-/// A single reader thread drains stdout then stderr so a hung child cannot
-/// wedge the caller; `recv_timeout` caps the wait. On expiry the child is
-/// killed and reaped before the typed timeout error is returned. The reader
-/// thread observes pipe EOF once the child dies and exits on its own, so no
-/// thread is leaked per call.
-fn invoke_process(argv: &[String]) -> Result<String, HerdrError> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-
-    let ms = timeout_ms();
-    let timeout = Duration::from_millis(ms);
-
-    let mut child = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| HerdrError::Io(format!("{}: {e}", argv[0])))?;
-
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| HerdrError::Io("opencode: missing stdout pipe".into()))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| HerdrError::Io("opencode: missing stderr pipe".into()))?;
-    let (tx, rx) = mpsc::channel();
-    // Detached: on kill the pipes close, the reads return EOF, the thread ends.
-    std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        let _ = stderr.read_to_end(&mut err);
-        let _ = tx.send((out, err));
-    });
-
-    let (out, err) = match rx.recv_timeout(timeout) {
-        Ok(pair) => pair,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait(); // reap: no zombie/orphan left behind
-            return Err(timeout_error(ms));
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            // Reader died unexpectedly; never wedge the poll because of it.
-            let grace = Instant::now() + Duration::from_millis(REAP_GRACE_MS);
-            if wait_bounded(&mut child, grace).is_none() {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(timeout_error(ms));
-            }
-            (Vec::new(), Vec::new())
-        }
-    };
-
-    let status = match wait_bounded(
-        &mut child,
-        Instant::now() + Duration::from_millis(REAP_GRACE_MS),
-    ) {
-        Some(status) => status,
-        None => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(timeout_error(ms));
-        }
-    };
-
-    if !status.success() {
-        return Err(HerdrError::Failed {
-            args: argv[1..].to_vec(),
-            code: status.code(),
-            stderr: String::from_utf8_lossy(&err).trim().to_string(),
-        });
-    }
-    Ok(String::from_utf8_lossy(&out).to_string())
 }
 
 #[derive(Clone)]
@@ -183,63 +95,116 @@ impl Opencode {
         }
     }
 
-    fn invoke_argv(&self, argv: &[String]) -> Result<String, HerdrError> {
+    /// The one production seam. `cwd` is passed through so a judge can work in
+    /// the session's real worktree; `timeout` is always bounded by `proc::run`.
+    fn invoke_argv(
+        &self,
+        argv: &[String],
+        cwd: Option<&Path>,
+        timeout: Duration,
+    ) -> Result<String, HerdrError> {
         if let Some(runner) = &self.runner {
             return runner(argv);
         }
-        invoke_process(argv)
+        if argv.is_empty() {
+            return Err(HerdrError::Io("opencode: empty argv".into()));
+        }
+        let spec = Spec {
+            cmd: &argv[0],
+            args: &argv[1..],
+            cwd,
+            env: &[],
+            timeout,
+            max_out: 4 * 1024 * 1024,
+        };
+        match proc::run(&spec) {
+            Ok(out) => Ok(out.stdout),
+            Err(ProcError::Spawn(e)) => Err(HerdrError::Io(e)),
+            Err(ProcError::Timeout { after }) => {
+                Err(timeout_error(after.as_millis().min(u64::MAX as u128) as u64))
+            }
+            Err(ProcError::Failed { code, stderr }) => Err(HerdrError::Failed {
+                args: argv[1..].to_vec(),
+                code,
+                stderr,
+            }),
+        }
+    }
+
+    fn read_seam(&self, argv: &[String]) -> Result<String, HerdrError> {
+        self.invoke_argv(argv, None, Duration::from_millis(timeout_ms()))
     }
 
     pub fn api_session_list(&self) -> Result<Vec<ApiSession>, HerdrError> {
         let argv = vec![self.cmd.clone(), "api".into(), "GET".into(), "/api/session".into()];
-        let out = self.invoke_argv(&argv)?;
+        let out = self.read_seam(&argv)?;
         parse_api_session_list(&out)
     }
 
     pub fn models(&self) -> Result<Vec<String>, HerdrError> {
         let argv = vec![self.cmd.clone(), "models".into()];
-        let out = self.invoke_argv(&argv)?;
+        let out = self.read_seam(&argv)?;
         Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
     }
 
-    /// One headless decider call. NOT on the orchestrator control path.
+    /// One headless decider call, no session reuse. NOT on the control path.
     pub fn run_decider(&self, model: &str, prompt: &str) -> Result<String, HerdrError> {
-        let argv = vec![
-            self.cmd.clone(),
-            "run".into(),
-            "--model".into(),
-            model.to_string(),
-            prompt.to_string(),
-        ];
-        self.invoke_argv(&argv)
+        self.run_decider_in(model, prompt, None)
     }
 
-    /// Persistent-session decider call (perf fix). Continues ONE long-lived
-    /// archived session instead of paying Node cold start + service connect +
-    /// session creation + exit on every judgment. `--session` creates the
-    /// session on first use and continues it thereafter (verified against
-    /// opencode v2.3.2 / `opencode run --help`, 2026-11-19). `run --model` is
-    /// deliberately kept as the argv prefix so the injectable-runner seam
-    /// (`Opencode::with_runner`, used by the existing test suite) keeps
-    /// matching `starts_with("run --model")`; the extra flags are additive.
-    pub fn run_decider_session(
+    /// Headless decider call in an explicit cwd. With no cwd the daemon's own
+    /// cwd is used — never an empty scratch dir (user override 2026-11-20).
+    pub fn run_decider_in(
         &self,
         model: &str,
-        session_id: &str,
         prompt: &str,
+        cwd: Option<&Path>,
     ) -> Result<String, HerdrError> {
         let argv = vec![
             self.cmd.clone(),
             "run".into(),
             "--model".into(),
             model.to_string(),
+            // FULL ACCESS by user decision: do not block on permission prompts.
+            "--auto".into(),
+            prompt.to_string(),
+        ];
+        self.invoke_argv(&argv, cwd, Duration::from_millis(decider_timeout_ms()))
+    }
+
+    /// Persistent-session decider call. `--session` creates the session on
+    /// first use and continues it thereafter (verified against opencode
+    /// v2.3.2). Callers pass a per-notch-session `ses_notch_<id>` id so one
+    /// session's context never leaks into another's judgment.
+    pub fn run_decider_session(
+        &self,
+        model: &str,
+        session_id: &str,
+        prompt: &str,
+    ) -> Result<String, HerdrError> {
+        self.run_decider_session_in(model, session_id, prompt, None)
+    }
+
+    /// Same as [`Self::run_decider_session`] but with the session's real cwd.
+    pub fn run_decider_session_in(
+        &self,
+        model: &str,
+        session_id: &str,
+        prompt: &str,
+        cwd: Option<&Path>,
+    ) -> Result<String, HerdrError> {
+        let argv = vec![
+            self.cmd.clone(),
+            "run".into(),
+            "--model".into(),
+            model.to_string(),
+            "--auto".into(),
             "--session".into(),
             session_id.to_string(),
-            "--auto".into(),
             "--archived".into(),
             prompt.to_string(),
         ];
-        self.invoke_argv(&argv)
+        self.invoke_argv(&argv, cwd, Duration::from_millis(decider_timeout_ms()))
     }
 }
 

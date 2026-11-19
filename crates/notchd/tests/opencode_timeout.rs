@@ -92,8 +92,10 @@ fn set_env(shim: &Path, timeout_ms: u64) {
     std::env::set_var("NOTCH_PRE_SPAWN_HOOK", "/usr/bin/true");
 }
 
-/// Count live processes whose cmdline contains the unique shim marker.
-fn live_shim_count(marker: &str) -> usize {
+/// Count live processes whose cmdline contains the unique shim marker and
+/// (optionally) a subcommand token. A2's async judge pool spawns decider
+/// shims too; those are a different process from the API call under test.
+fn live_shim_count_filtered(marker: &str, sub: Option<&str>) -> usize {
     let Ok(out) = Command::new("pgrep").args(["-f", marker]).output() else {
         eprintln!("pgrep unavailable; skipping orphan check");
         return 0;
@@ -102,10 +104,15 @@ fn live_shim_count(marker: &str) -> usize {
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| !l.trim().is_empty())
+            .filter(|l| sub.map(|s| l.contains(s)).unwrap_or(true))
             .count()
     } else {
         0
     }
+}
+
+fn live_shim_count(marker: &str) -> usize {
+    live_shim_count_filtered(marker, None)
 }
 
 fn assert_timeout(err: Option<&HerdrError>, expected_ms: u64, ctx: &str) {
@@ -288,21 +295,31 @@ fn poll_once_is_bounded_and_falls_back_to_herdr() {
     // block for the child's 30s lifetime.
     std::env::set_var("SHIM_MODE", "hang");
     std::env::set_var("SHIM_SLEEP_SECS", "30");
-    clock.advance_ms(10_000);
+    // Advance past the stuck threshold but stay inside the 3x-poll-interval
+    // stall-grace window (A3): a 10 s jump would grant grace by design.
+    clock.advance_ms(5_000);
     let t = Instant::now();
     daemon.poll_once();
     let ms = t.elapsed().as_millis() as u64;
     assert!(ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "poll_once blocked for {ms}ms");
-    assert_eq!(live_shim_count(&marker), 0, "poll_once left a live shim");
+    // The API shim must be dead; judge-pool decider shims are a separate
+    // (asynchronous) process and are not what this assertion measures.
+    assert_eq!(
+        live_shim_count_filtered(&marker, Some("api GET")),
+        0,
+        "poll_once left a live API shim"
+    );
 
     // With /api/session unavailable, the watchdog fell back to the stable
-    // herdr `agent_status` and marked the session stuck.
+    // herdr `agent_status` and classified the session as stuck. Since A3's
+    // "stuck is not failure" change the honest signal is a stuck escalation,
+    // not `failureReason` (which stays null when kill_on_stuck is OFF).
     let snap: Value = serde_json::to_value(daemon.snapshot()).unwrap();
-    let sessions = snap["sessions"].as_array().expect("sessions array");
-    let stuck = sessions
-        .iter()
-        .any(|s| s["failureReason"] == json!("stuck"));
-    assert!(stuck, "expected herdr-status fallback to mark the session stuck; snapshot: {snap}");
+    let stuck = snap["escalations"]
+        .as_array()
+        .map(|items| items.iter().any(|e| e["kind"] == json!("stuck")))
+        .unwrap_or(false);
+    assert!(stuck, "expected herdr-status fallback to escalate as stuck; snapshot: {snap}");
 }
 
 /// Env override is parsed safely: an invalid value falls back to the 1500ms
