@@ -10,6 +10,7 @@ use crate::model::{single_line, truncate_words, SessionState, SupervisorMeta};
 use crate::plan;
 use crate::status::Status;
 use std::path::Path;
+use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 
 /// Backoffs before retries 1/2/3 of a transient herdr busy response. Total
@@ -49,6 +50,7 @@ pub(crate) fn spawn_detached(
     herdr: Herdr,
     tmp_dir: std::path::PathBuf,
     sessions: Vec<SessionState>,
+    pane_tx: Option<Sender<(String, String)>>,
 ) -> SpawnOutcome {
     let mut warnings = Vec::new();
     match cleanup::enforce_budget(&tmp_dir, &sessions, cleanup::max_tmp_bytes()) {
@@ -108,6 +110,12 @@ pub(crate) fn spawn_detached(
             };
         }
     };
+    // Publish the REAL pane id the instant herdr gives it to us, before the
+    // slower agent-start/prompt work. `submit_task` uses this to keep the
+    // paneId in emitted snapshots correct under fast-ack (conformance).
+    if let Some(tx) = &pane_tx {
+        let _ = tx.send((session.id.clone(), pane.clone()));
+    }
     session.pane_id = pane.clone();
     let agent_name = agent_target(&session.id);
     if let Err(e) = retry_busy(|| herdr.agent_start(&agent_name, &pane)) {
@@ -354,6 +362,7 @@ impl Daemon {
             self.herdr.clone(),
             self.config.tmp_dir.clone(),
             sessions,
+            None,
         );
         let SpawnOutcome { session: updated, warnings, error, pane } = outcome;
         *session = updated;
@@ -609,8 +618,16 @@ impl Daemon {
         let tmp_dir = self.config.tmp_dir.clone();
         let existing = { lock(&self.inner).sessions.clone() };
         let tx = self.spawn_sender();
+        let (pane_tx, pane_rx) = mpsc::channel::<(String, String)>();
         std::thread::spawn(move || {
-            let outcome = spawn_detached(spawn_session, spawn_prompt, herdr, tmp_dir, existing);
+            let outcome = spawn_detached(
+                spawn_session,
+                spawn_prompt,
+                herdr,
+                tmp_dir,
+                existing,
+                Some(pane_tx),
+            );
             let _ = tx.send(outcome);
         });
 
@@ -626,6 +643,17 @@ impl Daemon {
             inner.sessions.sort_by(|a, b| a.id.cmp(&b.id));
             inner.supervisors.sort_by_key(|s| s.number);
             self.save_now(&inner);
+        }
+
+        // Publish the real herdr pane id BEFORE the ack/snapshots. Bounded to
+        // 100 ms: a pane that has not appeared yet is honest (empty), and a
+        // slow/gated herdr cannot delay the fast ack past the P2 contract.
+        if let Ok((pane_session, pane_id)) = pane_rx.recv_timeout(Duration::from_millis(100)) {
+            let mut inner = lock(&self.inner);
+            if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == pane_session) {
+                s.pane_id = pane_id;
+                self.save_now(&inner);
+            }
         }
         if allocating_supervisor {
             let _ = self
@@ -756,6 +784,7 @@ mod busy_retry_tests {
             busy.fake(),
             PathBuf::from(&root),
             Vec::new(),
+            None,
         );
         assert!(outcome.error.is_none(), "transient busy must be retried: {:?}", outcome.error);
         assert_eq!(outcome.session.id, "S2-OC02", "allocated ID must survive");
@@ -780,6 +809,7 @@ mod busy_retry_tests {
             busy.fake(),
             PathBuf::from(&root),
             Vec::new(),
+            None,
         );
         let err = outcome.error.expect("permanent busy must fail honestly");
         assert!(err.contains("busy"), "error must name the busy cause: {err}");
