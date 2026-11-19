@@ -56,7 +56,7 @@ pub fn snapshot_worktree(wt: &Path, id: &str, reason: &str) -> Result<Option<Str
             crate::model::truncate(String::from_utf8_lossy(&add.stderr).trim(), 160)
         ));
     }
-    let message = format!("notch WIP snapshot: {id} ({reason})");
+    let message = format!("notch: WIP snapshot ({reason}) — {id}");
     let commit = Command::new("git")
         .args(["-C", &path, "commit", "-m", &message])
         .output()
