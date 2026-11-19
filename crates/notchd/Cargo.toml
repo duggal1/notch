@@ -1,0 +1,18 @@
+[package]
+name = "notchd"
+version = "0.1.0"
+edition = "2021"
+description = "notch — OpenCode orchestration control plane (daemon + CLI)"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "notchd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "notchd"
+path = "src/main.rs"

@@ -2,27 +2,24 @@
 
 Three parties, one contract. If any of the three disagrees with this file, the implementation is wrong.
 
-Version: **1**. Date frozen: 2026-11-19. Changes require lead sign-off; bump nothing without editing this file.
+Version: **1.1** (2026-11-19). v1.1: user stack override — Tauri v2 replaces the Swift/WKWebView host; §3 rewritten (JS ↔ Tauri commands/events instead of `webkit.messageHandlers`); §4 ownership rows updated. §1 (snapshot, IDs, status) and §2 (socket) unchanged. Changes require lead sign-off.
 
 ---
 
 ## 0. In one picture
 
 ```
-WKWebView (TypeScript, ui/)          Swift app (app/)                  notchd (crates/notchd/)
+Webview (React, ui/)             Tauri backend (Rust, app/)          notchd engine (crates/notchd/)
         │                                  │                                  │
-        │ webkit.messageHandlers.notch     │                                  │
-        │─────────────────────────────────▶│  Unix socket (NDJSON)             │
+        │ invoke('kill', {id})             │                                  │
+        │─────────────────────────────────▶│  direct lib call (in-process)    │
         │                                  │─────────────────────────────────▶│
         │                                  │◀─────────────────────────────────│
-        │ window.__push(snapshot)          │  { "event": "snapshot", … }       │
+        │ listen('snapshot', cb)           │  app.emit("snapshot", snap)      │
         │◀─────────────────────────────────│                                  │
+        │                                  │
+        └──── optional headless path: `notchd serve` NDJSON Unix socket (§2) ─┘
 ```
-
-- JS → Swift: `(window as any).webkit?.messageHandlers?.notch?.postMessage(obj)`
-- Swift → JS: `window.__push(snapshot)` via evaluating `JSBridge` from `Bridge.swift`
-- Swift ↔ daemon: Unix domain socket, newline-delimited JSON (NDJSON). One JSON object per line.
-- Socket path: `${NOTCH_SOCK:-~/Library/Application Support/notch/notch.sock}` — honor `NOTCH_SOCK` env for tests; fallback to a temp path if Application Support is unwritable.
 
 ---
 
@@ -113,30 +110,33 @@ Nothing else. The daemon never creates windows, never touches panes it doesn't o
 
 ---
 
-## 3. JS ↔ Swift bridge (what ui/ may send, what app/ must handle)
+## 3. JS ↔ Tauri (what ui/ may call, what app/ must implement)
 
-### ui → app (postMessage)
-
-```jsonc
-{ "type": "setFrame", "mode": "rest" | "peek" | "open" }   // asks host to resize NSPanel (app owns real geometry)
-{ "type": "kill", "id": "S1-OC01" }
-{ "type": "reprompt", "id": "S1-OC01", "text": "…" }
-{ "type": "logs", "id": "S1-OC01" }                        // app asks daemon; reply delivered as window.__logs
-{ "type": "focus", "id": "S1-OC01" }                       // focus herdr pane
-{ "type": "cleanup" }
-{ "type": "haptic", "kind": "alignment" | "levelChange" }
-{ "type": "snapshot" }                                     // request fresh snapshot
-```
-
-### app → ui
+### ui → app: `invoke(<cmd>, { … })` — lowercase snake_case, camelCase fields
 
 ```jsonc
-window.__push(snapshot)          // §1.3 object
-window.__logs(id, lines)         // reply to logs request
-window.__ready = true            // after WKWebView finished loading + JS did mount()
+{ "cmd": "snapshot" }                       // → snapshot object (same shape as daemon)
+{ "cmd": "kill", "id": "S1-OC01", "reason"?: "…" }
+{ "cmd": "reprompt", "id": "S1-OC01", "text": "…" }
+{ "cmd": "logs", "id": "S1-OC01", "tail"?: 200 }      // returns { id, lines: string[] }
+{ "cmd": "focus", "id": "S1-OC01" }                   // focuses the herdr pane, never a window
+{ "cmd": "cleanup", "id"?: "S1-OC01" }                // id → one session; absent → global sweep; returns { removed: n }
+{ "cmd": "spawn", "supervisor": "SV-1", "prompt": "…", "cwd": "/…", "title": "…" }  // → { id }
+{ "cmd": "run_plan", "path": "/…/two-by-two.json" }   // → { ok, spawned: […] }
+{ "cmd": "set_frame", "mode": "rest" | "peek" | "open" } // resizes the notch window instantly; returns the applied rect
+{ "cmd": "haptic", "kind": "alignment" | "levelChange" }  // no-op allowed in v0, must not error
 ```
 
-All postMessage objects carry no other fields. Unknown `type` ⇒ ignored, logged once.
+### app → ui: events (via `listen(<event>, cb)`)
+
+```jsonc
+"snapshot"  → the §1.3 snapshot object (emitted ~150 ms debounce on change, plus once on subscribe-equivalent)
+```
+
+`logs` returns its payload directly from `invoke` — there is no separate log event in v1.1. `set_frame` resolves after the window is resized. Unknown commands → `Result::Err` with a plain sentence; the webview must treat every error as non-fatal and stay alive.
+
+### Permissions
+The webview receives ONLY: `core:event:allow-listen` / `allow-emit` (for snapshot) and the ten commands above. No fs, shell, dialog, http, or window plugins granted.
 
 ---
 
@@ -144,17 +144,15 @@ All postMessage objects carry no other fields. Unknown `type` ⇒ ignored, logge
 
 | Path | Owner | Notes |
 |---|---|---|
-| `docs/bridge.md` | lead | frozen |
+| `docs/bridge.md` | lead | frozen (v1.1) |
 | `docs/PLAN.md` | lead | |
-| `.proof/**` | lead | agents do not write here; they report in their final message |
-| `crates/notchd/**` | Agent A (rust-core) | Cargo workspace root is repo root: root `Cargo.toml` lists `crates/notchd` |
+| `.proof/**` | lead | agents may only use `.proof/agents/<name>/` |
+| `crates/notchd/**` | Agent A (rust-core) | lib + CLI/daemon; engine |
 | `examples/two-by-two.json` | Agent A | the demo plan |
-| `ui/**` | Agent B (web-ui) | esbuild → `ui/dist/` |
-| `app/**` | Agent C (swift-host) | SwiftPM package `Notch`, executable + Info.plist build script |
+| `ui/**` | Agent B (web-ui) | Vite 8 + React 19 + TS strict + Tailwind v4 → `ui/dist/` |
+| `app/**` | Agent C (tauri-shell) | Tauri v2; loads `ui/dist/` as frontendDist (relative) |
 | `tools/**` | lead | |
-| `NOTCH-UI-BUNDLE-PATH` | `app/` must load `ui/dist/` by relative path with sensible fallback | see below |
-
-The Swift app loads the UI from: `NOTCH_UI_DIR` env if set → `<repo>/ui/dist` (found by walking up from the binary) → bundled copy inside the .app if present. If none load, show an empty black shell + status plate text and log; never crash.
+| `NOTCH_UI_DIR` / fallback | `app/` must load `ui/dist/` by relative path `../../ui/dist` (frontendDist) | if missing, tauri build must fail loudly — no placeholder UI is ever committed |
 
 ## 5. Naming / state files
 

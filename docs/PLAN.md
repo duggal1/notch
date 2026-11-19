@@ -39,35 +39,32 @@ Orchestrator (notchd — Rust, one long-lived process)
 - Existing panes/tabs stay untouched. `herdr pane list` is read-only telemetry.
 - "Show me how my agents are doing" = `herdr agent focus <target>` (or open one new controlled pane). Never scatter windows.
 
-## Tech stack
+## Tech stack (revised 2026-11-19 — user override)
 
-- **Rust (`crates/notchd`)**: core library + CLI/daemon. Orchestrator, supervisors, ID registry, message bus (newline-JSON over Unix socket), watchdog, attribution, cleanup, herdr client, snapshot producer. Long-lived daemon: `notchd serve`.
-- **Swift (`app/`, SwiftPM)**: the macOS surface. NSPanel notch host with concave ears, `NSScreen` notch geometry (never hardcoded; 200×32 fallback), menu-bar NSStatusItem with live counts, WKWebView hosting the UI, bridge (JS ↔ Swift ↔ notchd), haptics, SF Symbols via custom URL scheme. IPC to notchd over the same Unix socket.
-- **TypeScript (`ui/`, vanilla + esbuild)**: everything in `WKWebView`. Implements DESIGN.md literally — tokens.ts, motion engine, glow system (WebGL2 orb + wave), shell clip-path morph, popover surface. No framework.
+Latest everything, user-mandated: **Tauri v2 + Rust + React 19 + TypeScript (strict) + Tailwind CSS v4 + Vite 8**.
 
-## IPC — Unix socket, newline-delimited JSON
+- **Rust (`crates/notchd`)**: the engine — orchestrator, supervisors, ID registry, bus, watchdog, attribution, cleanup, herdr client, snapshot producer. Both a library (embedded in the Tauri process) and a CLI/daemon (`notchd serve`, headless ops).
+- **Tauri v2 (`app/`)**: the macOS surface. Borderless, transparent, always-on-top window fused to the notch (NSWindow level/collectionBehavior set from Rust via objc2 — no Swift, no WKWebView authorship; WKWebView is Tauri's internal engine). Tray (NSStatusItem-equivalent) = menu bar. Zero webview permissions beyond event listen + the command allowlist.
+- **React 19 + TypeScript + Tailwind v4 (`ui/`, Vite 8)**: the popover. Implements DESIGN.md exactly — tokens, glow system (WebGL2), springs, white-hot rows, wave. `motion/react` for component motion; DESIGN.md values throughout. Loads inside the Tauri window; dev mode (`vite dev`) shows the same panel fed by demo snapshots.
 
-Path: `$XDG_RUNTIME_DIR/notch/notch.sock` fallback `~/Library/Application Support/notch/notch.sock`.
-Full wire contract: **docs/bridge.md** (the single source of truth for all three parts).
-
-- Web → Swift: `webkit.messageHandlers.notch.postMessage(...)`
-- Swift → daemon: socket commands `snapshot | subscribe | spawn | kill | reprompt | logs | focus | cleanup | ping`
-- daemon → Swift: `{ "event": "snapshot", ... }` pushed on subscribe; acks/errors per command.
-- Swift → Web: `window.__push(snapshot)` via `WKUserScript` / `evaluateJavaScript`.
+- **Tauri commands + events** (in-process, primary) — the frontend calls `invoke('kill', …)`; the backend emits `snapshot` on change.
+- **Unix socket (headless secondary)** — `notchd serve` keeps the NDJSON socket for CLI/ops use; unchanged from v1 of this doc.
+- Socket path: `${NOTCH_SOCK:-~/Library/Application Support/notch/notch.sock}`; state dir `~/Library/Application Support/notch/`.
+- Full wire contract: **docs/bridge.md** (single source of truth for all three parts).
 
 ## Build order and ownership (3 sub-agents + lead)
 
 | # | Step | Owner | Dir | Verify |
 |---|------|-------|-----|--------|
-| 1 | Rust orchestrator: process model, ID registry, bus, watchdog, tree, event log | Agent A | `crates/notchd/` | `cargo test` (tests-first on logic/concurrency) |
-| 2 | OpenCode launcher + status reader + kill (herdr client) | Agent A | same | integration test with real `herdr` read-only + fake-herdr fixture for destructive paths |
-| 3 | Swift layer: notch detection, panel, Ghostty/herdr focus, menu bar, WKWebView, bridge | Agent C | `app/` | `swift build`, `swift test` (pure geometry/state logic), hidden launch + window capture |
-| 4 | Supervisor logic: spawn N sessions, re-prompt on failure, aggregate, escalate | Agent A | `crates/notchd/` | tests + `notchd plan examples/two-by-two.json` demo |
+| 1 | Rust orchestrator: process model, IDs, bus, watchdog | Agent A | `crates/notchd/` | `cargo test` (tests-first) |
+| 2 | OpenCode launcher + status reader + kill (herdr client) | Agent A | same | tests with fake herdr; live paths read-only |
+| 3 | Tauri layer: notch window geometry (objc2), tray, IPC commands/events | Agent C | `app/` | `cargo test`, hidden-launch if possible |
+| 4 | Supervisor logic: spawn N, re-prompt on failure, aggregate, escalate | Agent A | `crates/notchd/` | tests + `notchd run-plan` demo |
 | 5 | Attribution + conflict rules + auto-cleanup hooks | Agent A | `crates/notchd/` | tests |
 | 6 | Cross-Supervisor messaging through the Orchestrator | Agent A | `crates/notchd/` | tests |
-| 7 | Notch popover + tree view polish (DESIGN.md, brutal) | Agent B (+lead) | `ui/` | headless screenshots of every state |
+| 7 | Popover (React + Tailwind, DESIGN.md brutal) | Agent B | `ui/` | headless screenshots of every state |
 
-Overlap rule: dirs are disjoint. `docs/bridge.md` and `ui/` bundle output path are frozen once written — change requires lead sign-off.
+Overlap rule: dirs are disjoint. `docs/bridge.md` is lead-owned; change requires lead sign-off.
 
 ## What we explicitly do NOT build
 
