@@ -54,7 +54,7 @@ fn obs(quiet_ms: u64) -> Obs {
 #[test]
 fn classify_alive_when_not_working_or_revision_changed_or_oc_busy() {
     let w = Watchdog::new(15);
-    assert_eq!(w.classify(obs(60_000)), Liveness::Suspect, "sanity: quiet working session");
+    assert_eq!(w.classify(obs(20_000)), Liveness::Suspect, "sanity: quiet working session");
     assert_eq!(w.classify(Obs { status: Status::Idle, ..obs(60_000) }), Liveness::Alive);
     assert_eq!(w.classify(Obs { status: Status::Done, ..obs(60_000) }), Liveness::Alive);
     assert_eq!(w.classify(Obs { status: Status::Failed, ..obs(60_000) }), Liveness::Alive);
