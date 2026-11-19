@@ -157,7 +157,7 @@ html, body { margin: 0; background: transparent; overflow: hidden; -webkit-font-
 .shell { position: absolute; top: 0; left: 50%; transform: translateX(-50%); background: #000; overflow: hidden; }
 
 .card  { position: relative; isolation: isolate; overflow: hidden; border-radius: 36px; background: rgba(23,24,38,.78); -webkit-backdrop-filter: blur(22px) saturate(1.35); }
-/* cards are material hosts on the black shell: darker, flat (zero slope — no body gradients), hairline edge, and they blur the ambient layers behind them (floating IDs, floor glow). Interactive cards carry cursor: pointer. */
+/* cards are material hosts on the black shell, darker, flat by decision (light is the only soft channel, and the floor glow is light), hairline edge — they blur the ambient layers behind them (floating IDs, floor glow). Interactive cards carry cursor: pointer. "Zero slop" (DESIGN-RULES §1): every element on a card earns its place. */
 .tile  { border-radius: 28px; }
 
 /* 1px gradient hairline: bright top-left, near-zero middle (ref 2, 3, 4 edges) */
@@ -1264,6 +1264,6 @@ Review every change against this list. Any hit is a rewrite, not a patch.
 16. A light backdrop behind the shell. The top edge must be pure black.
 17. A grid that is off the 4pt rhythm "because it looks better". It does not.
 18. An effect that survives only at 120Hz on a plugged-in machine.
-19. A card body that is a gradient, lighter than `#171826`, or an interactive card without `cursor: pointer`. Cards are flat, darker, and they blur what sits behind them.
+19. A card that is slop — the swap-the-logo test fails: template parts, decorative-only elements, a card lighter than `#171826`, or an interactive card without `cursor: pointer`. Cards are darker, every element earns its place, and they blur what sits behind them.
 
 If the result could have come from a mediocre model in one pass, it fails. The standard is a UI that feels inevitable, controlled and sharp under scrutiny, with exactly one soft thing in it: the light, and the light is telling the truth.
