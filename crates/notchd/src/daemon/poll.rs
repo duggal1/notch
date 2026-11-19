@@ -370,6 +370,9 @@ impl Daemon {
         let mut pending_warnings: Vec<String> = Vec::new();
         let mut pending_escalations: Vec<(String, String, String)> = Vec::new();
         let mut pending_nudges: Vec<(String, String)> = Vec::new();
+        // Stuck kills are deferred until AFTER the escalation drain: a
+        // verified verdict must be on the record before any pane is closed.
+        let mut pending_kills: Vec<(String, String, String)> = Vec::new();
         {
             let mut inner = lock(&self.inner);
             for effect in effects {
@@ -502,35 +505,7 @@ impl Daemon {
                                         );
                                     }
                                     if lock(&self.watchdog).should_close_pane(Liveness::Stuck) {
-                                        // Snapshot WIP BEFORE any close. A failed
-                                        // snapshot vetoes the close: never risk
-                                        // losing uncommitted session work.
-                                        match crate::supervisor::snapshot_worktree(
-                                            Path::new(&cwd),
-                                            &id,
-                                            "stuck",
-                                        ) {
-                                            Ok(sha) => {
-                                                pending_warnings.push(format!(
-                                                    "{id} stuck; WIP snapshot {:?}",
-                                                    sha
-                                                ));
-                                                match self.herdr.pane_close(&pane_id) {
-                                                    Ok(()) => pending_warnings.push(format!(
-                                                        "{id} stuck (no revision change); pane {pane_id} closed"
-                                                    )),
-                                                    Err(e) => pending_warnings.push(format!(
-                                                        "{id} stuck (no revision change); pane close failed: {e}"
-                                                    )),
-                                                }
-                                                s.status = Status::Failed;
-                                                s.failure_reason = Some("stuck".to_string());
-                                                cleaned.push(id.clone());
-                                            }
-                                            Err(e) => pending_warnings.push(format!(
-                                                "{id} stuck; WIP snapshot failed ({e}); pane close skipped"
-                                            )),
-                                        }
+                                        pending_kills.push((id.clone(), pane_id.clone(), cwd.clone()));
                                     } else {
                                         pending_warnings.push(format!(
                                             "{id} stuck; kill_on_stuck is OFF — pane kept, escalation only"
@@ -562,6 +537,36 @@ impl Daemon {
                 drop(inner);
                 let _ = self.escalate_session(&id, &kind, &detail);
                 inner = lock(&self.inner);
+            }
+            // Verdict recorded first; now snapshot WIP and close. A failed
+            // snapshot vetoes the close so uncommitted work is never lost.
+            for (id, pane_id, cwd) in pending_kills {
+                match crate::supervisor::snapshot_worktree(Path::new(&cwd), &id, "stuck") {
+                    Ok(sha) => {
+                        push_warning(&mut inner, format!("{id} stuck; WIP snapshot {sha:?}"));
+                        match self.herdr.pane_close(&pane_id) {
+                            Ok(()) => {
+                                push_warning(
+                                    &mut inner,
+                                    format!("{id} stuck (no revision change); pane {pane_id} closed"),
+                                );
+                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
+                                    s.status = Status::Failed;
+                                    s.failure_reason = Some("stuck".to_string());
+                                }
+                                cleaned.push(id);
+                            }
+                            Err(e) => push_warning(
+                                &mut inner,
+                                format!("{id} stuck (no revision change); pane close failed: {e}"),
+                            ),
+                        }
+                    }
+                    Err(e) => push_warning(
+                        &mut inner,
+                        format!("{id} stuck; WIP snapshot failed ({e}); pane close skipped"),
+                    ),
+                }
             }
             for id in &cleaned {
                 let _ = cleanup::cleanup_session(&self.config.tmp_dir, id);

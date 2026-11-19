@@ -102,16 +102,14 @@ fn oc_busy_false_is_not_a_rescue() {
 }
 
 #[test]
-fn pane_close_is_opt_in_and_only_for_stuck() {
+fn pane_close_defaults_on_and_only_for_stuck() {
     let mut w = Watchdog::new(15);
-    assert!(!w.kill_on_stuck(), "kill_on_stuck defaults OFF");
-    assert!(!w.should_close_pane(Liveness::Stuck));
-    assert!(!w.should_close_pane(Liveness::Suspect));
-    assert!(!w.should_close_pane(Liveness::Alive));
-    w.set_kill_on_stuck(true);
+    assert!(w.kill_on_stuck(), "production default kills verified stuck sessions");
     assert!(w.should_close_pane(Liveness::Stuck));
     assert!(!w.should_close_pane(Liveness::Suspect), "Suspect is nudge-only");
     assert!(!w.should_close_pane(Liveness::Alive));
+    w.set_kill_on_stuck(false);
+    assert!(!w.should_close_pane(Liveness::Stuck), "operators can opt out");
 }
 
 #[test]
@@ -316,6 +314,16 @@ fn build(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>) -> Daemon {
 fn plan(root: &Path, n: usize) -> PathBuf {
     let cwd = root.join("work");
     std::fs::create_dir_all(&cwd).unwrap();
+    // A5's worktree::snapshot needs a git repo at the session cwd; without
+    // one the snapshot vetoes the kill (correct safety behavior).
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", cwd.to_str().unwrap(), "init", "-q"])
+            .status()
+            .unwrap()
+            .success(),
+        "git init failed"
+    );
     let sessions: Vec<Value> = (0..n)
         .map(|i| {
             serde_json::json!({
@@ -442,10 +450,11 @@ fn stuck_escalates_but_keeps_pane_when_kill_is_off() {
     let pane = &panes[0];
     fake.set_agents(vec![agent(pane, "working", 7)]);
     daemon.poll_once();
+    daemon.set_kill_on_stuck(false); // explicit opt-out for this legacy case
 
     tick_to(&clock, &daemon, 30_000); // 2x threshold in poll-sized steps
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Working, "Stuck without opt-in is not failed");
+    assert_eq!(snap.sessions[0].status, Status::Working, "Stuck with kill disabled is not failed");
     assert_eq!(fake.close_count(), 0);
     assert!(escalation_kinds(&daemon).contains(&"stuck".to_string()));
     assert!(snap.warnings.iter().any(|w| w.contains("kill_on_stuck is OFF")));
@@ -494,8 +503,8 @@ fn stuck_with_kill_on_stuck_snapshots_wip_before_close() {
     )
     .unwrap();
     assert!(
-        subject.contains("notch WIP snapshot"),
-        "WIP was snapshotted before close; last commit was {subject:?}"
+        subject.contains("notch: WIP snapshot (stuck)"),
+        "canonical WIP snapshot message required; last commit was {subject:?}"
     );
     assert_eq!(fake.close_count(), 1, "opt-in kill closes exactly one pane");
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
@@ -616,7 +625,7 @@ fn twenty_sessions_one_truly_stuck_zero_false_positives() {
 
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions.len(), 20);
-    assert_eq!(snap.sessions[7].status, Status::Working, "stuck escalation keeps pane by default");
+    assert_eq!(snap.sessions[7].status, Status::Failed, "default config kills the verified stuck session");
     let escalated: Vec<&str> = snap
         .escalations
         .iter()
@@ -625,7 +634,7 @@ fn twenty_sessions_one_truly_stuck_zero_false_positives() {
         .collect();
     assert!(escalated.contains(&"S1-OC08"), "the one truly stuck session was flagged: {escalated:?}");
     assert_eq!(escalated.iter().filter(|s| **s != "S1-OC08").count(), 0, "zero false positives: {escalated:?}");
-    assert_eq!(fake.close_count(), 0, "kill_on_stuck default OFF");
+    assert_eq!(fake.close_count(), 1, "default config closes the one verified stuck pane");
 
     ticks.sort();
     let p99 = ticks[ticks.len() - 1]; // 20 samples: worst == p99 here

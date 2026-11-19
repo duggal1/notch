@@ -6,9 +6,11 @@
 //! OpenCode reporting the session as busy (a second opinion).
 //!
 //! `Suspect` (quiet >= threshold) gets a nudge and a `stuck_suspect`
-//! escalation. `Stuck` (quiet >= 2x threshold) gets a `stuck` escalation; the
-//! pane is closed only when `kill_on_stuck` is explicitly enabled (default
-//! OFF), and work is snapshotted before any close.
+//! escalation. `Stuck` (quiet >= 2x threshold) gets a `stuck` escalation;
+//! the work is snapshotted, the escalation is recorded, and then the pane is
+//! closed. `kill_on_stuck` defaults ON to honor the product promise that the
+//! watchdog kills a verified-stuck session; operators can disable it with
+//! `Daemon::set_kill_on_stuck(false)`.
 
 use crate::status::Status;
 use std::collections::HashSet;
@@ -34,7 +36,8 @@ pub struct Obs {
 
 pub struct Watchdog {
     stuck_after_ms: u64,
-    /// Pane close on Stuck is an explicit operator decision, default OFF.
+    /// Kill verified-Stuck sessions by default (product promise); an operator
+    /// may opt out via `Daemon::set_kill_on_stuck(false)`.
     kill_on_stuck: bool,
     last_poll_mono_ms: Option<u64>,
     suspect_taken: HashSet<String>,
@@ -45,7 +48,7 @@ impl Watchdog {
     pub fn new(stuck_after_secs: u64) -> Self {
         Self {
             stuck_after_ms: stuck_after_secs.saturating_mul(1000),
-            kill_on_stuck: false,
+            kill_on_stuck: true,
             last_poll_mono_ms: None,
             suspect_taken: HashSet::new(),
             stuck_taken: HashSet::new(),
