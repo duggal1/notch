@@ -277,6 +277,7 @@ fn snapshot_commits_wip_and_dirty_removal_is_refused() {
 #[derive(Default)]
 struct Capture {
     split_args: Mutex<Vec<Vec<String>>>,
+    panes: Mutex<Vec<String>>,
     /// Signalled by the fake on the LAST herdr call of a detached spawn, so
     /// tests can wait deterministically (no sleep-as-synchronisation).
     done: Mutex<bool>,
@@ -306,10 +307,13 @@ impl Capture {
             let sub2 = args.get(2).cloned().unwrap_or_default();
             if sub == "pane" && sub2 == "split" {
                 cap.split_args.lock().unwrap().push(args.to_vec());
+                let mut panes = cap.panes.lock().unwrap();
+                let pane = format!("w9:p{}", panes.len() + 1);
+                panes.push(pane.clone());
                 Ok(serde_json::json!({
                     "id": "cli:pane:split",
                     "result": { "type": "pane_info",
-                        "pane": { "pane_id": "w9:p1", "tab_id": "w1:t1", "workspace_id": "w1" } }
+                        "pane": { "pane_id": pane, "tab_id": "w1:t1", "workspace_id": "w1" } }
                 })
                 .to_string())
             } else if sub == "agent" && sub2 == "start" {
@@ -319,7 +323,16 @@ impl Capture {
                 cap.signal_done();
                 Ok(out.to_string())
             } else if sub == "agent" && sub2 == "list" {
-                Ok(r#"{"id":"cli:agent:list","result":{"type":"agent_list","agents":[{"pane_id":"w9:p1","agent_status":"working","revision":1}]}}"#.to_string())
+                let panes = cap.panes.lock().unwrap().clone();
+                let agents: Vec<serde_json::Value> = panes
+                    .iter()
+                    .map(|p| serde_json::json!({"pane_id": p, "agent_status": "working", "revision": 1}))
+                    .collect();
+                Ok(serde_json::json!({
+                    "id": "cli:agent:list",
+                    "result": {"type": "agent_list", "agents": agents}
+                })
+                .to_string())
             } else if sub == "agent" && sub2 == "read" {
                 Ok("working\n".to_string())
             } else if sub == "pane" && sub2 == "close" {
@@ -611,4 +624,53 @@ fn non_git_spawn_warns_loudly() {
     // No worktree metadata for the fallback session.
     let id = ack.session_id.unwrap();
     assert!(worktree::load(&plain, &id).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// 10. Real pane id must be in the snapshot BEFORE any poll (conformance).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pane_id_is_visible_in_snapshot_immediately_after_submit() {
+    let root = tmp_root("paneid");
+    let repo = init_repo(&root);
+    let cfg = test_config(&root);
+    std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
+    std::fs::create_dir_all(&cfg.state_dir).unwrap();
+    let capture = Arc::new(Capture::default());
+    let daemon = Daemon::open(
+        test_config(&root),
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
+
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let ack = daemon.submit_task(
+            "pane id probe".to_string(),
+            Some(repo.to_string_lossy().to_string()),
+            None, None, None, None,
+        );
+        assert!(ack.ok, "{:?}", ack.error);
+        ids.push(ack.session_id.unwrap());
+    }
+    // NO poll_once and NO wait: the snapshot emitted right after the ack must
+    // already carry each session's real herdr pane id (conformance_snapshot).
+    let snap = daemon.snapshot();
+    let panes: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            snap.sessions
+                .iter()
+                .find(|s| &s.id == id)
+                .unwrap()
+                .pane_id
+                .clone()
+        })
+        .collect();
+    assert!(!panes[0].is_empty(), "real pane id missing immediately after ack: {ids:?} -> {panes:?}");
+    assert!(!panes[1].is_empty(), "real pane id missing immediately after ack: {ids:?} -> {panes:?}");
+    assert_ne!(panes[0], panes[1], "each session must have its own pane id: {panes:?}");
+    capture.wait_done(); // let the detached workers finish before teardown
 }
