@@ -60,7 +60,10 @@
 //! `0` requests an ephemeral port). At most [`MAX_CLIENTS`] connections are
 //! admitted; the rest complete the HTTP upgrade and are immediately closed
 //! with WebSocket code 1012 (restart) before any state is touched.
-//! No external network, no TLS, no origin check beyond loopback binding.
+//! Handshake auth (3.7): any `Origin` is rejected, `Authorization: Bearer` is
+//! required and compared in constant time, and `Host` must be the bound
+//! `127.0.0.1:<port>`. No external network, no TLS. The endpoint stays UNWIRED
+//! until `NOTCH_WS=1`; no `cli.rs` call site starts it.
 //! Each client has a bounded outbox (64 frames): when it fills, the oldest
 //! snapshot (else oldest event) is dropped and `lag` is incremented. Client
 //! commands are read and answered inline and are never queued or dropped, so a
@@ -82,16 +85,20 @@
 use crate::daemon::Daemon;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io;
+use std::fs;
+use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use tungstenite::http::{self, Request};
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::protocol::{CloseFrame, WebSocketConfig};
-use tungstenite::{accept_with_config, Error as WsError, Message, WebSocket};
+use tungstenite::{accept_with_config, accept_hdr_with_config, Error as WsError, Message, WebSocket};
 
 /// Default TCP port (`ws://127.0.0.1:7407`).
 pub const DEFAULT_PORT: u16 = 7407;
@@ -122,6 +129,81 @@ pub fn bind(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind(("127.0.0.1", port))
 }
 
+/// WS stays UNWIRED until the operator opts in with the exact value `NOTCH_WS=1`.
+pub fn ws_enabled() -> bool {
+    std::env::var("NOTCH_WS").map(|v| v == "1").unwrap_or(false)
+}
+
+/// Length-independent-in-value byte comparison: every byte is examined, and
+/// the lengths are checked only after the loop.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let n = a.len().max(b.len());
+    let mut diff = 0u8;
+    for i in 0..n {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= x ^ y;
+    }
+    diff == 0 && a.len() == b.len()
+}
+
+/// Read or create the loopback bearer token. 32 bytes from `/dev/urandom`,
+/// hex-encoded, in a 0600 file inside a 0700 state dir. A corrupt file is
+/// regenerated rather than trusted.
+pub fn load_or_create_token(state_dir: &Path) -> io::Result<String> {
+    fs::create_dir_all(state_dir)?;
+    fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))?;
+    let path = crate::paths::ws_token_path_in(state_dir);
+    if let Ok(text) = fs::read_to_string(&path) {
+        let t = text.trim();
+        if t.len() == 64 && t.bytes().all(|b| b.is_ascii_hexdigit()) {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            return Ok(t.to_string());
+        }
+    }
+    let mut bytes = [0u8; 32];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, &hex)?;
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+    fs::rename(&tmp, &path)?;
+    Ok(hex)
+}
+
+/// The full handshake policy. `Origin` is rejected unconditionally (drive-by
+/// browser connections), the Bearer token must match exactly, and `Host` must
+/// be the bound loopback address (DNS-rebinding defence).
+pub fn auth_headers_ok(
+    origin: Option<&str>,
+    authorization: Option<&str>,
+    host: Option<&str>,
+    expected_token: &str,
+    expected_host: &str,
+) -> bool {
+    if origin.is_some() {
+        return false;
+    }
+    let Some(auth) = authorization else {
+        return false;
+    };
+    let Some(provided) = auth.strip_prefix("Bearer ") else {
+        return false;
+    };
+    let token_ok = constant_time_eq(provided.as_bytes(), expected_token.as_bytes());
+    let host_ok = host
+        .map(|h| constant_time_eq(h.as_bytes(), expected_host.as_bytes()))
+        .unwrap_or(false);
+    token_ok && host_ok
+}
+
+fn auth_rejection() -> http::Response<Option<String>> {
+    http::Response::builder()
+        .status(http::StatusCode::UNAUTHORIZED)
+        .body(Some("unauthorized".to_string()))
+        .unwrap_or_else(|_| http::Response::new(None))
+}
+
 /// Serve until `shutdown` is set. Caller owns the listener; [`bind`] makes one.
 ///
 /// Spawns two internal helpers: a flusher that drives the daemon's existing
@@ -134,6 +216,8 @@ pub fn serve(
     shutdown: Arc<AtomicBool>,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
+    let expected_host = format!("127.0.0.1:{}", listener.local_addr()?.port());
+    let token = load_or_create_token(&daemon.config.state_dir)?;
     let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(Vec::new()));
     let active = Arc::new(AtomicUsize::new(0));
 
@@ -176,8 +260,10 @@ pub fn serve(
                 let clients = Arc::clone(&clients);
                 let shutdown = Arc::clone(&shutdown);
                 let active = Arc::clone(&active);
+                let token = token.clone();
+                let expected_host = expected_host.clone();
                 std::thread::spawn(move || {
-                    handle_conn(stream, daemon, clients, shutdown);
+                    handle_conn(stream, daemon, clients, shutdown, &token, &expected_host);
                     active.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -455,11 +541,27 @@ fn handle_conn(
     daemon: Arc<Daemon>,
     clients: Arc<Mutex<Vec<Client>>>,
     shutdown: Arc<AtomicBool>,
+    token: &str,
+    expected_host: &str,
 ) {
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES));
-    let mut ws = match accept_with_config(stream, Some(config)) {
+    // Auth happens in the handshake callback: reject before the 101 upgrade
+    // and before any daemon state is touched.
+    let expected_token = token.to_string();
+    let expected_host = expected_host.to_string();
+    let callback = move |req: &Request<()>, response| {
+        let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
+        let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok());
+        let host = req.headers().get("host").and_then(|v| v.to_str().ok());
+        if auth_headers_ok(origin, authorization, host, &expected_token, &expected_host) {
+            Ok(response)
+        } else {
+            Err(auth_rejection())
+        }
+    };
+    let mut ws = match accept_hdr_with_config(stream, callback, Some(config)) {
         Ok(ws) => ws,
         Err(_) => return,
     };

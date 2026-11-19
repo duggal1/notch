@@ -34,6 +34,16 @@ pub fn fallback_sock_path() -> PathBuf {
     std::env::temp_dir().join("notch").join("notch.sock")
 }
 
+/// WebSocket bearer-token file. Lives in the state dir, which is created 0700.
+pub fn ws_token_path() -> PathBuf {
+    ws_token_path_in(&default_state_dir())
+}
+
+/// Token path for an explicit state dir (used by tests and embedded callers).
+pub fn ws_token_path_in(state_dir: &std::path::Path) -> PathBuf {
+    state_dir.join("ws.token")
+}
+
 pub fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }

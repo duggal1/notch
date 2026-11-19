@@ -8,10 +8,64 @@
 
 use crate::daemon::Daemon;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
+
+/// Hard cap on one NDJSON line (1 MiB). A longer line is drained and dropped;
+/// it is never buffered in full.
+pub const MAX_NDJSON_LINE: usize = 1 << 20;
+
+/// Read one line with a hard byte cap. Returns `true` for a complete line,
+/// `false` on EOF or overflow (the whole bad line is consumed first, so the
+/// next call starts on the following line).
+pub fn read_line_capped<R: BufRead>(
+    reader: &mut R,
+    out: &mut String,
+    cap: usize,
+) -> std::io::Result<bool> {
+    out.clear();
+    let mut total = 0usize;
+    loop {
+        let buf = reader.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(false);
+        }
+        if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            if total.saturating_add(pos) > cap {
+                reader.consume(pos + 1);
+                return Ok(false);
+            }
+            out.push_str(&String::from_utf8_lossy(&buf[..pos]));
+            reader.consume(pos + 1);
+            return Ok(true);
+        }
+        if total.saturating_add(buf.len()) > cap {
+            // Drain the rest of the oversize line without buffering it.
+            let buffered = buf.len();
+            reader.consume(buffered);
+            loop {
+                let rest = reader.fill_buf()?;
+                if rest.is_empty() {
+                    break;
+                }
+                if let Some(p) = rest.iter().position(|&b| b == b'\n') {
+                    reader.consume(p + 1);
+                    break;
+                }
+                let n = rest.len();
+                reader.consume(n);
+            }
+            return Ok(false);
+        }
+        out.push_str(&String::from_utf8_lossy(buf));
+        total += buf.len();
+        let n = buf.len();
+        reader.consume(n);
+    }
+}
 
 /// Serve forever (until the process is interrupted). Removes any stale
 /// socket file first.
@@ -27,6 +81,12 @@ pub fn serve_with_shutdown(
     shutdown: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     listener.set_nonblocking(true)?;
+    // Owner-only socket: nobody outside this user may issue daemon commands.
+    if let Ok(addr) = listener.local_addr() {
+        if let Some(path) = addr.as_pathname() {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
     // Background flusher: pushes pending snapshots to subscribers, debounced
     // to one push / 100 ms.
     {
@@ -103,9 +163,10 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
     let mut line = String::new();
     loop {
         line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break, // client went away
-            Ok(_) => {}
+        match read_line_capped(&mut reader, &mut line, MAX_NDJSON_LINE) {
+            Ok(true) => {}
+            // EOF or oversize line: drop this connection, never allocate 1 MB+.
+            Ok(false) => break,
             Err(_) => break,
         }
         let trimmed = line.trim();

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Error as WsError, Message, WebSocket};
+use tungstenite::{client::ClientRequestBuilder, connect, Error as WsError, Message, WebSocket};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -80,6 +80,7 @@ fn fake_herdr() -> Herdr {
 pub struct WsDaemon {
     pub root: PathBuf,
     pub port: u16,
+    pub token: String,
     pub daemon: Arc<Daemon>,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -103,6 +104,7 @@ impl WsDaemon {
             opencode_decider: false,
         };
         std::fs::create_dir_all(&config.tmp_dir).unwrap();
+        let token = ws::load_or_create_token(&config.state_dir).unwrap();
         let daemon = Arc::new(
             Daemon::open(config, fake_herdr(), Arc::new(SystemClock))
                 .unwrap_or_else(|e| panic!("open daemon: {e}")),
@@ -117,6 +119,7 @@ impl WsDaemon {
         let server = WsDaemon {
             root,
             port,
+            token,
             daemon,
             shutdown,
             handle: Some(handle),
@@ -134,7 +137,9 @@ impl WsDaemon {
 
     pub fn connect(&self) -> WsClient {
         let url = self.url();
-        let (mut ws, _) = connect(&url)
+        let request = ClientRequestBuilder::new(url.parse().unwrap())
+            .with_header("Authorization", format!("Bearer {}", self.token));
+        let (mut ws, _) = connect(request)
             .unwrap_or_else(|e| panic!("connect {url}: {e}"));
         if let MaybeTlsStream::Plain(stream) = ws.get_mut() {
             stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
