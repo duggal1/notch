@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.notch.app",
   "build": {
-    "frontendDist": "../assets/placeholder-ui"
+    "frontendDist": "../../ui/dist"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -14,9 +14,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": [
+      "app"
+    ],
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.icns"
     ],
     "category": "Utility",
     "macOS": {

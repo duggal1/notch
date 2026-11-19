@@ -17,6 +17,13 @@ pub const PEEK_HEIGHT_EXTRA: f64 = 44.0;
 pub const OPEN_WIDTH: f64 = 560.0;
 pub const OPEN_HEIGHT: f64 = 640.0;
 
+/// Dashboard (bridge.md §7): the standard macOS window. 1120×760 default,
+/// min 880×600 enforced by the window server; centered on the main screen.
+pub const DASHBOARD_WIDTH: f64 = 1120.0;
+pub const DASHBOARD_HEIGHT: f64 = 760.0;
+pub const DASHBOARD_MIN_WIDTH: f64 = 880.0;
+pub const DASHBOARD_MIN_HEIGHT: f64 = 600.0;
+
 /// Notchless Macs and external displays get a 200×32 stand-in (DESIGN.md §5.1:
 /// "Fallback (200×32) is for notchless Macs and external displays, so the
 /// design stays identical there").
@@ -125,6 +132,17 @@ pub fn notch_from_measurements(
 /// Notch measurements or the documented 200×32 fallback.
 pub fn notch_or_fallback(measurements: Option<NotchSize>) -> NotchSize {
     measurements.unwrap_or(NotchSize::FALLBACK)
+}
+
+/// Dashboard window rect (bridge.md §7): 1120×760, centered on the main
+/// screen (top-left origin — Tauri window coordinates).
+pub fn dashboard_frame(screen_width: f64, screen_height: f64) -> FrameRect {
+    FrameRect {
+        x: ((screen_width - DASHBOARD_WIDTH) / 2.0).max(0.0),
+        y: ((screen_height - DASHBOARD_HEIGHT) / 2.0).max(0.0),
+        width: DASHBOARD_WIDTH,
+        height: DASHBOARD_HEIGHT,
+    }
 }
 
 /// Compute the window rect for a mode. `notch: None` means "no usable notch

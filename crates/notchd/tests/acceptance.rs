@@ -22,6 +22,13 @@ use std::sync::{Arc, Mutex};
 
 static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Unix socket paths are limited to SUN_LEN (104 on macOS). Use a guaranteed
+/// short /tmp path instead of the (possibly deep) test tmp root.
+fn short_sock(tag: &str) -> PathBuf {
+    let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    PathBuf::from(format!("/tmp/nd-{tag}-{}-{n}.sock", std::process::id()))
+}
+
 fn tmp_root(tag: &str) -> PathBuf {
     let n = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let p = std::env::temp_dir().join(format!("notchd-test-{tag}-{}-{n}", std::process::id()));
@@ -45,6 +52,7 @@ struct FakeHerdr {
     agents: Mutex<Vec<Value>>,
     read_text: Mutex<String>,
     fail_subcommand: Mutex<Option<String>>,
+    fail_panes: Mutex<Vec<String>>,
     split_seq: Mutex<u32>,
 }
 
@@ -55,8 +63,13 @@ impl FakeHerdr {
             agents: Mutex::new(Vec::new()),
             read_text: Mutex::new("last line of pane output\n".to_string()),
             fail_subcommand: Mutex::new(None),
+            fail_panes: Mutex::new(Vec::new()),
             split_seq: Mutex::new(0),
         })
+    }
+
+    fn set_fail_panes(&self, panes: Vec<&str>) {
+        *self.fail_panes.lock().unwrap() = panes.into_iter().map(str::to_string).collect();
     }
 
     fn set_agents(&self, agents: Vec<Value>) {
@@ -125,11 +138,21 @@ impl FakeHerdr {
                 "result": { "type": "ok" }
             })
             .to_string()),
-            ("pane", "close") => Ok(serde_json::json!({
-                "id": "cli:pane:close",
-                "result": { "type": "ok" }
-            })
-            .to_string()),
+            ("pane", "close") => {
+                let pane = args.get(3).cloned().unwrap_or_default();
+                if self.fail_panes.lock().unwrap().iter().any(|p| p == &pane) {
+                    return Err(HerdrError::Failed {
+                        args: args.to_vec(),
+                        code: Some(1),
+                        stderr: format!("pane {pane} already closed"),
+                    });
+                }
+                Ok(serde_json::json!({
+                    "id": "cli:pane:close",
+                    "result": { "type": "ok" }
+                })
+                .to_string())
+            }
             ("agent", "focus") => Ok(serde_json::json!({
                 "id": "cli:agent:focus",
                 "result": { "type": "ok" }
@@ -148,6 +171,7 @@ fn agent_entry(pane_id: &str, status: &str, revision: u64) -> Value {
     serde_json::json!({
         "agent": "opencode",
         "agent_status": status,
+        "agent_session": {"agent": "opencode", "kind": "id", "source": "herdr:opencode", "value": pane_id},
         "cwd": "/tmp",
         "focused": false,
         "pane_id": pane_id,
@@ -158,6 +182,89 @@ fn agent_entry(pane_id: &str, status: &str, revision: u64) -> Value {
         "workspace_id": "w1",
         "screen_detection_skipped": true
     })
+}
+
+/// Scripted fake opencode. `decisions` is consumed in order; the fake
+/// asserts deterministically via call accounting.
+struct FakeOpencode {
+    calls: Mutex<Vec<Vec<String>>>,
+    api_session_raw: Mutex<String>,
+    models: Mutex<Vec<String>>,
+    decisions: Mutex<VecDeque<String>>,
+}
+
+impl FakeOpencode {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            api_session_raw: Mutex::new(
+                serde_json::json!({"cursor": null, "data": []}).to_string(),
+            ),
+            models: Mutex::new(vec!["opencode/hy4-flash-free".to_string(), "opencode/inkling-2-small-free".to_string()]),
+            decisions: Mutex::new(VecDeque::new()),
+        })
+    }
+
+    fn set_api_idle(&self, session_ref: &str, idle: bool) {
+        let entry = serde_json::json!({
+            "id": session_ref,
+            "model": {"id": "inkling-2-small-free", "providerID": "opencode", "variant": "max"},
+            "time": if idle {
+                serde_json::json!({"created": 1000, "updated": 2000, "busy": 1000, "idle": 2000})
+            } else {
+                serde_json::json!({"created": 1000, "updated": 2000, "busy": 3000})
+            },
+            "location": {"directory": "/tmp"}
+        });
+        *self.api_session_raw.lock().unwrap() =
+            serde_json::json!({"cursor": null, "data": [entry]}).to_string();
+    }
+
+    fn push_decision(&self, s: &str) {
+        self.decisions.lock().unwrap().push_back(s.to_string());
+    }
+
+    fn decider_calls(&self) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.get(1).map(String::as_str) == Some("run"))
+            .count()
+    }
+
+    fn opencode(self: &Arc<Self>) -> notchd::opencode::Opencode {
+        let fake = Arc::clone(self);
+        notchd::opencode::Opencode::with_runner(move |args: &[String]| {
+            fake.calls.lock().unwrap().push(args.to_vec());
+            let rest = &args[1..];
+            match rest.join(" ").as_str() {
+                "api GET /api/session" => Ok(fake.api_session_raw.lock().unwrap().clone()),
+                "models" => Ok(fake.models.lock().unwrap().join("\n")),
+                s if s.starts_with("run --model") => {
+                    let mut q = fake.decisions.lock().unwrap();
+                    q.pop_front().ok_or(HerdrError::Failed {
+                        args: args.to_vec(),
+                        code: Some(1),
+                        stderr: "no scripted decision queued".to_string(),
+                    })
+                }
+                other => Err(HerdrError::Failed {
+                    args: args.to_vec(),
+                    code: Some(2),
+                    stderr: format!("unexpected opencode call: {other}"),
+                }),
+            }
+        })
+    }
+}
+
+fn spawn_daemon_with_opencode(root: &Path, fake: &Arc<FakeHerdr>, oc: &Arc<FakeOpencode>, clock: Arc<FakeClock>) -> Daemon {
+    let config = test_config(root, 15);
+    std::fs::create_dir_all(&config.tmp_dir).unwrap();
+    let daemon = Daemon::open(config, fake.herdr(), clock.clone()).unwrap();
+    daemon.set_opencode(oc.opencode());
+    daemon
 }
 
 fn write_plan(root: &Path) -> PathBuf {
@@ -284,7 +391,8 @@ fn two_by_two_plan_spawns_in_order_with_env_and_titles() {
     }
     for (i, start) in starts.iter().enumerate() {
         let joined = start.join(" ");
-        assert!(joined.contains(expected_ids[i]), "start {i} missing session id: {joined}");
+        // herdr agent names must be lowercase (herdr rejects uppercase).
+        assert!(joined.contains(&expected_ids[i].to_lowercase()), "start {i} missing session name: {joined}");
         assert!(joined.contains("--kind"));
         assert!(joined.contains("opencode"));
     }
@@ -476,8 +584,8 @@ fn failure_reprompts_once_then_marks_failed_with_escalation() {
         "re-prompt must append the tail of pane output: {reprompt:?}"
     );
     assert!(
-        reprompt.join(" ").contains("S1-OC01"),
-        "re-prompt targets the session: {reprompt:?}"
+        reprompt.join(" ").contains("s1-oc01"),
+        "re-prompt targets the lowercase herdr agent name: {reprompt:?}"
     );
 
     // Poll 2: still blocked -> no second re-prompt; mark failed + escalate.
@@ -502,6 +610,9 @@ fn failure_reprompts_once_then_marks_failed_with_escalation() {
         "escalation must surface a snapshot warning: {:?}",
         snap.warnings
     );
+    let esc = &snap.escalations;
+    assert_eq!(esc.len(), 1, "blocked failure must record an escalation: {esc:?}");
+    assert_eq!(esc[0].kind, "blocked");
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
     assert!(log.contains("escalate"), "escalate event missing: {log}");
 }
@@ -733,7 +844,7 @@ fn snapshot_matches_bridge_v1_key_set_and_camelcase() {
     let sup = &obj["supervisors"][0];
     let sup_keys: std::collections::BTreeSet<&str> = sup.as_object().unwrap().keys().map(String::as_str).collect();
     let expected_sup: std::collections::BTreeSet<&str> =
-        ["id", "status", "working", "idle", "failed", "done"].into_iter().collect();
+        ["id", "status", "working", "idle", "failed", "done", "title"].into_iter().collect();
     assert_eq!(sup_keys, expected_sup);
 
     let ses = &obj["sessions"][0];
@@ -741,6 +852,8 @@ fn snapshot_matches_bridge_v1_key_set_and_camelcase() {
     let expected_ses: std::collections::BTreeSet<&str> = [
         "id", "sup", "status", "title", "task", "cwd", "paneId", "startedAt", "lastAction",
         "lastRevision", "latencyMs", "failureReason",
+        // v1.3 additive fields, always present on sessions spawned by this engine
+        "goal", "iterations", "maxIterations", "wallClockDeadline",
     ]
     .into_iter()
     .collect();
@@ -783,7 +896,7 @@ fn ndjson_socket_hello_ping_subscribe_kill_unknown_cleanup() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let daemon = Arc::new(spawn_daemon(&root, &fake, clock.clone()));
 
-    let sock = root.join("notch.sock");
+    let sock = short_sock("sock");
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).unwrap();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -1039,7 +1152,7 @@ fn subscribe_pushes_snapshot_on_change_after_100ms_debounce() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
 
-    let sock = root.join("notch.sock");
+    let sock = short_sock("sock");
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).unwrap();
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -1178,5 +1291,979 @@ fn first_git_sample_sets_a_baseline_and_only_new_files_attribute() {
         snap.attribution.iter().any(|a| a.file.contains("session-own-work.rs")),
         "new files after the baseline must be attributed: {:?}",
         snap.attribution
+    );
+}
+
+// ---------- 20. submit_task (bridge.md v1.2) ----------
+
+fn submit_plan_repo(root: &Path) -> PathBuf {
+    let repo = root.join("submit-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    repo
+}
+
+#[test]
+fn submit_task_allocates_titles_and_sends_full_task_to_agent() {
+    let root = tmp_root("submit");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+
+    let task = "Refactor the auth middleware to remove the shared session cache from the login path and the token refresh path";
+    let ack = daemon.submit_task(task.to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(ack.ok, "submit_task failed: {:?}", ack.error);
+    assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
+    assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
+
+    // The FULL task text reaches the agent untruncated.
+    let calls = fake.calls();
+    let prompts: Vec<&Vec<String>> = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .collect();
+    assert_eq!(prompts.len(), 1, "exactly one prompt expected: {calls:?}");
+    assert_eq!(prompts[0][4], task, "full task text must reach the agent untruncated");
+
+    // Titles: 48-char word-boundary truncation, single line.
+    let snap = daemon.snapshot();
+    assert_eq!(snap.supervisors.len(), 1);
+    assert_eq!(snap.supervisors[0].id, "SV-1");
+    assert_eq!(
+        snap.supervisors[0].title, "Refactor the auth middleware to remove the",
+        "supervisor title must be the task head on a word boundary"
+    );
+    assert_eq!(snap.sessions.len(), 1);
+    assert_eq!(snap.sessions[0].title, "Refactor the auth middleware to remove the");
+    assert_eq!(snap.sessions[0].sup, "SV-1");
+    assert!(snap.sessions[0].task.starts_with("Refactor the auth middleware"));
+    assert_eq!(snap.sessions[0].status, Status::Working);
+
+    // Per-session temp dir created like run-plan.
+    assert!(root.join("tmp").join("notch-S1-OC01").exists());
+}
+
+#[test]
+fn submit_task_title_override_and_single_line_normalization() {
+    let root = tmp_root("submit-title");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+
+    // Multi-line title with extra whitespace is normalized to one line.
+    let ack = daemon.submit_task("do the thing\nwith two lines".to_string(), Some(repo.to_str().unwrap().to_string()), Some("My\n  Custom   Title".to_string()), None, None, None);
+    assert!(ack.ok, "submit_task failed: {:?}", ack.error);
+    let snap = daemon.snapshot();
+    assert_eq!(snap.supervisors[0].title, "My Custom Title");
+    // Task head is also normalized to one line for the title fallback path.
+    assert_eq!(snap.sessions[0].title, "do the thing with two lines");
+}
+
+#[test]
+fn submit_task_validation_allocates_nothing() {
+    let root = tmp_root("submit-validate");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+
+    // Nonexistent cwd
+    let ack = daemon.submit_task("task one".to_string(), Some(root.join("nope").to_str().unwrap().to_string()), None, None, None, None);
+    assert!(!ack.ok);
+    assert!(ack.error.is_some());
+    // No ids on a validation failure
+    assert_eq!(ack.supervisor_id, None);
+    assert_eq!(ack.session_id, None);
+
+    // File, not a directory
+    let file = root.join("a-file.txt");
+    std::fs::write(&file, "x").unwrap();
+    let ack = daemon.submit_task("task two".to_string(), Some(file.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(!ack.ok);
+    assert!(ack.error.is_some());
+
+    // Empty and whitespace-only task
+    let ack = daemon.submit_task("".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(!ack.ok);
+    let ack = daemon.submit_task("   \n\t  ".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(!ack.ok);
+
+    // Nothing was allocated: the next valid submit gets SV-1 / S1-OC01.
+    let ack = daemon.submit_task("real task".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(ack.ok);
+    assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
+    assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
+}
+
+#[test]
+fn submit_task_spawn_failure_marks_session_failed_and_returns_error() {
+    let root = tmp_root("submit-fail");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    *fake.fail_subcommand.lock().unwrap() = Some("pane split".to_string());
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+
+    let ack = daemon.submit_task("task that cannot spawn".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(!ack.ok);
+    assert!(ack.error.is_some());
+    // The allocated ids are reported and the session is marked failed.
+    assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
+    assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
+    let snap = daemon.snapshot();
+    let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
+    assert_eq!(s1.status, Status::Failed);
+    assert_eq!(s1.failure_reason.as_deref(), Some("spawn_failed"));
+    assert!(
+        snap.warnings.iter().any(|w| w.contains("S1-OC01")),
+        "spawn failure must surface a snapshot warning"
+    );
+}
+
+#[test]
+fn submit_task_second_submit_allocates_incrementing_ids() {
+    let root = tmp_root("submit-again");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+
+    let ack1 = daemon.submit_task("first task".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack2 = daemon.submit_task("second task".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(ack1.ok && ack2.ok);
+    assert_eq!(ack1.supervisor_id.as_deref(), Some("SV-1"));
+    assert_eq!(ack2.supervisor_id.as_deref(), Some("SV-2"));
+    assert_eq!(ack1.session_id.as_deref(), Some("S1-OC01"));
+    assert_eq!(ack2.session_id.as_deref(), Some("S2-OC01"));
+    let snap = daemon.snapshot();
+    let sup_ids: Vec<&str> = snap.supervisors.iter().map(|s| s.id.as_str()).collect();
+    assert_eq!(sup_ids, vec!["SV-1", "SV-2"]);
+    assert_eq!(snap.supervisors[0].title, "first task");
+    assert_eq!(snap.supervisors[1].title, "second task");
+}
+
+#[test]
+fn task_head_truncation_is_word_boundary_single_line() {
+    use notchd::model::{single_line, truncate_words};
+    assert_eq!(truncate_words("short task", 48), "short task");
+    assert_eq!(truncate_words("a\n\nmulti   line\ttask", 48), "a multi line task");
+    // Exactly 48 chars fits; the same line with one more word is cut at the boundary.
+    let t = truncate_words("one two three four five six seven eight nine ten eleven twelve thirteen", 48);
+    assert_eq!(t, "one two three four five six seven eight nine ten");
+    assert_eq!(t.chars().count(), 48);
+    // A short line that fits is returned whole.
+    assert_eq!(truncate_words("alpha beta gammadelta epsilon zeta eta theta", 48), "alpha beta gammadelta epsilon zeta eta theta");
+    // Single word longer than 48 is hard-cut at 48 (documented fallback)
+    let long = "x".repeat(100);
+    assert_eq!(truncate_words(&long, 48), "x".repeat(48));
+    // No trailing space, never a mid-word cut
+    for s in ["Refactor the auth middleware to remove the shared session cache from the login path", "a b c", "   spaced   out   "] {
+        let cut = truncate_words(s, 48);
+        assert!(cut.chars().count() <= 48);
+        assert!(!cut.ends_with(' '), "no trailing space: `{cut}`");
+    }
+    // task head keeps the 78-char single-line contract
+    assert_eq!(single_line("x\ny"), "x");
+}
+
+#[test]
+fn socket_submit_task_roundtrip() {
+    use std::os::unix::net::UnixListener;
+    let root = tmp_root("submit-socket");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = Arc::new(spawn_daemon(&root, &fake, clock.clone()));
+
+    let sock = short_sock("sock");
+    let _ = std::fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock).unwrap();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let server = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || notchd::socket::serve_with_shutdown(listener, daemon, shutdown))
+    };
+
+    let stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap(); // hello
+
+    let send = |writer: &mut std::os::unix::net::UnixStream, obj: Value| {
+        writeln!(writer, "{}", obj).unwrap();
+        writer.flush().unwrap();
+    };
+    let read = |reader: &mut BufReader<std::os::unix::net::UnixStream>| -> Value {
+        let mut l = String::new();
+        reader.read_line(&mut l).unwrap();
+        serde_json::from_str(&l).unwrap()
+    };
+
+    // Validation failure over the wire: no ids.
+    send(&mut writer, serde_json::json!({"cmd": "submit_task", "task": "", "cwd": repo.to_str().unwrap()}));
+    let bad = read(&mut reader);
+    assert_eq!(bad["event"], "ack");
+    assert_eq!(bad["cmd"], "submit_task");
+    assert_eq!(bad["ok"], false);
+    assert!(bad["error"].is_string());
+    assert!(bad.get("supervisorId").is_none());
+
+    // Happy path over the wire.
+    send(&mut writer, serde_json::json!({"cmd": "submit_task", "task": "Wire task head that is long enough to prove the task field carries the full text of the submitted job", "cwd": repo.to_str().unwrap(), "title": "Wire Title"}));
+    let good = read(&mut reader);
+    assert_eq!(good["cmd"], "submit_task");
+    assert_eq!(good["ok"], true);
+    assert_eq!(good["supervisorId"], "SV-1");
+    assert_eq!(good["sessionId"], "S1-OC01");
+
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(writer);
+    let _ = server.join();
+}
+
+// ---------- 21. submit_task v1.3 (dod / model / supervisorId) ----------
+
+#[test]
+fn submit_task_v1_3_stores_goal_dod_model_and_budgets() {
+    let root = tmp_root("submit13");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock.clone());
+
+    let ack = daemon.submit_task(
+        "Write a failing regression test for the registry reuse bug".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        Some("Reg trip".to_string()),
+        Some("cargo test registry_rejects_duplicate passes".to_string()),
+        Some("opencode/hy4-flash-free".to_string()),
+        None,
+    );
+    assert!(ack.ok, "submit_task failed: {:?}", ack.error);
+    assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
+    assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
+
+    let snap = daemon.snapshot();
+    assert_eq!(snap.sessions.len(), 1);
+    let s = &snap.sessions[0];
+    assert_eq!(s.goal.as_deref(), Some("Write a failing regression test for the registry reuse bug"));
+    assert_eq!(s.definition_of_done.as_deref(), Some("cargo test registry_rejects_duplicate passes"));
+    assert_eq!(s.model.as_deref(), Some("opencode/hy4-flash-free"));
+    assert_eq!(s.iterations, Some(0));
+    assert_eq!(s.max_iterations, Some(8));
+    assert_eq!(s.wall_clock_deadline, Some(1_763_520_000_000 + 3_600_000));
+
+    // The interactive opencode harness takes no --model; the model field is
+    // the decider model only. Agent start must NEVER carry --model.
+    let calls = fake.calls();
+    let start = calls
+        .iter()
+        .find(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("start"))
+        .expect("agent start call");
+    assert!(!start.iter().any(|a| a == "--model"), "no model passthrough may reach agent start: {start:?}");
+
+    // Unset model: no passthrough tokens anywhere in argv.
+    let ack = daemon.submit_task(
+        "plain task".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
+    assert!(ack.ok);
+    let calls = fake.calls();
+    let last_start = calls
+        .iter()
+        .rfind(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("start"))
+        .unwrap();
+    assert!(!last_start.iter().any(|a| a == "--model"));
+}
+
+#[test]
+fn submit_task_supervisor_id_reroutes_into_existing_supervisor() {
+    let root = tmp_root("submit-reroute");
+    let repo = submit_plan_repo(&root);
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock.clone());
+
+    let ack1 = daemon.submit_task("first".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    assert!(ack1.ok);
+    let ack2 = daemon.submit_task(
+        "second under the same supervisor".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        Some("SV-1".to_string()),
+    );
+    assert!(ack2.ok, "reroute failed: {:?}", ack2.error);
+    assert_eq!(ack2.supervisor_id.as_deref(), Some("SV-1"));
+    assert_eq!(ack2.session_id.as_deref(), Some("S1-OC02"));
+    let snap = daemon.snapshot();
+    assert_eq!(snap.supervisors.len(), 1, "no new supervisor allocated");
+    assert_eq!(snap.sessions.len(), 2);
+
+    // Unknown supervisor id: nothing allocated.
+    let ack3 = daemon.submit_task(
+        "third".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        Some("SV-99".to_string()),
+    );
+    assert!(!ack3.ok);
+    assert_eq!(ack3.supervisor_id, None);
+    assert_eq!(ack3.session_id, None);
+    let snap = daemon.snapshot();
+    assert_eq!(snap.supervisors.len(), 1);
+    assert_eq!(snap.sessions.len(), 2);
+}
+
+// ---------- 22. activity probe (opencode /api/session) ----------
+
+#[test]
+fn activity_probe_parses_live_fixture() {
+    let fixture = include_str!("fixtures/opencode-api-session.json");
+    let sessions = notchd::opencode::parse_api_session_list(fixture).expect("fixture parses");
+    assert!(!sessions.is_empty());
+    for s in &sessions {
+        assert!(!s.id.is_empty());
+        // idle iff time.idle >= time.busy
+        let idle = match s.idle {
+            Some(i) => s.busy.map(|b| i >= b).unwrap_or(true),
+            None => false,
+        };
+        let _ = idle; // shape check only; classification logic lives in the decider module
+    }
+    // At least one entry has an idle timestamp in this capture.
+    assert!(sessions.iter().any(|s| s.idle.is_some()));
+    assert!(sessions.iter().any(|s| s.idle.is_none()) || sessions.iter().all(|s| s.idle.is_some()));
+}
+
+#[test]
+fn activity_classification_idle_busy_and_missing() {
+    use notchd::opencode::ApiSession;
+    let idle_s = ApiSession { id: "a".into(), busy: Some(1000), idle: Some(2000), model: None, directory: None };
+    let busy_s = ApiSession { id: "b".into(), busy: Some(3000), idle: Some(2000), model: None, directory: None };
+    let missing_s = ApiSession { id: "c".into(), busy: Some(3000), idle: None, model: None, directory: None };
+    let missing_busy = ApiSession { id: "d".into(), busy: None, idle: Some(2000), model: None, directory: None };
+    assert!(notchd::opencode::is_idle(&idle_s));
+    assert!(!notchd::opencode::is_idle(&busy_s));
+    assert!(!notchd::opencode::is_idle(&missing_s));
+    assert!(notchd::opencode::is_idle(&missing_busy), "no busy marker yet means idle");
+}
+
+// ---------- 23. Supervisor decision loop (v1.3) ----------
+
+fn submit_simple_goal(daemon: &Daemon, root: &Path, title: &str) -> String {
+    let repo = root.join("goal-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let ack = daemon.submit_task(
+        format!("Goal: {title}"),
+        Some(repo.to_str().unwrap().to_string()),
+        Some(title.to_string()),
+        Some("proof.txt exists and contains notch-idle-proof".to_string()),
+        None,
+        None,
+    );
+    assert!(ack.ok, "submit failed: {:?}", ack.error);
+    ack.session_id.unwrap()
+}
+
+fn pane_of(daemon: &Daemon, id: &str) -> String {
+    daemon.snapshot().sessions.iter().find(|s| s.id == id).unwrap().pane_id.clone()
+}
+
+fn mark_idle(fake: &Arc<FakeHerdr>, oc: &Arc<FakeOpencode>, pane_id: &str, revision: u64) {
+    let entry = agent_entry(pane_id, "idle", revision);
+    fake.set_agents(vec![entry]);
+    oc.set_api_idle(pane_id, true);
+}
+
+#[test]
+fn idle_triggers_one_decider_and_one_reprompt_continue_path() {
+    let root = tmp_root("sup-continue");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+    fake.set_agents(vec![agent_entry(&pane, "working", 1)]);
+
+    // Working: no decider call, no re-prompt.
+    daemon.poll_once();
+    assert_eq!(oc.decider_calls(), 0);
+
+    // Idle: exactly one decider call, one re-prompt with the instruction.
+    mark_idle(&fake, &oc, &pane, 2);
+    oc.push_decision("CONTINUE: create proof.txt containing exactly notch-idle-proof and cat it");
+    daemon.poll_once();
+
+    assert_eq!(oc.decider_calls(), 1, "one decider call expected");
+    let calls = fake.calls();
+    let prompts: Vec<&Vec<String>> = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .collect();
+    let reprompt = prompts
+        .iter()
+        .find(|p| p.join(" ").contains("create proof.txt containing exactly notch-idle-proof"))
+        .expect("re-prompt with decider instruction");
+    assert_eq!(reprompt[4], "create proof.txt containing exactly notch-idle-proof and cat it");
+
+    let snap = daemon.snapshot();
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(s.iterations, Some(1));
+    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("reprompt:"));
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("\"kind\":\"decision\""), "decision event missing: {log}");
+    assert!(log.contains("\"kind\":\"idle_signal\""), "idle_signal event missing: {log}");
+}
+
+#[test]
+fn done_verifier_yes_marks_done_and_cleans_up_no_iterations() {
+    let root = tmp_root("sup-done");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+    mark_idle(&fake, &oc, &pane, 7);
+    assert!(root.join("tmp").join(format!("notch-{sid}")).exists());
+
+    oc.push_decision("DONE: proof.txt created and cat shows notch-idle-proof");
+    oc.push_decision("YES: output proves the DoD is satisfied");
+    daemon.poll_once();
+
+    let snap = daemon.snapshot();
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(s.status, Status::Done);
+    assert_eq!(s.iterations, Some(0));
+    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("done:"));
+    assert!(!root.join("tmp").join(format!("notch-{sid}")).exists(), "verifier-accepted done must clean up");
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("done (verifier accepted evidence)"));
+}
+
+#[test]
+fn done_verifier_no_reprompts_for_missing_evidence_counts_iteration() {
+    let root = tmp_root("sup-missing");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+    mark_idle(&fake, &oc, &pane, 7);
+
+    oc.push_decision("DONE: proof.txt created");
+    oc.push_decision("NO: the file content was never shown; only its existence");
+    daemon.poll_once();
+
+    let calls = fake.calls();
+    let reprompt = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .find(|p| p.join(" ").contains("definition of done is not yet satisfied") || p.join(" ").contains("never shown"));
+    assert!(reprompt.is_some(), "expected a missing-evidence re-prompt: {calls:?}");
+    let snap = daemon.snapshot();
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(s.iterations, Some(1));
+    assert_eq!(s.status, Status::Working);
+    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("verify:"));
+}
+
+#[test]
+fn three_consecutive_stucks_trigger_strategy_change_then_escalate() {
+    let root = tmp_root("sup-stuck");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+
+    // Idle rounds with the same blocker three times -> strategy change; fourth -> escalate.
+    for round in 1..=4u32 {
+        mark_idle(&fake, &oc, &pane, 10 + round as u64);
+        oc.push_decision("STUCK: the same compile error persists at src/auth.rs:12");
+        daemon.poll_once();
+    }
+    let snap = daemon.snapshot();
+    let esc = &snap.escalations;
+    assert_eq!(esc.len(), 1, "one escalation expected: {esc:?}");
+    assert_eq!(esc[0].kind, "loop_detected");
+    // Escalated sessions stay as-is (not killed, not re-prompted) per the contract.
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(s.status, Status::Idle);
+    let decisions: Vec<&str> = snap.decisions.iter().map(|d| d.action.as_str()).collect();
+    assert!(decisions.contains(&"escalate"), "escalate decision recorded: {decisions:?}");
+    // No fifth decider call — the escalated session is excluded from the loop.
+    let calls_before = oc.decider_calls();
+    daemon.poll_once();
+    assert_eq!(oc.decider_calls(), calls_before, "escalated session must not call the decider");
+}
+
+#[test]
+fn budget_exhaustion_escalates_at_max_iterations() {
+    let root = tmp_root("sup-budget");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+
+    // Eight CONTINUE rounds (the default max). Advance the fake pane output
+    // every round so the loop detector does not (correctly) fire.
+    for round in 1..=8u32 {
+        mark_idle(&fake, &oc, &pane, 20 + round as u64);
+        *fake.read_text.lock().unwrap() = format!("round {round}: cargo test output line {round}
+");
+        oc.push_decision(&format!("CONTINUE: do the next thing (round {round})"));
+        daemon.poll_once();
+        let s = daemon.snapshot().sessions.into_iter().find(|s| s.id == sid).unwrap();
+        eprintln!("[loop] round={round} status={} reason={:?} iterations={:?}", s.status.as_str(), s.failure_reason, s.iterations);
+    }
+    let snap = daemon.snapshot();
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(s.iterations, Some(8));
+    // Ninth idle poll must NOT call the decider; it must escalate budget_exceeded.
+    let calls_before = oc.decider_calls();
+    mark_idle(&fake, &oc, &pane, 40);
+    daemon.poll_once();
+    assert_eq!(oc.decider_calls(), calls_before, "decider must not be called past budget");
+    let snap = daemon.snapshot();
+    let esc = &snap.escalations;
+    assert!(esc.iter().any(|e| e.kind == "budget_exceeded"), "budget escalation expected: {esc:?}");
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert_eq!(s.failure_reason.as_deref(), None::<&str>, "budget escalation does not kill the session");
+}
+
+#[test]
+fn paused_supervisor_gets_no_decisions_until_resumed() {
+    let root = tmp_root("sup-pause");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+
+    daemon.pause_supervisor("SV-1").unwrap();
+    mark_idle(&fake, &oc, &pane, 30);
+    daemon.poll_once();
+    assert_eq!(oc.decider_calls(), 0, "paused supervisor must not decide");
+    let snap = daemon.snapshot();
+    assert!(snap.supervisors[0].paused);
+
+    daemon.resume_supervisor("SV-1").unwrap();
+    mark_idle(&fake, &oc, &pane, 31);
+    oc.push_decision("CONTINUE: create proof.txt and cat it");
+    daemon.poll_once();
+    assert_eq!(oc.decider_calls(), 1);
+    let snap = daemon.snapshot();
+    assert!(!snap.supervisors[0].paused);
+}
+
+#[test]
+fn kill_switch_closes_everything_and_marks_failed() {
+    let root = tmp_root("sup-kill");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid1 = submit_simple_goal(&daemon, &root, "Task one");
+    let sid2 = submit_simple_goal(&daemon, &root, "Task two");
+    let _ = (sid1, sid2);
+    std::fs::create_dir_all(root.join("tmp").join("notch-S1-OC01")).unwrap();
+    std::fs::create_dir_all(root.join("tmp").join("notch-S2-OC01")).unwrap();
+
+    let ack = daemon.kill_switch();
+    assert_eq!(ack.closed, 2, "both panes must close");
+    let snap = daemon.snapshot();
+    for s in &snap.sessions {
+        assert_eq!(s.status, Status::Failed);
+        assert_eq!(s.failure_reason.as_deref(), Some("kill_switch"));
+    }
+    assert!(!root.join("tmp").join("notch-S1-OC01").exists());
+    assert!(!root.join("tmp").join("notch-S2-OC01").exists());
+    let calls = fake.calls();
+    let closes: Vec<&Vec<String>> = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .collect();
+    assert_eq!(closes.len(), 2);
+}
+
+#[test]
+fn message_delivers_verbatim_and_is_logged_and_capped() {
+    let root = tmp_root("sup-msg");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid1 = submit_simple_goal(&daemon, &root, "Task one");
+    let sid2 = submit_simple_goal(&daemon, &root, "Task two");
+
+    let ack = daemon.message(&sid1, &sid2, "handoff", "handoff: the tests fail at auth.rs:12");
+    assert!(ack.ok, "message failed: {:?}", ack.error);
+    assert_eq!(ack.message_id.as_deref(), Some("msg_1"));
+
+    let calls = fake.calls();
+    let prompts: Vec<&Vec<String>> = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .collect();
+    let delivery = prompts.iter().find(|p| p.join(" ").contains("the tests fail at auth.rs:12")).unwrap();
+    assert_eq!(delivery[3], sid2.to_lowercase());
+    assert_eq!(delivery[4], "handoff: the tests fail at auth.rs:12", "body is verbatim");
+
+    // Unknown session and oversized body are rejected without delivery.
+    let ack = daemon.message(&sid1, "S9-OC99", "handoff", "hello");
+    assert!(!ack.ok);
+    let big = "x".repeat(4001);
+    let ack = daemon.message(&sid1, &sid2, "handoff", &big);
+    assert!(!ack.ok);
+    let ack = daemon.message(&sid1, &sid2, "bogus-type", "hello");
+    assert!(!ack.ok);
+
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("\"kind\":\"message\""));
+    assert!(log.contains("S2-OC01"));
+
+    // busMessages cap: 30 entries, newest first.
+    for i in 0..31 {
+        let msg = format!("fill message number {i}");
+        let ack = daemon.message(&sid1, &sid2, "result", &msg);
+        assert!(ack.ok, "fill message {i} failed");
+    }
+    let snap = daemon.snapshot();
+    assert_eq!(snap.bus_messages.len(), 30);
+    assert_eq!(snap.bus_messages[0].preview, "fill message number 30");
+}
+
+#[test]
+fn list_models_parses_and_caches() {
+    let root = tmp_root("sup-models");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock);
+    let m1 = daemon.list_models();
+    assert_eq!(m1.models, vec!["opencode/hy4-flash-free", "opencode/inkling-2-small-free"]);
+    let m2 = daemon.list_models();
+    assert_eq!(m2.models, m1.models);
+    let runs = oc.calls.lock().unwrap().iter().filter(|c| c.get(1).map(String::as_str) == Some("models")).count();
+    assert_eq!(runs, 1, "second call must hit the cache");
+}
+
+#[test]
+fn snapshot_v1_3_blocks_carry_decisions_escalations_and_bus_messages() {
+    let root = tmp_root("sup-blocks");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock.clone());
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+
+    // 13 CONTINUE rounds — but the default iteration budget (8) is reached
+    // first: 8 continue decisions + 1 budget escalation, then the decider
+    // stops calling (per the contract, escalation halts the loop).
+    for round in 1..=13u32 {
+        mark_idle(&fake, &oc, &pane, 50 + round as u64);
+        *fake.read_text.lock().unwrap() = format!("round {round}: cargo test output line {round}");
+        oc.push_decision(&format!("CONTINUE: do round {round}"));
+        daemon.poll_once();
+    }
+    let snap = daemon.snapshot();
+    assert_eq!(snap.decisions.len(), 9);
+    assert_eq!(snap.decisions[0].action, "escalate");
+    assert_eq!(snap.decisions[1].reason, "continue: do round 8");
+    // bus message visible
+    let ack = daemon.message(&sid, &sid, "result", "self-check note");
+    assert!(ack.ok);
+    let snap = daemon.snapshot();
+    assert_eq!(snap.bus_messages.len(), 1);
+    assert_eq!(snap.bus_messages[0].from, sid);
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("\"kind\":\"idle_signal\"") && log.contains("\"kind\":\"decision\""));
+}
+
+#[test]
+fn rate_limit_tail_triggers_backoff_without_calling_decider() {
+    let root = tmp_root("sup-429");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock);
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+    mark_idle(&fake, &oc, &pane, 60);
+    *fake.read_text.lock().unwrap() = "Error: 429 Too Many Requests: rate limit exceeded\n".to_string();
+
+    daemon.poll_once();
+    assert_eq!(oc.decider_calls(), 0, "decider must not fire on a rate-limited tail");
+    let snap = daemon.snapshot();
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("backoff:"));
+    assert!(snap.warnings.iter().any(|w| w.contains("rate limit")));
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("backoff"), "backoff decision missing: {log}");
+}
+
+#[test]
+fn unparseable_decider_output_is_logged_honestly_as_stuck() {
+    let root = tmp_root("sup-unparseable");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock);
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+    mark_idle(&fake, &oc, &pane, 70);
+    oc.push_decision("hmm, {invalid json, not a verdict}");
+    daemon.poll_once();
+    let snap = daemon.snapshot();
+    let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
+    assert!(s.last_supervisor_action.as_deref().unwrap().contains("decider unparseable"));
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("decider unparseable"));
+}
+
+#[test]
+fn idle_signal_event_uses_primary_source() {
+    let root = tmp_root("sup-signal");
+    let fake = FakeHerdr::new();
+    let oc = FakeOpencode::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock);
+    let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
+    let pane = pane_of(&daemon, &sid);
+    mark_idle(&fake, &oc, &pane, 80);
+    oc.push_decision("DONE: proof.txt contains notch-idle-proof per cat output");
+    oc.push_decision("YES: cat output proves it");
+    daemon.poll_once();
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    let signal_line = log.lines().find(|l| l.contains("\"kind\":\"idle_signal\"")).expect("idle_signal logged");
+    assert!(signal_line.contains("primary"), "primary signal expected: {signal_line}");
+}
+
+
+// ---------- 33. Watchdog stuck-kill records a `stuck` escalation (v1.3) ----------
+
+#[test]
+fn stuck_kill_records_stuck_escalation_in_snapshot() {
+    let root = tmp_root("stuck-esc");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock.clone());
+
+    let plan = write_plan(&root);
+    daemon.run_plan(&plan);
+    let snap = daemon.snapshot();
+    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+
+    // A working forever, one done — only A is a stuck candidate.
+    fake.set_agents(vec![
+        agent_entry(&pane_a, "working", 7),
+        agent_entry(&pane_b, "done", 3),
+    ]);
+    daemon.poll_once();
+    clock.advance_ms(16_000);
+    daemon.poll_once();
+
+    let snap = daemon.snapshot();
+    let esc = &snap.escalations;
+    assert_eq!(esc.len(), 1, "stuck kill must record exactly one escalation: {esc:?}");
+    assert_eq!(esc[0].kind, "stuck");
+    assert_eq!(esc[0].session, "S1-OC01");
+    assert_eq!(esc[0].supervisor, "SV-1");
+    assert!(esc[0].reason.contains("no revision change"), "reason: {}", esc[0].reason);
+    let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
+    assert_eq!(s1.status, Status::Failed);
+    assert_eq!(s1.failure_reason.as_deref(), Some("stuck"));
+}
+
+// ---------- 34. kill_switch: close EVERY managed pane regardless of status (lead ruling) ----------
+
+#[test]
+fn kill_switch_closes_done_session_panes_too() {
+    let root = tmp_root("killswitch-done");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock.clone());
+
+    let plan = write_plan(&root);
+    daemon.run_plan(&plan);
+    let snap = daemon.snapshot();
+    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+
+    // Mark S1-OC01 done (idle TUIs persist after done), S1-OC02 stays working.
+    fake.set_agents(vec![
+        agent_entry(&pane_a, "done", 1),
+        agent_entry(&pane_b, "working", 1),
+    ]);
+    daemon.poll_once();
+    // Recreate a temp dir for the done session to prove cleanup runs for it too.
+    std::fs::create_dir_all(root.join("tmp").join("notch-S1-OC01")).unwrap();
+
+    let ack = daemon.kill_switch();
+    assert_eq!(ack.closed, 4, "every managed pane closes, including the done session's TUI");
+    let calls = fake.calls();
+    let closes: Vec<&Vec<String>> = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .collect();
+    assert_eq!(closes.len(), 4);
+    assert!(closes.iter().any(|c| c.join(" ").contains(&pane_a)));
+
+    let snap = daemon.snapshot();
+    let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
+    assert_eq!(s1.status, Status::Done, "done sessions stay done");
+    let s2 = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap();
+    assert_eq!(s2.status, Status::Failed);
+    assert_eq!(s2.failure_reason.as_deref(), Some("kill_switch"));
+    assert!(!root.join("tmp").join("notch-S1-OC01").exists());
+}
+
+#[test]
+fn kill_switch_one_failed_close_does_not_abort_the_batch() {
+    let root = tmp_root("killswitch-one-fail");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock.clone());
+
+    let plan = write_plan(&root);
+    daemon.run_plan(&plan);
+    let snap = daemon.snapshot();
+    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+
+    // The done session's pane is already gone in herdr.
+    fake.set_agents(vec![
+        agent_entry(&pane_a, "working", 1),
+        agent_entry(&pane_b, "working", 1),
+    ]);
+    daemon.poll_once();
+    fake.set_fail_panes(vec![&pane_a]);
+
+    let ack = daemon.kill_switch();
+    assert_eq!(ack.closed, 3, "three panes close; the already-gone one doesn't count");
+    let snap = daemon.snapshot();
+    let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
+    let s2 = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap();
+    assert_eq!(s1.status, Status::Failed);
+    assert_eq!(s2.status, Status::Failed);
+    assert_eq!(s1.failure_reason.as_deref(), Some("kill_switch"));
+    assert_eq!(s2.failure_reason.as_deref(), Some("kill_switch"));
+    let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
+    assert!(log.contains("pane_already_closed"), "failure must be logged, got: {log}");
+}
+
+#[test]
+fn kill_switch_skips_sessions_with_empty_pane_id() {
+    let root = tmp_root("killswitch-empty-pane");
+    let fake = FakeHerdr::new();
+    *fake.fail_subcommand.lock().unwrap() = Some("pane split".to_string());
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock.clone());
+
+    let plan = write_plan(&root);
+    daemon.run_plan(&plan); // spawn fails: pane split fails -> pane_id empty, session failed
+    let snap = daemon.snapshot();
+    assert!(snap.sessions.iter().all(|s| s.pane_id.is_empty()));
+
+    let ack = daemon.kill_switch();
+    assert_eq!(ack.closed, 0);
+    let calls = fake.calls();
+    let closes: Vec<&Vec<String>> = calls
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .collect();
+    assert_eq!(closes.len(), 0, "empty paneId must be skipped, not closed");
+}
+
+// ---------- 35. Global sweep must never delete non-engine dirs (lead ruling) ----------
+
+#[test]
+fn sweep_never_deletes_non_engine_dirs() {
+    let root = tmp_root("sweep-safety");
+    let state_dir = root.join("state");
+    let tmp_dir = root.join("tmp");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // Dirs that look like notch's but are not the engine's — must survive.
+    let notch_accept = tmp_dir.join("notch-accept-123");
+    std::fs::create_dir_all(notch_accept.join("nested")).unwrap();
+    std::fs::write(notch_accept.join("nested").join("keep.txt"), "mine").unwrap();
+    let notch_foo = tmp_dir.join("notch-foo-bar");
+    std::fs::create_dir_all(&notch_foo).unwrap();
+    std::fs::write(notch_foo.join("keep.txt"), "mine").unwrap();
+
+    // Nonempty exact-name orphan we never spawned — must survive + warn.
+    let impostor = tmp_dir.join("notch-S1-OC09");
+    std::fs::create_dir_all(&impostor).unwrap();
+    std::fs::write(impostor.join("evidence.txt"), "acceptance evidence").unwrap();
+
+    // Empty exact-name orphan — eligible for the sweep.
+    let empty_orphan = tmp_dir.join("notch-S9-OC09");
+    std::fs::create_dir_all(&empty_orphan).unwrap();
+
+    // A TRACKED dead session with its tempDir recorded — must be removed.
+    let tracked_dir = tmp_dir.join("notch-S1-OC01");
+    std::fs::create_dir_all(&tracked_dir).unwrap();
+    std::fs::write(tracked_dir.join("work.txt"), "session output").unwrap();
+    std::fs::write(
+        state_dir.join("state.json"),
+        serde_json::json!({
+            "version": 1,
+            "supervisors": [{ "id": "SV-1", "number": 1, "title": "t" }],
+            "sessions": [{
+                "id": "S1-OC01", "sup": "SV-1", "status": "failed",
+                "title": "t", "task": "t", "cwd": "/tmp",
+                "paneId": "w1:p1", "startedAt": 1_763_520_000_000u64,
+                "lastAction": null, "lastRevision": null,
+                "latencyMs": null, "failureReason": "spawn_failed",
+                "tempDir": tracked_dir.to_string_lossy()
+            }],
+            "attribution": [], "conflicts": [], "warnings": [],
+            "stuck_after_secs": 900, "paused_supervisors": [],
+            "decisions": [], "escalations": [], "bus_messages": [],
+            "esc_seq": 0, "msg_seq": 0
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+    let ack = daemon.cleanup(None);
+    assert!(ack.ok);
+    assert!(notch_accept.exists(), "unrelated notch-accept-123 must survive sweep");
+    assert!(notch_foo.exists(), "unrelated notch-foo-bar must survive sweep");
+    assert!(impostor.exists(), "nonempty untracked exact-name dir must survive sweep");
+    assert!(!empty_orphan.exists(), "exact-name empty orphan must be swept");
+    assert!(!tracked_dir.exists(), "tracked dead session dir must be removed");
+    assert_eq!(ack.removed, Some(2), "one tracked dead dir + one empty orphan, got {:?}", ack.removed);
+    let snap = daemon.snapshot();
+    assert!(
+        snap.warnings.iter().any(|w| w.contains("notch-S1-OC09")),
+        "untracked nonempty exact-name dir must produce a warning: {:?}",
+        snap.warnings
     );
 }

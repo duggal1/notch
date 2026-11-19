@@ -62,6 +62,19 @@ pub struct AgentEntry {
     pub name: Option<String>,
     #[serde(default)]
     pub focused: bool,
+    #[serde(default)]
+    pub agent_session: Option<serde_json::Value>,
+}
+
+impl AgentEntry {
+    /// `agent_session.value` from `herdr agent list` — the OpenCode session id
+    /// (matches `opencode api GET /api/session`'s `id`).
+    pub fn agent_session_value(&self) -> Option<String> {
+        self.agent_session
+            .as_ref()
+            .and_then(|v| v.get("value").and_then(|x| x.as_str()))
+            .map(str::to_string)
+    }
 }
 
 type Runner = Arc<dyn Fn(&[String]) -> Result<String, HerdrError> + Send + Sync>;
@@ -161,6 +174,7 @@ impl Herdr {
         self.invoke(&["agent", "start", name, "--kind", "opencode", "--pane", pane_id])
             .map(|_| ())
     }
+
 
     /// `herdr agent prompt <target> <text>` (no --wait; the daemon polls).
     pub fn agent_prompt(&self, target: &str, text: &str) -> Result<(), HerdrError> {

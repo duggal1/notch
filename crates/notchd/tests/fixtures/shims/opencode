@@ -1,0 +1,134 @@
+#!/bin/zsh
+# opencode CLI shim for notchd fault-injection tests.
+#
+# Scripted-behavior CLI double for `opencode`. Same override contract as the
+# herdr shim:
+#
+#   1. $SHIM_STATE_DIR/<subkey>.mode   (dynamic file; checked every invocation)
+#   2. $SHIM_STATE_DIR/mode            (dynamic; global swap)
+#   3. SHIM_<SUBCOMMAND>_MODE          (static env: SHIM_API_SESSION_MODE,
+#                                       SHIM_MODELS_MODE, SHIM_RUN_MODE)
+#   4. SHIM_MODE                       (static env; fallback: healthy)
+#
+# Modes: healthy | exit1 | hang | bad_json | http429 | http5xx | empty | wrong_schema
+#
+# Subcommands supported (exactly the ones the daemon is allowed to call):
+#   opencode api GET /api/session
+#   opencode models
+#   opencode run --model <m> <prompt>
+#
+# State kept under $SHIM_STATE_DIR (shared with the herdr shim):
+#   agents.tsv        name<TAB>pane_id, written by `herdr agent start`
+#   api_state         "idle" => /api/session reports time.idle >= time.busy;
+#                     anything else (or missing) => reports busy, no idle marker
+#   decider_response  if present, `opencode run` prints its contents verbatim
+#   decider_calls     one line appended per `opencode run` invocation (count)
+#
+# `hang` sleeps ${SHIM_HANG_SECS:-45}, then emits healthy output and exits 0 —
+# every caller-side timeout (there is none on the opencode seam today) expires.
+
+set -u
+export SHIM_STATE_DIR="${SHIM_STATE_DIR:-}"
+
+if [[ -n "$SHIM_STATE_DIR" ]]; then
+  mkdir -p "$SHIM_STATE_DIR" 2>/dev/null || true
+  if [[ -f "$SHIM_STATE_DIR/mode" ]]; then
+    SHIM_MODE="$(head -n1 "$SHIM_STATE_DIR/mode" 2>/dev/null | tr -d '[:space:]')"
+  fi
+fi
+
+resolve_mode() {
+  local subkey="$1"
+  if [[ -n "$SHIM_STATE_DIR" && -f "$SHIM_STATE_DIR/$subkey.mode" ]]; then
+    head -n1 "$SHIM_STATE_DIR/$subkey.mode" 2>/dev/null | tr -d '[:space:]'
+    return 0
+  fi
+  local upper="${(U)subkey}"
+  local varname="SHIM_${upper}_MODE"
+  if [[ -n "${(P)varname:-}" ]]; then
+    print -r -- "${(P)varname}"
+    return 0
+  fi
+  print -r -- "${SHIM_MODE:-healthy}"
+}
+
+fault_gate() {
+  local mode="$1"; shift
+  case "$mode" in
+    healthy) return 0 ;;
+    exit1)
+      print -r -- "shim(opencode): forced exit 1 for: $*" >&2
+      exit 1
+      ;;
+    hang)
+      sleep "${SHIM_HANG_SECS:-45}"
+      return 0
+      ;;
+    bad_json)
+      print -r -- 'not json {{{'
+      exit 0
+      ;;
+    http429)
+      print -r -- '429 too many requests'
+      exit 0
+      ;;
+    http5xx)
+      print -r -- '500 internal server error'
+      exit 0
+      ;;
+    empty)
+      exit 0
+      ;;
+    wrong_schema)
+      print -r -- '{"result": 42}'
+      exit 0
+      ;;
+    *)
+      print -r -- "shim(opencode): unknown mode '$mode'" >&2
+      exit 2
+      ;;
+  esac
+}
+
+sub="${1:-}"
+
+case "$sub" in
+  api)
+    route="${3:-}"
+    if [[ "${2:-}" != "GET" || "$route" != "/api/session" ]]; then
+      print -r -- "shim(opencode): unsupported api route: $*" >&2
+      exit 2
+    fi
+    mode="$(resolve_mode api_session)"; fault_gate "$mode" "$@"
+    idle_state="$(cat "$SHIM_STATE_DIR/api_state" 2>/dev/null || true)"
+    local_entries=()
+    if [[ -n "$SHIM_STATE_DIR" && -f "$SHIM_STATE_DIR/agents.tsv" ]]; then
+      while IFS=$'\t' read -r name pane; do
+        [[ -z "$name" ]] && continue
+        if [[ "$idle_state" == "idle" ]]; then
+          time_json='{"created":1000,"updated":2000,"busy":1000,"idle":2000}'
+        else
+          time_json='{"created":5000,"updated":6000,"busy":5000}'
+        fi
+        local_entries+=("{\"id\":\"ses_${name}\",\"agent\":\"build\",\"model\":{\"id\":\"hy4-flash-free\",\"providerID\":\"opencode\",\"variant\":\"max\"},\"time\":${time_json},\"location\":{\"directory\":\"/tmp\"}}")
+      done < "$SHIM_STATE_DIR/agents.tsv"
+    fi
+    print -r -- "{\"cursor\":null,\"data\":[${(j:,:)local_entries}]}" ;;
+  models)
+    mode="$(resolve_mode models)"; fault_gate "$mode" "$@"
+    print -r -- 'opencode/hy4-flash-free'
+    print -r -- 'opencode/inkling-2-small-free' ;;
+  run)
+    # Count EVERY decider invocation (including fault-gate exits: exit1/hang/
+    # empty/bad_json) so tests can assert the decision loop's call budget.
+    [[ -n "$SHIM_STATE_DIR" ]] && print -r -- "called" >> "$SHIM_STATE_DIR/decider_calls"
+    mode="$(resolve_mode run)"; fault_gate "$mode" "$@"
+    if [[ -n "$SHIM_STATE_DIR" && -f "$SHIM_STATE_DIR/decider_response" ]]; then
+      cat "$SHIM_STATE_DIR/decider_response"
+    else
+      print -r -- 'CONTINUE: keep going, keep verifying'
+    fi ;;
+  *)
+    print -r -- "shim(opencode): unsupported invocation: opencode $*" >&2
+    exit 2 ;;
+esac

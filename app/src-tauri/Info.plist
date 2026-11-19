@@ -4,12 +4,11 @@
   Merged into the generated Info.plist by tauri-codegen (dev builds, at compile
   time) and by the bundler (release .app) — see MacConfig.infoPlist in
   app/src-tauri/tauri.conf.json.
-  LSUIElement: no Dock icon — notch is a menu-bar / notch surface.
+  v1.3: REGULAR app — dock icon, title bar, ⌘Tab. (LSUIElement removed:
+  the user reviewed the product and demanded the standard macOS app.)
 -->
 <plist version="1.0">
 <dict>
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>LSApplicationCategoryType</key>

@@ -21,9 +21,9 @@ use std::sync::OnceLock;
 
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSHapticFeedbackManager, NSHapticFeedbackPerformanceTime, NSHapticFeedbackPerformer,
-    NSHapticFeedbackPattern, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowLevel,
-    NSWindowStyleMask, NSMainMenuWindowLevel,
+    NSHapticFeedbackManager, NSHapticFeedbackPattern, NSHapticFeedbackPerformanceTime,
+    NSHapticFeedbackPerformer, NSMainMenuWindowLevel, NSScreen, NSWindow,
+    NSWindowCollectionBehavior, NSWindowLevel, NSWindowStyleMask,
 };
 use objc2_foundation::{NSEdgeInsets, NSRect};
 
@@ -33,6 +33,8 @@ use crate::frame::{notch_from_measurements, NotchSize};
 pub struct ScreenMeasurements {
     /// NSScreen.frame.width, logical points.
     pub screen_width: f64,
+    /// NSScreen.frame.height, logical points.
+    pub screen_height: f64,
     /// Detected notch size, or None on notchless displays (callers fall back).
     pub notch: Option<NotchSize>,
 }
@@ -43,7 +45,8 @@ static SCREEN: OnceLock<ScreenMeasurements> = OnceLock::new();
 /// setup; the tests run headless-less, so this path is also what tests see).
 pub const FALLBACK_MEASUREMENTS: ScreenMeasurements = ScreenMeasurements {
     screen_width: 1512.0, // 14" MacBook Pro logical width; centering still works
-    notch: None,          // frame.rs maps None → 200×32 fallback
+    screen_height: 982.0,
+    notch: None, // frame.rs maps None → 200×32 fallback
 };
 
 /// Take the measurements. Must run on the main thread (called from setup).
@@ -70,6 +73,7 @@ pub fn measure_screen() -> ScreenMeasurements {
         );
         ScreenMeasurements {
             screen_width: frame.size.width,
+            screen_height: frame.size.height,
             notch,
         }
     })
@@ -109,6 +113,60 @@ pub fn apply_window_chrome(ns_window_ptr: *mut std::ffi::c_void) {
         window.setStyleMask(NSWindowStyleMask::Borderless);
         window.setHidesOnDeactivate(false);
         window.setMovable(false);
+    }
+}
+
+/// Single-instance guard (regular app: second launch activates the running
+/// instance instead of starting a duplicate). Bundle-id match via
+/// NSRunningApplication — no argv parsing, no sockets, no lockfiles.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SingleInstanceDecision {
+    /// No other instance is running — proceed normally.
+    Proceed,
+    /// Another instance is running with this pid — activate it and exit.
+    FocusExisting(i32),
+}
+
+/// Pure decision. `pids` = every pid LaunchServices currently registers for
+/// our bundle id (including this process).
+pub fn decide_single_instance(current_pid: i32, pids: &[i32]) -> SingleInstanceDecision {
+    match pids.iter().copied().find(|&p| p != current_pid) {
+        Some(other) => SingleInstanceDecision::FocusExisting(other),
+        None => SingleInstanceDecision::Proceed,
+    }
+}
+
+/// If another Notch instance is already running, activate it (all its windows
+/// come forward) and return true — the caller should exit(0). Call from setup,
+/// before any window exists. No-op off the main thread (returns false).
+pub fn focus_existing_instance() -> bool {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    use objc2_foundation::NSString;
+
+    let Some(_mtm) = MainThreadMarker::new() else {
+        eprintln!("[notch] single-instance check off the main thread; proceeding");
+        return false;
+    };
+    let current = std::process::id() as i32;
+    let bundle_id = NSString::from_str("com.notch.app");
+    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&bundle_id);
+    let pids: Vec<i32> = (0..apps.count())
+        .map(|i| apps.objectAtIndex(i).processIdentifier())
+        .collect();
+    match decide_single_instance(current, &pids) {
+        SingleInstanceDecision::Proceed => false,
+        SingleInstanceDecision::FocusExisting(_) => {
+            for i in 0..apps.count() {
+                let app = apps.objectAtIndex(i);
+                if app.processIdentifier() != current {
+                    // ActivateAllWindows: popover (if visible) + dashboard
+                    // both come forward, like a double-clicked regular app.
+                    let _ =
+                        app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+                }
+            }
+            true
+        }
     }
 }
 

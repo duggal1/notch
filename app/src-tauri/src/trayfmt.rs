@@ -7,8 +7,12 @@
 //!   • tooltip: carries the numbers (`notch — N in flight`; failures are
 //!     appended only when there is at least one — `0 failed` is noise).
 //!   • the disabled menu item repeats the same truth in words.
+//!
+//! `status_from_value` reads the snapshot as untrusted JSON (that's what
+//! crosses the emit boundary), tolerating anything unexpected by returning
+//! a zeroed count rather than failing.
 
-use crate::snapshot::{Snapshot, Status};
+use serde_json::Value;
 
 /// N in flight = sessions whose status is `working`. Failures are reported
 /// separately (they need eyes, not just a count).
@@ -18,17 +22,21 @@ pub struct TrayStatus {
     pub failed: usize,
 }
 
-pub fn status_from_snapshot(s: &Snapshot) -> TrayStatus {
-    let mut in_flight = 0usize;
-    let mut failed = 0usize;
-    for sess in &s.sessions {
-        match sess.status {
-            Status::Working => in_flight += 1,
-            Status::Failed => failed += 1,
-            _ => {}
+pub fn status_from_value(snapshot: &Value) -> TrayStatus {
+    let mut status = TrayStatus {
+        in_flight: 0,
+        failed: 0,
+    };
+    if let Some(sessions) = snapshot.get("sessions").and_then(Value::as_array) {
+        for s in sessions {
+            match s.get("status").and_then(Value::as_str) {
+                Some("working") => status.in_flight += 1,
+                Some("failed") => status.failed += 1,
+                _ => {}
+            }
         }
     }
-    TrayStatus { in_flight, failed }
+    status
 }
 
 /// Menu-bar title. `None` ⇒ no title text (icon only).

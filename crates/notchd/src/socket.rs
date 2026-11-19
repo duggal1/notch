@@ -179,6 +179,52 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 let a = daemon.cleanup(id);
                 ack(&tx, "cleanup", true, serde_json::json!({"removed": a.removed.unwrap_or(0)}));
             }
+            "pause_supervisor" => {
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                match daemon.pause_supervisor(&id) {
+                    Ok(_) => ack(&tx, "pause_supervisor", true, serde_json::json!({"id": id, "paused": true})),
+                    Err(e) => ack(&tx, "pause_supervisor", false, serde_json::json!({"error": e})),
+                }
+            }
+            "resume_supervisor" => {
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                match daemon.resume_supervisor(&id) {
+                    Ok(_) => ack(&tx, "resume_supervisor", true, serde_json::json!({"id": id, "resumed": true})),
+                    Err(e) => ack(&tx, "resume_supervisor", false, serde_json::json!({"error": e})),
+                }
+            }
+            "kill_switch" => {
+                let a = daemon.kill_switch();
+                ack(&tx, "kill_switch", true, serde_json::json!({"closed": a.closed}));
+            }
+            "message" => {
+                let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let a = daemon.message(&from, &to, &kind, &body);
+                let mut obj = serde_json::Map::new();
+                obj.insert("event".into(), "ack".into());
+                obj.insert("cmd".into(), "message".into());
+                if let Some(map) = serde_json::to_value(&a).ok().and_then(|s| s.as_object().cloned()) {
+                    for (k, val) in map {
+                        obj.insert(k, val);
+                    }
+                }
+                send(&tx, serde_json::Value::Object(obj));
+            }
+            "list_models" => {
+                let a = daemon.list_models();
+                let mut obj = serde_json::Map::new();
+                obj.insert("event".into(), "ack".into());
+                obj.insert("cmd".into(), "list_models".into());
+                if let Some(map) = serde_json::to_value(&a).ok().and_then(|s| s.as_object().cloned()) {
+                    for (k, val) in map {
+                        obj.insert(k, val);
+                    }
+                }
+                send(&tx, serde_json::Value::Object(obj));
+            }
             "logs" => {
                 let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let tail = v.get("tail").and_then(|x| x.as_u64()).map(|n| n as usize);
@@ -193,6 +239,27 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                     Ok(_) => ack(&tx, "focus", true, serde_json::json!({"id": id})),
                     Err(e) => ack(&tx, "focus", false, serde_json::json!({"error": e})),
                 }
+            }
+            "submit_task" => {
+                let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
+                let title = v.get("title").and_then(|x| x.as_str()).map(str::to_string);
+                let dod = v.get("definitionOfDone").and_then(|x| x.as_str()).map(str::to_string);
+                let model = v.get("model").and_then(|x| x.as_str()).map(str::to_string);
+                let sup = v.get("supervisorId").and_then(|x| x.as_str()).map(str::to_string);
+                let ack = daemon.submit_task(task, cwd, title, dod, model, sup);
+                let mut obj = serde_json::Map::new();
+                obj.insert("event".into(), "ack".into());
+                obj.insert("cmd".into(), "submit_task".into());
+                if let Some(map) = serde_json::to_value(&ack)
+                    .ok()
+                    .and_then(|s| s.as_object().cloned())
+                {
+                    for (k, val) in map {
+                        obj.insert(k, val);
+                    }
+                }
+                send(&tx, serde_json::Value::Object(obj));
             }
             "spawn" => {
                 let supervisor = v.get("supervisor").and_then(|x| x.as_str()).unwrap_or("").to_string();

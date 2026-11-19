@@ -37,6 +37,49 @@ pub struct SessionState {
     /// the first sample becomes the new baseline.
     #[serde(skip)]
     pub attribution_baseline: Option<std::collections::HashSet<String>>,
+
+    // v1.3 session control record (persisted).
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(rename = "definitionOfDone", default)]
+    pub definition_of_done: Option<String>,
+    #[serde(default)]
+    pub iterations: u32,
+    #[serde(rename = "maxIterations", default = "default_max_iterations")]
+    pub max_iterations: u32,
+    #[serde(rename = "wallClockDeadline", default)]
+    pub wall_clock_deadline: Option<u64>,
+    #[serde(rename = "lastSupervisorAction", default)]
+    pub last_supervisor_action: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(rename = "sessionRef", default)]
+    pub session_ref: Option<String>,
+    /// Absolute path of this session's temp dir, recorded at creation.
+    /// `None` for state files predating the sweep-safety fix — such sessions
+    /// are treated as untracked (their dirs survive unless empty).
+    #[serde(rename = "tempDir", default)]
+    pub temp_dir: Option<String>,
+    /// Set when an escalation is recorded for this session; it is then
+    /// excluded from the decision loop (watchdog still applies).
+    #[serde(default)]
+    pub escalated: bool,
+
+    // v1.3 runtime-only decision-loop bookkeeping (not persisted).
+    #[serde(skip)]
+    pub backoff_until_ms: u64,
+    #[serde(skip)]
+    pub consecutive_decider_failures: u32,
+    #[serde(skip)]
+    pub stuck_strikes: u32,
+    #[serde(skip)]
+    pub strategy_changed: bool,
+    #[serde(skip)]
+    pub last_tails: std::collections::VecDeque<String>,
+}
+
+pub fn default_max_iterations() -> u32 {
+    8
 }
 
 impl SessionState {
@@ -58,10 +101,37 @@ pub fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// Single line (all whitespace collapsed), truncated to `max` chars on a word
+/// boundary. Never cuts mid-word. A single word longer than `max` is hard-cut
+/// at `max` (the documented fallback). No ellipsis is added.
+pub fn truncate_words(s: &str, max: usize) -> String {
+    let line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut result = String::new();
+    for word in line.split_whitespace() {
+        let candidate = if result.is_empty() {
+            word.to_string()
+        } else {
+            format!("{result} {word}")
+        };
+        if candidate.chars().count() > max {
+            break;
+        }
+        result = candidate;
+    }
+    if result.is_empty() && !line.is_empty() {
+        result = line.chars().take(max).collect();
+    }
+    result
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SupervisorMeta {
     pub id: String,
     pub number: u32,
+    /// Display title for the supervisor row. Empty string means "fall back to
+    /// the id" (legacy state files predating this field).
+    #[serde(default)]
+    pub title: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,6 +144,92 @@ pub struct AttributionEntry {
 pub struct ConflictEntry {
     pub file: String,
     pub sessions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecisionEntry {
+    pub at: u64,
+    pub supervisor: String,
+    pub session: String,
+    /// One of: reprompt | done | escalate | verify | assign | backoff
+    pub action: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EscalationEntry {
+    pub id: String,
+    pub session: String,
+    pub supervisor: String,
+    /// One of (bridge v1.3 §1.3): stuck | loop_detected | budget_exceeded | blocked
+    pub kind: String,
+    pub reason: String,
+    pub at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BusMessageEntry {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// First 140 chars of the body, single line.
+    pub preview: String,
+    pub at: u64,
+}
+
+/// Additive A2A message metadata (cw/1 port). This is a NEW envelope: the
+/// frozen v1.3 `snapshot.busMessages` shape ([`BusMessageEntry`]) is untouched.
+/// `claimedPath`/`deliveredAt` are optional and omitted when unset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct A2aMessage {
+    pub id: String,
+    pub at: u64,
+    pub from: String,
+    pub to: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub body: String,
+    #[serde(rename = "claimedPath", default, skip_serializing_if = "Option::is_none")]
+    pub claimed_path: Option<String>,
+    #[serde(rename = "deliveredAt", default, skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<u64>,
+}
+
+impl A2aMessage {
+    pub fn new(
+        id: impl Into<String>,
+        at: u64,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        kind: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            at,
+            from: from.into(),
+            to: to.into(),
+            kind: kind.into(),
+            body: body.into(),
+            claimed_path: None,
+            delivered_at: None,
+        }
+    }
+
+    /// Project into the frozen v1.3 snapshot shape (preview = first line,
+    /// at most 140 chars). Extra optional fields never leak into `busMessages`.
+    pub fn to_bus_entry(&self) -> BusMessageEntry {
+        BusMessageEntry {
+            id: self.id.clone(),
+            from: self.from.clone(),
+            to: self.to.clone(),
+            kind: self.kind.clone(),
+            preview: self.body.lines().next().unwrap_or("").chars().take(140).collect(),
+            at: self.at,
+        }
+    }
 }
 
 /// Persisted form of the whole control plane.
@@ -93,6 +249,19 @@ pub struct StateFile {
     /// Owning supervisor number -> nothing; kept for forward compatibility.
     #[serde(default)]
     pub stuck_after_secs: Option<u64>,
+    // v1.3 persisted blocks.
+    #[serde(default)]
+    pub paused_supervisors: Vec<String>,
+    #[serde(default)]
+    pub decisions: Vec<DecisionEntry>,
+    #[serde(default)]
+    pub escalations: Vec<EscalationEntry>,
+    #[serde(default)]
+    pub bus_messages: Vec<BusMessageEntry>,
+    #[serde(default)]
+    pub esc_seq: u64,
+    #[serde(default)]
+    pub msg_seq: u64,
 }
 
 impl StateFile {
@@ -105,6 +274,12 @@ impl StateFile {
             conflicts: Vec::new(),
             warnings: Vec::new(),
             stuck_after_secs: None,
+            paused_supervisors: Vec::new(),
+            decisions: Vec::new(),
+            escalations: Vec::new(),
+            bus_messages: Vec::new(),
+            esc_seq: 0,
+            msg_seq: 0,
         }
     }
 }

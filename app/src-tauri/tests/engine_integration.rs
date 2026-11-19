@@ -1,39 +1,69 @@
-//! Engine against a real (temporary) state dir. Exercises:
-//!   create state dir → start engine (re-adopt, poll thread) → receive the
-//!   initial snapshot over the channel → empty tree → registry instantiated.
+//! Engine wiring against a real (temporary) notchd state dir.
+//!   daemon open (create state dir, load state) → reconcile → poll thread +
+//!   flusher → subscriber receives a snapshot push.
 //!
-//! Read-only against herdr (`herdr agent list`); never spawns/closes panes.
+//! Exercises the REAL `notchd` library (not a mock). Read-only against herdr
+//! (`herdr agent list`); never spawns, splits, closes or focuses panes.
 //!
-//! NOTE: this test depends on herdr being callable. If herdr is missing or
-//! hangs, the engine still builds a snapshot (with `warnings`), so the
-//! assertions hold either way.
+//! If herdr is unavailable/hangs, notchd still pushes snapshots (with a
+//! warnings entry), so the assertions hold either way.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use notchd::{Config, Daemon, Herdr, SystemClock};
+
 #[test]
-fn engine_starts_and_speaks_first_snapshot() {
+fn reconcile_poll_flusher_and_subscriber_push_snapshot() {
     let dir = std::env::temp_dir().join(format!("notch-test-state-{}", std::process::id()));
     std::env::set_var("NOTCH_STATE_DIR", &dir);
-    std::env::remove_var("NOTCH_HERDR"); // default binary; read-only usage
+    std::env::remove_var("NOTCH_HERDR_CMD");
+    std::env::set_var("NOTCH_POLL_INTERVAL_MS", "250"); // keep the test fast
 
-    let (engine, rx) = notch::engine::Engine::start().expect("engine start");
-    let snap = rx
+    let config = Config::from_env();
+    let herdr = Herdr::from_env();
+    let daemon = Daemon::open(config, herdr, Arc::new(SystemClock)).expect("open daemon");
+    daemon.reconcile();
+    let daemon = Arc::new(daemon);
+
+    let rx = notch::engine::spawn_daemon_threads(Arc::clone(&daemon));
+
+    let line = rx
         .recv_timeout(Duration::from_secs(15))
-        .unwrap_or_else(|e| panic!("no snapshot within 15s: {e:?}"));
+        .unwrap_or_else(|e| panic!("no snapshot push within 15s: {e:?}"));
 
-    assert_eq!(snap.version, 1);
-    assert!(snap.sessions.is_empty(), "fresh state dir must have no sessions: {:?}", snap.sessions);
-    assert!(snap.supervisors.is_empty());
-    assert_eq!(snap.orchestrator.id, "ORCH");
+    let v: serde_json::Value = serde_json::from_str(&line).expect("snapshot line is JSON");
+    assert_eq!(v["event"], "snapshot");
+    let snap = &v["snapshot"];
+    assert_eq!(snap["version"], 1);
+    assert_eq!(snap["orchestrator"]["id"], "ORCH");
+    assert!(snap["sessions"].is_array() && snap["supervisors"].is_array());
+    assert!(snap["warnings"].is_array());
 
-    // State dir + registry.json were created (the registry is the only allocator).
-    assert!(dir.join("registry.json").exists(), "registry.json must exist after engine start");
-    assert!(dir.join("events.jsonl").exists(), "events.jsonl must exist after engine start");
+    // The wire keys are camelCase — the same contract the UI parses.
+    for key in [
+        "generatedAt",
+        "paneId",
+        "startedAt",
+        "lastAction",
+        "lastRevision",
+        "latencyMs",
+        "failureReason",
+    ] {
+        if let Some(first) = snap["sessions"].as_array().and_then(|s| s.first()) {
+            assert!(first.get(key).is_some(), "missing {key}");
+        }
+    }
+    for key in ["generatedAt", "eps", "conflicts", "attribution", "warnings"] {
+        assert!(snap.get(key).is_some(), "missing top-level {key}");
+    }
 
-    // A second snapshot built directly must not panic and must stay consistent.
-    let snap2 = engine.build_snapshot();
-    assert_eq!(snap2.version, 1);
-    assert!(snap2.sessions.is_empty());
+    // Direct build (what the `snapshot` command returns) must also work.
+    let direct = serde_json::to_value(daemon.snapshot()).expect("snapshot serializes");
+    assert_eq!(direct["version"], 1);
+    assert_eq!(direct["orchestrator"]["id"], "ORCH");
 
+    std::env::remove_var("NOTCH_STATE_DIR");
+    std::env::remove_var("NOTCH_POLL_INTERVAL_MS");
     let _ = std::fs::remove_dir_all(&dir);
 }

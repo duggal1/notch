@@ -44,7 +44,11 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
   const open = t.notchPath(560, 640, 36, 12);
   assert.ok(open.includes('A12 12 0 0 1 12 12'), 'open shell ear');
   assert.ok(open.includes('V604'), 'open shell left edge ends above bottom corners');
-  ok('notchPath geometry: closed path, ears, cubics');
+  const centred = t.notchPath(348, 38, 12, 10, (560 - 348) / 2);
+  assert.ok(centred.startsWith('M106 0'), 'x0 offsets the silhouette origin inside the fixed shell box');
+  assert.ok(centred.endsWith('Z'), 'centred path stays closed');
+  assert.ok(centred.includes('A10 10 0 0 1 454 0'), 'right ear shifted by the same x0');
+  ok('notchPath geometry: closed path, ears, cubics, x0 offset');
 }
 
 // 3. frameFor modes
@@ -119,11 +123,11 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
 
 // 9. failureLabel maps bridge reasons to words; never a bare code pretending to be words
 {
-  assert.equal(t.failureLabel('stuck'), 'STUCK — WATCHDOG');
-  assert.equal(t.failureLabel('spawn_failed'), 'SPAWN FAILED');
-  assert.equal(t.failureLabel('blocked_waiting'), 'BLOCKED — WAITING ON INPUT');
-  assert.equal(t.failureLabel(null), 'FAILED');
-  assert.equal(t.failureLabel('some_new_code'), 'SOME NEW CODE');
+  assert.equal(t.failureLabel('stuck'), 'Stuck — watchdog');
+  assert.equal(t.failureLabel('spawn_failed'), 'Spawn failed');
+  assert.equal(t.failureLabel('blocked_waiting'), 'Blocked — waiting on input');
+  assert.equal(t.failureLabel(null), 'Failed');
+  assert.equal(t.failureLabel('some_new_code'), 'some new code');
   ok('failureLabel honest mapping');
 }
 
@@ -134,4 +138,62 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
   ok('mulberry32 deterministic');
 }
 
-console.log(`\n${n}/10 checks passed`);
+// 11. format helpers: age, middle-truncate, sentence case, decision verbs
+{
+  const now = 1_763_520_000_000;
+  assert.equal(t.fmtAge(now - 9_000, now), '9s');
+  assert.equal(t.fmtAge(now - 240_000, now), '4m');
+  assert.equal(t.fmtAge(now - 7_200_000, now), '2h');
+  assert.equal(t.middleTruncate('/Users/x/workspace/notch/crates/notchd/src/daemon.rs', 24).length <= 25, true);
+  assert.equal(t.capitalizeSentence('tests not run'), 'Tests not run');
+  assert.equal(t.decisionVerb('reprompt'), 'Re-prompted');
+  assert.equal(t.decisionVerb('verify'), 'Verifying');
+  ok('format helpers: fmtAge / middleTruncate / capitalizeSentence / decisionVerb');
+}
+
+// 12. demo snapshots validate against bridge.md §1.3
+{
+  for (const name of ['mixed', 'empty', 'failed', 'alldone', 'idle', 'big']) {
+    const snap = t.toSnapshot(name, name === 'empty' ? 0 : 6.5, 42);
+    const violations = t.validateSnapshot(snap);
+    assert.deepEqual(violations, [], `${name}: ${violations.join('; ')}`);
+  }
+  ok('all six demo snapshots pass structural validation');
+}
+
+// 13. the validator actually rejects shape violations (it is not a rubber stamp)
+{
+  const snap = t.toSnapshot('mixed', 6.5, 1);
+  const cases = [
+    (s) => { s.sessions[0].status = 'frobnicated'; },
+    (s) => { s.sessions[0].id = 'NOT-AN-ID'; },
+    (s) => { s.orchestrator = { id: 'NOTORCH', status: 'working' }; },
+    (s) => { s.busMessages[0].preview = 'x'.repeat(141); },
+    (s) => { s.busMessages[0].type = 'shout'; },
+    (s) => { s.latencyMsCheck = undefined; s.sessions[0].latencyMs = 'fast'; },
+    (s) => { s.escalations[0].kind = 'sleeping'; },
+  ];
+  for (const [i, mutate] of cases.entries()) {
+    const bad = t.toSnapshot('mixed', 6.5, 1);
+    mutate(bad);
+    const v = t.validateSnapshot(bad);
+    assert.ok(v.length > 0, `case ${i + 1} must produce violations`);
+  }
+  ok('validator rejects 7 classes of shape violation');
+}
+
+// 14. TYPE_COLOR is total over the bus type vocabulary
+{
+  for (const ty of t.BUS_TYPES) assert.ok(typeof t.TYPE_COLOR[ty] === 'string' && t.TYPE_COLOR[ty].startsWith('#'), `color for ${ty}`);
+  assert.equal(Object.keys(t.TYPE_COLOR).length, t.BUS_TYPES.length, 'no orphan or missing type colors');
+  ok('message-type colors are total');
+}
+
+// 15. decision wire values match bridge.md §1.3 exactly
+{
+  const snap = t.toSnapshot('mixed', 3, 7);
+  for (const d of snap.decisions ?? []) assert.ok(['reprompt', 'done', 'escalate', 'verify', 'assign'].includes(d.action));
+  ok('decision actions match the wire enum');
+}
+
+console.log(`\n${n}/15 checks passed`);

@@ -90,7 +90,7 @@ for (const demo of DEMOS) {
     await shot('wave-mid-mixed');
     await p0.waitForTimeout(1900); // let the wave finish before further interaction
     // white-hot row: hover + logs drawer
-    const row = p0.locator('.item').first();
+    const row = p0.locator('[role="table"] .item').first();
     await row.hover();
     await p0.waitForTimeout(350);
     await shot('row-hot-mixed');
@@ -101,7 +101,7 @@ for (const demo of DEMOS) {
     await p0.waitForTimeout(300);
   }
   if (demo === 'empty') {
-    await p0.locator('.cmd-chip').click();
+    await p0.locator('.cli-hint').click();
     await p0.waitForTimeout(250);
     await shot('chip-click-empty');
   }
@@ -109,6 +109,79 @@ for (const demo of DEMOS) {
   // park pointer away so the next demo starts clean
   await p0.mouse.move(500, 750);
   await p0.waitForTimeout(150);
+}
+
+// ---- v1.3 viewport matrix — pill geometry, notchless fallback, zoomed crops ----
+const SCENARIOS = [
+  { name: 'popover-pill-1512', viewport: { width: 1512, height: 982 }, notch: { w: 228, h: 38 }, crops: true },
+  { name: 'popover-1728', viewport: { width: 1728, height: 1117 }, notch: { w: 228, h: 38 }, crops: false },
+  { name: 'popover-fallback-mode', viewport: { width: 1320, height: 800 }, notch: { w: 200, h: 32 }, crops: false },
+];
+for (const sc of SCENARIOS) {
+  const c = await browser.newContext({ viewport: sc.viewport, deviceScaleFactor: 2, reducedMotion: 'no-preference' });
+  const p = await c.newPage();
+  p.on('pageerror', (err) => pageErrors.push(String(err)));
+  p.on('console', (msg) => { if (msg.type() === 'error') pageErrors.push(msg.text()); });
+  await p.addInitScript((n) => { window.__NOTCH__ = n; }, sc.notch);
+  await p.goto(`http://127.0.0.1:${port}/?demo=mixed`, { waitUntil: 'networkidle' });
+  await p.waitForFunction(() => window.__ready === true, { timeout: 5000 });
+  await p.waitForTimeout(700);
+  const mx = sc.viewport.width / 2;
+  if (sc.crops) {
+    await p.locator('.wings').screenshot({ path: join(outDir, 'popover-pill-1512.png') });
+    await p.screenshot({ path: join(outDir, 'popover-pill-1512-rest.png') });
+  } else {
+    await p.screenshot({ path: join(outDir, `${sc.name}.png`) });
+  }
+  await p.mouse.move(mx, 16); // peek
+  await p.waitForTimeout(650);
+  await p.mouse.click(mx, 16); // open
+  await p.waitForTimeout(1100);
+  await p.screenshot({ path: join(outDir, `${sc.name}-open.png`) });
+  if (sc.crops) await p.locator('footer').screenshot({ path: join(outDir, 'popover-open-zoomed-footer.png') });
+  await c.close();
+  console.log('scenario done:', sc.name);
+}
+
+// ---- frame probe (?probe=1) — popover open under load ----
+{
+  const c = await browser.newContext({ viewport: { width: 1000, height: 760 }, deviceScaleFactor: 2, reducedMotion: 'no-preference' });
+  const p = await c.newPage();
+  p.on('pageerror', (err) => pageErrors.push(String(err)));
+  p.on('console', (msg) => { if (msg.type() === 'error') pageErrors.push(msg.text()); });
+  await p.goto(`http://127.0.0.1:${port}/?probe=1&demo=mixed`, { waitUntil: 'networkidle' });
+  await p.waitForFunction(() => window.__ready === true, { timeout: 5000 });
+  await p.mouse.move(500, 16);
+  await p.waitForTimeout(400);
+  await p.mouse.click(500, 16);
+  await p.waitForTimeout(2600); // ~156 frames of churn (eps walk, heartbeat, breathing)
+  await p.screenshot({ path: join(outDir, 'popover-probe.png') });
+  const probeText = await p.locator('#frame-probe').textContent().catch(() => 'probe element missing');
+  console.log('PROBE TEXT:\n' + probeText);
+  await c.close();
+}
+
+// ---- v1.3 dashboard surface shots ----
+for (const d of [
+  { name: 'dashboard-empty', demo: 'empty', tab: null, click: null },
+  { name: 'dashboard-tree-mixed', demo: 'mixed', tab: null, click: null },
+  { name: 'dashboard-tree-flipped', demo: 'mixed', tab: null, click: '.sup-row[data-sv="SV-1"]' },
+  { name: 'dashboard-multiplexer', demo: 'mixed', tab: 'Multiplexer', click: null },
+  { name: 'dashboard-comms', demo: 'mixed', tab: 'Comms', click: null },
+  { name: 'dashboard-escalations', demo: 'mixed', tab: 'Escalations', click: null },
+]) {
+  const c = await browser.newContext({ viewport: { width: 1120, height: 760 }, deviceScaleFactor: 2, reducedMotion: 'no-preference' });
+  const p = await c.newPage();
+  p.on('pageerror', (err) => pageErrors.push(String(err)));
+  p.on('console', (msg) => { if (msg.type() === 'error') pageErrors.push(msg.text()); });
+  await p.goto(`http://127.0.0.1:${port}/?surface=dashboard&demo=${d.demo}`, { waitUntil: 'networkidle' });
+  await p.waitForFunction(() => window.__ready === true, { timeout: 5000 });
+  await p.waitForTimeout(900);
+  if (d.click) { await p.locator(d.click).click(); await p.waitForTimeout(350); }
+  if (d.tab) { await p.getByRole('tab', { name: d.tab }).click(); await p.waitForTimeout(450); }
+  await p.screenshot({ path: join(outDir, `${d.name}.png`) });
+  await c.close();
+  console.log('dashboard shot done:', d.name);
 }
 
 await browser.close();

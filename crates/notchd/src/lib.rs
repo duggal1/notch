@@ -10,6 +10,10 @@
 
 pub mod attribution;
 pub mod bus;
+pub mod decider;
+mod durable;
+pub mod error;
+pub mod opencode;
 pub mod cleanup;
 pub mod cli;
 pub mod clock;
@@ -26,10 +30,13 @@ pub mod socket;
 pub mod status;
 pub mod supervisor;
 pub mod watchdog;
+pub mod ws;
 
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use config::Config;
-pub use daemon::{Daemon, KillAck, OkAck, RunPlanAck, SpawnAck, StatusInfo};
+pub use daemon::{Daemon, KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, RunPlanAck, SpawnAck, StatusInfo, SubmitTaskAck};
+pub use error::NotchError;
+pub use opencode::{ApiSession, Opencode};
 pub use herdr::{AgentEntry, Herdr, HerdrError};
 pub use snapshot::Snapshot;
 pub use status::Status;

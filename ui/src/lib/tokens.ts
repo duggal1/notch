@@ -2,7 +2,7 @@
 export const C = {
   void: '#04051A', // behind everything
   ink: '#0A0B1E', // text on white (hot state)
-  panel: '#1E1F2E', // dark card body
+  panel: '#171826', // darker card body (DESIGN.md v1.1) — flat, material host
   core: '#14153A', // orb dark core
   navy: '#0B0E3A',
   indigo: '#3A33C8',

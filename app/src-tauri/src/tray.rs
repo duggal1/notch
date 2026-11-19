@@ -20,9 +20,7 @@ use tauri::{
     AppHandle, LogicalPosition, Manager, Wry,
 };
 
-use crate::engine::Engine;
 use crate::macos;
-use crate::snapshot::Snapshot;
 use crate::trayfmt::{self, TrayStatus};
 
 pub struct TrayState {
@@ -54,13 +52,25 @@ fn toggle_popover(app: &AppHandle) {
 }
 
 pub fn build(app: &AppHandle) -> Result<(), String> {
-    let inflight = MenuItemBuilder::with_id("inflight", trayfmt::menu_inflight_label(&TrayStatus { in_flight: 0, failed: 0 }))
-        .enabled(false)
+    let inflight = MenuItemBuilder::with_id(
+        "inflight",
+        trayfmt::menu_inflight_label(&TrayStatus {
+            in_flight: 0,
+            failed: 0,
+        }),
+    )
+    .enabled(false)
+    .build(app)
+    .map_err(|e| format!("menu item inflight: {e}"))?;
+    let dashboard = MenuItemBuilder::with_id("dashboard", "Open dashboard")
         .build(app)
-        .map_err(|e| format!("menu item inflight: {e}"))?;
+        .map_err(|e| format!("menu item dashboard: {e}"))?;
     let toggle = MenuItemBuilder::with_id("toggle", "Show / hide popover")
         .build(app)
         .map_err(|e| format!("menu item toggle: {e}"))?;
+    let kill_all = MenuItemBuilder::with_id("kill-switch", "Kill all sessions")
+        .build(app)
+        .map_err(|e| format!("menu item kill-switch: {e}"))?;
     let sweep = MenuItemBuilder::with_id("sweep", "Sweep temp orphans")
         .build(app)
         .map_err(|e| format!("menu item sweep: {e}"))?;
@@ -71,7 +81,9 @@ pub fn build(app: &AppHandle) -> Result<(), String> {
     let menu = MenuBuilder::new(app)
         .item(&inflight)
         .separator()
+        .item(&dashboard)
         .item(&toggle)
+        .item(&kill_all)
         .item(&sweep)
         .separator()
         .item(&quit)
@@ -98,10 +110,25 @@ pub fn build(app: &AppHandle) -> Result<(), String> {
             }
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "dashboard" => {
+                let _ = crate::commands::show_dashboard(app);
+            }
+            "kill-switch" => {
+                if let Some(daemon) = app.try_state::<Arc<notchd::Daemon>>() {
+                    let ack = crate::commands::kill_switch_impl(&daemon);
+                    eprintln!("[notch] kill switch: closed {} session(s)", ack.closed);
+                }
+            }
             "toggle" => toggle_popover(app),
             "sweep" => {
-                if let Some(engine) = app.try_state::<Arc<Engine>>() {
-                    let _ = engine.cleanup_temp(None);
+                // Global sweep of dead-session temp dirs (notchd owns the
+                // safety rules: live sessions are never touched).
+                if let Some(daemon) = app.try_state::<Arc<notchd::Daemon>>() {
+                    let ack = daemon.cleanup(None);
+                    eprintln!(
+                        "[notch] sweep: removed {} temp dir(s)",
+                        ack.removed.unwrap_or(0)
+                    );
                 }
             }
             "quit" => app.exit(0),
@@ -114,18 +141,18 @@ pub fn build(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Refresh tray title/tooltip/status row from a fresh snapshot. Called by the
-/// emit thread on every emit. Never errors visibly — a tray that can't
-/// refresh is not worth a panic.
-pub fn update_status_from_snapshot(app: &AppHandle, snapshot: &Snapshot) {
-    let status = trayfmt::status_from_snapshot(snapshot);
+/// Refresh tray title/tooltip/status row from a fresh snapshot (as JSON —
+/// exactly what crosses the emit boundary). Called by the emit thread on every
+/// emit. Never errors visibly.
+pub fn update_status_from_snapshot(app: &AppHandle, snapshot: &serde_json::Value) {
+    let status = trayfmt::status_from_value(snapshot);
     let Some(state) = app.try_state::<Mutex<TrayState>>() else {
         return; // tray not built yet (or torn down)
     };
-    let Ok(state) = state.lock() else {
-        return;
-    };
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     let _ = state.tray.set_title(trayfmt::tray_title(&status));
     let _ = state.tray.set_tooltip(Some(trayfmt::tooltip(&status)));
-    let _ = state.inflight.set_text(trayfmt::menu_inflight_label(&status));
+    let _ = state
+        .inflight
+        .set_text(trayfmt::menu_inflight_label(&status));
 }

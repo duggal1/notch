@@ -4,6 +4,38 @@ import type { Status } from './tokens';
 
 export const pad2 = (n: number) => String(n).padStart(2, '0');
 
+/** Age of a timestamp in short mono units: 9s · 4m · 3h · 2d. Negative clamps to 0. */
+export function fmtAge(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+/** Middle-truncate long strings (paths): keeps the meaningful tail. */
+export function middleTruncate(s: string, max = 44): string {
+  if (s.length <= max) return s;
+  const head = Math.max(8, Math.floor(max * 0.34));
+  const tail = max - head - 1;
+  return `${s.slice(0, head)}…${s.slice(s.length - tail)}`;
+}
+
+/** First letter upper, rest as given — sentence case for derived strings. */
+export const capitalizeSentence = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+/** Action verb from a decision action, sentence case. */
+export function decisionVerb(a: string): string {
+  switch (a) {
+    case 'reprompt': return 'Re-prompted';
+    case 'done': return 'Marked done';
+    case 'escalate': return 'Escalated';
+    case 'verify': return 'Verifying';
+    case 'assign': return 'Assigned';
+    default: return capitalizeSentence(a);
+  }
+}
+
 /** Elapsed since startedAt. mm:ss under 1h, h:mm:ss after. Never negative. */
 export function fmtElapsed(startedAt: number, now = Date.now()): string {
   const s = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -25,14 +57,14 @@ export const workingCount = (sessions: Session[]) =>
 /** eps normalised 0..1 against 40 events/s full scale. */
 export const normalizeEps = (eps: number) => Math.min(1, Math.max(0, eps / 40));
 
-/** bridge failureReason → human words. Unknown codes pass through uppercased; null stays honest. */
+/** bridge failureReason → human words. Unknown codes pass through as words; null stays honest. */
 export function failureLabel(reason: string | null): string {
   switch ((reason ?? '').toLowerCase()) {
-    case 'stuck': return 'STUCK — WATCHDOG';
-    case 'spawn_failed': return 'SPAWN FAILED';
-    case 'blocked_waiting': return 'BLOCKED — WAITING ON INPUT';
-    case '': return 'FAILED';
-    default: return (reason as string).toUpperCase().replace(/_/g, ' ');
+    case 'stuck': return 'Stuck — watchdog';
+    case 'spawn_failed': return 'Spawn failed';
+    case 'blocked_waiting': return 'Blocked — waiting on input';
+    case '': return 'Failed';
+    default: return (reason as string).replace(/_/g, ' ');
   }
 }
 

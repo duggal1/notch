@@ -30,7 +30,10 @@ fn notch_detection_notchless_external() {
 #[test]
 fn notch_detection_garbage_rejected() {
     assert_eq!(notch_from_measurements(f64::NAN, 1.0, 1.0, 1512.0), None);
-    assert_eq!(notch_from_measurements(32.0, f64::INFINITY, 653.0, 1512.0), None);
+    assert_eq!(
+        notch_from_measurements(32.0, f64::INFINITY, 653.0, 1512.0),
+        None
+    );
     assert_eq!(notch_from_measurements(-1.0, 653.0, 653.0, 1512.0), None);
     assert_eq!(notch_from_measurements(32.0, -1.0, 653.0, 1512.0), None);
     assert_eq!(notch_from_measurements(32.0, 653.0, 653.0, 0.0), None);
@@ -48,12 +51,22 @@ fn fallback_frame_is_200_by_32() {
     assert_eq!(FALLBACK_NOTCH_HEIGHT, 32.0);
     let n = notch_or_fallback(None);
     assert_eq!(n, NotchSize::FALLBACK);
-    assert_eq!(notch_or_fallback(Some(NotchSize { width: 206.0, height: 32.0 })).width, 206.0);
+    assert_eq!(
+        notch_or_fallback(Some(NotchSize {
+            width: 206.0,
+            height: 32.0
+        }))
+        .width,
+        206.0
+    );
 }
 
 #[test]
 fn mode_frame_table_with_notch() {
-    let notch = Some(NotchSize { width: 206.0, height: 32.0 });
+    let notch = Some(NotchSize {
+        width: 206.0,
+        height: 32.0,
+    });
     let rest = frame_for_mode(Mode::Rest, 1512.0, notch);
     assert_eq!(rest.width, 206.0 + 120.0);
     assert_eq!(rest.height, 32.0);
@@ -90,9 +103,23 @@ fn mode_frame_table_fallback_notchless() {
 #[test]
 fn open_frame_stays_560_by_640() {
     for screen in [1440.0, 1512.0, 1728.0, 2560.0] {
-        for notch in [None, Some(NotchSize { width: 206.0, height: 32.0 }), Some(NotchSize { width: 379.0, height: 59.0 })] {
+        for notch in [
+            None,
+            Some(NotchSize {
+                width: 206.0,
+                height: 32.0,
+            }),
+            Some(NotchSize {
+                width: 379.0,
+                height: 59.0,
+            }),
+        ] {
             let open = frame_for_mode(Mode::Open, screen, notch);
-            assert_eq!((open.width, open.height), (560.0, 640.0), "open must stay 560x640 on {screen} with {notch:?}");
+            assert_eq!(
+                (open.width, open.height),
+                (560.0, 640.0),
+                "open must stay 560x640 on {screen} with {notch:?}"
+            );
         }
     }
 }

@@ -23,6 +23,10 @@ USAGE:
   notchd status                                        Print daemon status JSON
   notchd snapshot                                      Print the snapshot JSON
   notchd run-plan <file>                               Spawn supervisors/sessions from a plan
+  notchd submit '<task>' [--cwd <dir>] [--title <t>] [--dod <definition of done>] [--model <m>] [--supervisor <SV-n>]   Submit a task and spawn it
+  notchd message --from S1-OC01 --to S1-OC02 --type handoff --body '…'   Deliver a bus message to a session
+  notchd pause <SV-n> | resume <SV-n>                                    Pause/resume the supervisor's decisions
+  notchd kill-switch                                                     Close every managed pane and mark sessions failed
   notchd kill <id> [--reason <reason>]                 Kill a session (pane close + cleanup)
   notchd reprompt <id> <text>                          Re-prompt a session
   notchd cleanup [--id <id>]                           Sweep dead sessions (or one session's temp dir)
@@ -79,6 +83,134 @@ pub fn run(argv: Vec<String>) -> i32 {
                     let ack = d.run_plan(std::path::Path::new(file));
                     println!("{}", serde_json::to_string(&ack).unwrap_or_default());
                     if ack.ok { 0 } else { 1 }
+                }
+            })
+        }
+        "submit" => {
+            let Some(task) = rest.first().cloned() else {
+                eprintln!("usage: notchd submit '<task>' [--cwd <dir>] [--title <title>] [--dod <definition of done>]\n{USAGE}");
+                return 2;
+            };
+            let cwd = flag_value(&rest, "--cwd");
+            let title = flag_value(&rest, "--title");
+            let dod = flag_value(&rest, "--dod");
+            let model = flag_value(&rest, "--model");
+            let supervisor = flag_value(&rest, "--supervisor");
+            with_target(|t| match t {
+                Target::Live(mut c) => {
+                    let mut req = serde_json::json!({"cmd": "submit_task", "task": task});
+                    if let Some(dir) = &cwd {
+                        req["cwd"] = serde_json::Value::String(dir.clone());
+                    }
+                    if let Some(title) = &title {
+                        req["title"] = serde_json::Value::String(title.clone());
+                    }
+                    if let Some(dod) = &dod {
+                        req["definitionOfDone"] = serde_json::Value::String(dod.clone());
+                    }
+                    if let Some(model) = &model {
+                        req["model"] = serde_json::Value::String(model.clone());
+                    }
+                    if let Some(sup) = &supervisor {
+                        req["supervisorId"] = serde_json::Value::String(sup.clone());
+                    }
+                    match c.request(req) {
+                        Ok(v) => ack_or_fail(&v),
+                        Err(e) => fail(&e),
+                    }
+                }
+                Target::Local(d) => {
+                    let ack = d.submit_task(task, cwd, title, dod, model, supervisor);
+                    let ok = ack.ok;
+                    let mut obj = serde_json::to_value(&ack)
+                        .ok()
+                        .and_then(|s| s.as_object().cloned())
+                        .unwrap_or_default();
+                    obj.insert("event".into(), "ack".into());
+                    obj.insert("cmd".into(), "submit_task".into());
+                    println!("{}", serde_json::Value::Object(obj));
+                    if ok { 0 } else { 1 }
+                }
+            })
+        }
+        "message" => {
+            let from = flag_value(&rest, "--from").unwrap_or_default();
+            let to = flag_value(&rest, "--to").unwrap_or_default();
+            let kind = flag_value(&rest, "--type").unwrap_or_default();
+            let body = match flag_value(&rest, "--body") {
+                Some(b) => b,
+                None => {
+                    eprintln!("usage: notchd message --from <id> --to <id> --type <task|result|question|handoff|escalate> --body '<text>'\n{USAGE}");
+                    return 2;
+                }
+            };
+            if from.is_empty() || to.is_empty() || kind.is_empty() {
+                eprintln!("usage: notchd message --from <id> --to <id> --type <task|result|question|handoff|escalate> --body '<text>'\n{USAGE}");
+                return 2;
+            }
+            with_target(|t| match t {
+                Target::Live(mut c) => match c.request(serde_json::json!({
+                    "cmd": "message", "from": from, "to": to, "type": kind, "body": body,
+                })) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
+                Target::Local(d) => {
+                    let ack = d.message(&from, &to, &kind, &body);
+                    let ok = ack.ok;
+                    print_merged_ack("message", serde_json::to_value(&ack).unwrap_or_default());
+                    if ok { 0 } else { 1 }
+                }
+            })
+        }
+        "pause" => {
+            let Some(id) = rest.first().cloned() else {
+                eprintln!("usage: notchd pause <SV-n>\n{USAGE}");
+                return 2;
+            };
+            with_target(|t| match t {
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "pause_supervisor", "id": id})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
+                Target::Local(d) => match d.pause_supervisor(&id) {
+                    Ok(a) => {
+                        print_merged_ack("pause_supervisor", serde_json::to_value(&a).unwrap_or_default());
+                        0
+                    }
+                    Err(e) => fail(&e),
+                },
+            })
+        }
+        "resume" => {
+            let Some(id) = rest.first().cloned() else {
+                eprintln!("usage: notchd resume <SV-n>\n{USAGE}");
+                return 2;
+            };
+            with_target(|t| match t {
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "resume_supervisor", "id": id})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
+                Target::Local(d) => match d.resume_supervisor(&id) {
+                    Ok(a) => {
+                        print_merged_ack("resume_supervisor", serde_json::to_value(&a).unwrap_or_default());
+                        0
+                    }
+                    Err(e) => fail(&e),
+                },
+            })
+        }
+        "kill-switch" => {
+            with_target(|t| match t {
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "kill_switch"})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
+                Target::Local(d) => {
+                    let ack = d.kill_switch();
+                    print_merged_ack("kill_switch", serde_json::to_value(&ack).unwrap_or_default());
+                    0
                 }
             })
         }
@@ -211,6 +343,37 @@ pub fn run(argv: Vec<String>) -> i32 {
     match_value
 }
 
+/// Create the state dir if needed and bind the socket. A LIVE daemon's
+/// socket is never clobbered: probe first. ConnectionRefused means the
+/// file is a stale leftover -> remove and bind. A successful probe means
+/// another notchd is already serving -> refuse to start. A transient error
+/// (e.g. EAGAIN) fails loudly without touching anything.
+fn bind_socket(path: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if path.exists() {
+        match std::os::unix::net::UnixStream::connect(path) {
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    format!("{} is already served by another notchd", path.display()),
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                let _ = std::fs::remove_file(path); // stale socket; reclaim
+            }
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("{} is temporarily unavailable ({e})", path.display()),
+                ));
+            }
+        }
+    }
+    std::os::unix::net::UnixListener::bind(path)
+}
+
 fn cmd_serve(rest: &[String]) -> i32 {
     let mut config = Config::from_env();
     let mut opencode_decider = false;
@@ -228,25 +391,39 @@ fn cmd_serve(rest: &[String]) -> i32 {
         config.opencode_decider = true;
         eprintln!("notchd: --opencode-decider is not implemented; using the deterministic policy");
     }
-    let daemon = match Daemon::open(config, Herdr::from_env(), Arc::new(SystemClock)) {
+    let daemon = match open_daemon_with(Some(config)) {
         Ok(d) => Arc::new(d),
-        Err(e) => {
-            eprintln!("notchd: cannot open daemon state: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     daemon.reconcile();
 
-    let sock_path = paths::default_sock_path();
-    if let Some(parent) = sock_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::remove_file(&sock_path); // stale socket
-    let listener = match std::os::unix::net::UnixListener::bind(&sock_path) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("notchd: cannot bind {}: {e}", sock_path.display());
-            return 1;
+    let listener = {
+        let default_path = paths::default_sock_path();
+        match bind_socket(&default_path) {
+            Ok(listener) => {
+                println!("notchd serving on {} (state {})", default_path.display(), daemon.config.state_dir.display());
+                listener
+            }
+            Err(e) => {
+                // bridge.md §0: if the default path is unwritable and
+                // NOTCH_SOCK was not explicitly set, fall back to a temp path.
+                if std::env::var_os("NOTCH_SOCK").is_some() {
+                    eprintln!("notchd: cannot bind {}: {e}", default_path.display());
+                    return 1;
+                }
+                let fallback = paths::fallback_sock_path();
+                match bind_socket(&fallback) {
+                    Ok(listener) => {
+                        eprintln!("notchd: {} unwritable ({e}); using fallback {}", default_path.display(), fallback.display());
+                        println!("notchd serving on {} (state {})", fallback.display(), daemon.config.state_dir.display());
+                        listener
+                    }
+                    Err(e2) => {
+                        eprintln!("notchd: cannot bind {}: {e2}", fallback.display());
+                        return 1;
+                    }
+                }
+            }
         }
     };
 
@@ -255,11 +432,6 @@ fn cmd_serve(rest: &[String]) -> i32 {
         let shutdown = Arc::new(AtomicBool::new(false));
         std::thread::spawn(move || daemon.run_poll_loop(shutdown))
     };
-    println!(
-        "notchd serving on {} (state {})",
-        sock_path.display(),
-        daemon.config.state_dir.display()
-    );
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let shutdown = Arc::new(AtomicBool::new(false));
     match crate::socket::serve_with_shutdown(listener, daemon, shutdown) {
@@ -278,23 +450,75 @@ enum Target {
     Local(Box<Daemon>),
 }
 
+/// Open the daemon. `Some(config)` is used by `serve` (its config comes
+/// from the env incl. --opencode-decider); `None` opens from the env.
+/// Falls back to a temp state dir when Application Support is unwritable
+/// and NOTCH_STATE_DIR was not explicitly set (bridge.md §0). Probes with a
+/// write first, because a read-only dir can exist without being writable.
+fn open_daemon_with(primary: Option<Config>) -> Result<Daemon, i32> {
+    let explicit = std::env::var_os("NOTCH_STATE_DIR").is_some();
+    let primary = primary.unwrap_or_else(Config::from_env);
+    let state_dir = primary.state_dir.clone();
+    let writable = std::fs::create_dir_all(&state_dir)
+        .and_then(|()| std::fs::write(state_dir.join(".notchd-write-probe"), b"probe"))
+        .map(|()| {
+            let _ = std::fs::remove_file(state_dir.join(".notchd-write-probe"));
+            true
+        })
+        .unwrap_or(false);
+    if writable {
+        return Daemon::open(primary, Herdr::from_env(), Arc::new(SystemClock)).map_err(|e| {
+            eprintln!("notchd: cannot open daemon state: {e}");
+            1
+        });
+    }
+    if explicit {
+        // NOTCH_STATE_DIR was set explicitly — report, don't second-guess it.
+        eprintln!("notchd: state dir {} is not writable", state_dir.display());
+        return Err(1);
+    }
+    eprintln!(
+        "notchd: state dir {} is not writable; falling back to a temp dir",
+        state_dir.display()
+    );
+    let fallback = Config {
+        state_dir: std::env::temp_dir().join("notch"),
+        ..primary
+    };
+    Daemon::open(fallback, Herdr::from_env(), Arc::new(SystemClock)).map_err(|e| {
+        eprintln!("notchd: cannot open daemon state: {e}");
+        1
+    })
+}
+
 /// Talk to a live daemon if one is reachable, else operate in-process.
+/// Reclaim ONLY on ConnectionRefused (genuinely stale socket). A transient
+/// failure (e.g. ECONNREFUSED is fine, but EAGAIN/timeout is not) means the
+/// daemon is alive but unhappy right now — fail loudly rather than fall
+/// back to a second in-process writer that races the daemon's state.
 fn with_target(f: impl FnOnce(Target) -> i32) -> i32 {
     let sock = paths::default_sock_path();
     if sock.exists() {
-        if let Ok(stream) = UnixStream::connect(&sock) {
-            if let Ok(client) = LiveClient::connect(stream) {
-                return f(Target::Live(Box::new(client)));
+        match UnixStream::connect(&sock) {
+            Ok(stream) => match LiveClient::connect(stream) {
+                Ok(client) => return f(Target::Live(Box::new(client))),
+                Err(e) => {
+                    eprintln!("notchd: live daemon handshake failed ({e}); not touching its socket or state");
+                    return 1;
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                let _ = std::fs::remove_file(&sock); // stale socket; reclaim it
+            }
+            Err(e) => {
+                eprintln!("notchd: live daemon socket temporarily unavailable ({e}); retry");
+                return 1;
             }
         }
-        let _ = std::fs::remove_file(&sock); // stale socket; reclaim it
     }
-    match Daemon::open(Config::from_env(), Herdr::from_env(), Arc::new(SystemClock)) {
+    match open_daemon_with(None) {
         Ok(d) => f(Target::Local(Box::new(d))),
-        Err(e) => {
-            eprintln!("notchd: cannot open daemon state: {e}");
-            1
-        }
+        Err(code) => code,
     }
 }
 
@@ -343,6 +567,14 @@ fn ack_or_fail(v: &serde_json::Value) -> i32 {
 fn fail(e: &str) -> i32 {
     eprintln!("{e}");
     1
+}
+
+/// Merge an ack's JSON body with the {event, cmd} frame (local-path output).
+fn print_merged_ack(cmd: &str, body: serde_json::Value) {
+    let mut obj = body.as_object().cloned().unwrap_or_default();
+    obj.insert("event".into(), "ack".into());
+    obj.insert("cmd".into(), cmd.into());
+    println!("{}", serde_json::Value::Object(obj));
 }
 
 fn flag_value(args: &[String], flag: &str) -> Option<String> {

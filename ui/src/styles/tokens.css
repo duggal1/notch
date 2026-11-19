@@ -1,33 +1,23 @@
-/* tokens.css — Tailwind v4 CSS-first theme. Values mirror lib/tokens.ts (DESIGN.md §3). */
 @import "tailwindcss";
 
+/* One family. mono and serif are aliased to the sans so nothing can ever render in another face. */
 @theme {
-  --color-void: #04051a;
-  --color-ink: #0a0b1e;
-  --color-panel: #1e1f2e;
-  --color-core: #14153a;
-  --color-navy: #0b0e3a;
-  --color-indigo: #3a33c8;
-  --color-blue: #4455ee;
-  --color-peri: #8f93f5;
+  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
+
+  --color-void: #000000;
+  --color-ground: #030304;
+  --color-card: #09090b;
+  --color-ink: #0a0a0c;
   --color-lilac: #dcd5fa;
-  --color-mist: #eeeafd;
-  --color-violet: #8b5cf6;
-  --color-orchid: #c58cf0;
-  --color-white: #ffffff;
-  --color-red: #ff4d6d;
+  --color-red: #ff5a70;
   --color-pink: #ffb3c1;
 
   --radius-s: 8px;
-  --radius-m: 16px;
-  --radius-l: 28px;
+  --radius-m: 14px;
+  --radius-l: 22px;
   --radius-xl: 36px;
-  --radius-pill: 999px;
-
-  --font-sans: 'Inter Variable', Inter, system-ui, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-inout: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-snap: cubic-bezier(0.2, 0.9, 0.1, 1);
 }

@@ -60,7 +60,10 @@ fn example_parses_and_roundtrips() {
     assert_eq!(snap.sessions[0].last_revision, 12);
     assert_eq!(snap.sessions[0].latency_ms, Some(840.0));
     assert_eq!(snap.sessions[1].failure_reason.as_deref(), Some("stuck"));
-    assert_eq!(snap.conflicts[0].sessions, vec!["S1-OC01".to_string(), "S2-OC03".to_string()]);
+    assert_eq!(
+        snap.conflicts[0].sessions,
+        vec!["S1-OC01".to_string(), "S2-OC03".to_string()]
+    );
 
     let text = serde_json::to_string(&snap).expect("serialize");
     let snap2: Snapshot = serde_json::from_str(&text).expect("re-parse");
@@ -72,17 +75,33 @@ fn wire_keys_are_camel_case_not_snake_case() {
     let snap: Snapshot = serde_json::from_str(EXAMPLE).unwrap();
     let text = serde_json::to_string(&snap).unwrap();
     for key in [
-        "\"generatedAt\"", "\"paneId\"", "\"startedAt\"", "\"lastAction\"",
-        "\"lastRevision\"", "\"latencyMs\"", "\"failureReason\"", "\"eps\"",
-        "\"conflicts\"", "\"attribution\"", "\"warnings\"",
+        "\"generatedAt\"",
+        "\"paneId\"",
+        "\"startedAt\"",
+        "\"lastAction\"",
+        "\"lastRevision\"",
+        "\"latencyMs\"",
+        "\"failureReason\"",
+        "\"eps\"",
+        "\"conflicts\"",
+        "\"attribution\"",
+        "\"warnings\"",
     ] {
         assert!(text.contains(key), "missing camelCase key {key} in {text}");
     }
     for banned in [
-        "\"generated_at\"", "\"pane_id\"", "\"started_at\"", "\"last_action\"",
-        "\"last_revision\"", "\"latency_ms\"", "\"failure_reason\"",
+        "\"generated_at\"",
+        "\"pane_id\"",
+        "\"started_at\"",
+        "\"last_action\"",
+        "\"last_revision\"",
+        "\"latency_ms\"",
+        "\"failure_reason\"",
     ] {
-        assert!(!text.contains(banned), "snake_case leaked onto the wire: {banned}");
+        assert!(
+            !text.contains(banned),
+            "snake_case leaked onto the wire: {banned}"
+        );
     }
 }
 
@@ -103,23 +122,34 @@ fn the_four_statuses_roundtrip() {
 #[test]
 fn unknown_extra_fields_are_tolerated() {
     // A future v1.x adds fields; the shell must keep parsing.
-    let with_extra = EXAMPLE.replace("\"eps\": 6.5,", "\"futureField\": {\"nested\": [1, 2, 3]}, \"eps\": 6.5,");
-    let snap: Snapshot = serde_json::from_str(&with_extra).expect("unknown top-level field tolerated");
+    let with_extra = EXAMPLE.replace(
+        "\"eps\": 6.5,",
+        "\"futureField\": {\"nested\": [1, 2, 3]}, \"eps\": 6.5,",
+    );
+    let snap: Snapshot =
+        serde_json::from_str(&with_extra).expect("unknown top-level field tolerated");
     assert_eq!(snap.eps, 6.5);
 
-    let session_extra = EXAMPLE.replace("\"latencyMs\": 840.0,", "\"latencyMs\": 840.0, \"newSessionField\": \"hello\",");
-    let snap: Snapshot = serde_json::from_str(&session_extra).expect("unknown session field tolerated");
+    let session_extra = EXAMPLE.replace(
+        "\"latencyMs\": 840.0,",
+        "\"latencyMs\": 840.0, \"newSessionField\": \"hello\",",
+    );
+    let snap: Snapshot =
+        serde_json::from_str(&session_extra).expect("unknown session field tolerated");
     assert_eq!(snap.sessions[0].latency_ms, Some(840.0));
 }
 
 #[test]
 fn empty_tree_is_legal() {
-    let snap: Snapshot = serde_json::from_str(r#"{
+    let snap: Snapshot = serde_json::from_str(
+        r#"{
         "version": 1, "generatedAt": 1763520000000,
         "orchestrator": { "id": "ORCH", "status": "idle" },
         "supervisors": [], "sessions": [], "eps": 0,
         "conflicts": [], "attribution": [], "warnings": []
-    }"#).unwrap();
+    }"#,
+    )
+    .unwrap();
     assert!(snap.supervisors.is_empty() && snap.sessions.is_empty());
     assert_eq!(snap.eps, 0.0);
 

@@ -28,6 +28,12 @@ pub fn default_sock_path() -> PathBuf {
     default_state_dir().join("notch.sock")
 }
 
+/// Last-resort socket path when the default is unwritable and
+/// `NOTCH_SOCK` was not explicitly set (bridge.md §0).
+pub fn fallback_sock_path() -> PathBuf {
+    std::env::temp_dir().join("notch").join("notch.sock")
+}
+
 pub fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }

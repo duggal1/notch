@@ -49,7 +49,10 @@ Mapping from herdr (`agent_status`): `working→working`, `idle→idle`, `done�
   "orchestrator": { "id": "ORCH", "status": "working" },
   "supervisors": [
     { "id": "SV-1", "status": "working",
-      "working": 2, "idle": 0, "failed": 0, "done": 0 }
+      "working": 2, "idle": 0, "failed": 0, "done": 0,
+      "title": "Refactor auth middleware",     // additive v1.3.1: supervisor display charter; lead sign-off 2026-11-20
+      "paused": false                           // additive v1.3: pause gates the decision loop only
+    }
   ],
   "sessions": [
     {

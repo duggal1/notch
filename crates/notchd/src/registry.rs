@@ -48,7 +48,7 @@ impl Registry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        write_atomic(path, serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec()))
+        crate::durable::write_atomic(path, &serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec()))
     }
 
     pub fn ids(&self) -> &[String] {
@@ -83,10 +83,4 @@ impl Registry {
             n += 1;
         }
     }
-}
-
-pub(crate) fn write_atomic(path: &Path, bytes: Vec<u8>) -> io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
 }

@@ -1,6 +1,10 @@
-//! Serde types for the notch wire contract (docs/bridge.md §1.3).
+//! Serde types mirroring the notch wire contract (docs/bridge.md §1.3).
 //!
-//! The React frontend receives these objects VERBATIM through
+//! NOTE: the app's data path does NOT deserialize through these — events are
+//! emitted as raw JSON straight from notchd's own serializer. These types
+//! exist (a) as a readable contract reference and (b) so tests can roundtrip
+//! the exact v1 shape (camelCase keys, the four statuses, unknown-field
+//! tolerance). The React frontend receives these objects VERBATIM through
 //! `app.emit("snapshot", snapshot)`. Keys are camelCase; unknown fields in v1
 //! are tolerated on read (serde ignores them) and never emitted by us.
 //!
@@ -11,19 +15,14 @@ use serde::{Deserialize, Serialize};
 
 pub const SNAPSHOT_VERSION: u32 = 1;
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Working,
+    #[default]
     Idle,
     Failed,
     Done,
-}
-
-impl Default for Status {
-    fn default() -> Self {
-        Status::Idle
-    }
 }
 
 impl Status {

@@ -2,7 +2,7 @@
 //! CamelCase keys, exactly this shape. Extra fields may be added; none may
 //! be removed or renamed in v1.
 
-use crate::model::{AttributionEntry, ConflictEntry};
+use crate::model::{AttributionEntry, BusMessageEntry, ConflictEntry, DecisionEntry, EscalationEntry};
 use crate::status::Status;
 use serde::Serialize;
 
@@ -17,6 +17,13 @@ pub struct Snapshot {
     pub eps: f64,
     pub conflicts: Vec<ConflictEntry>,
     pub attribution: Vec<AttributionEntry>,
+    // v1.3 optional blocks: present only when data exists.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<DecisionEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub escalations: Vec<EscalationEntry>,
+    #[serde(rename = "busMessages", skip_serializing_if = "Vec::is_empty")]
+    pub bus_messages: Vec<BusMessageEntry>,
     pub warnings: Vec<String>,
 }
 
@@ -34,6 +41,11 @@ pub struct SupervisorSnapshot {
     pub idle: u32,
     pub failed: u32,
     pub done: u32,
+    /// Additive v1.2 field: supervisor display title (task head or id).
+    pub title: String,
+    /// Additive v1.3 field: present (and true) when the supervisor is paused.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
 }
 
 #[derive(Serialize)]
@@ -56,6 +68,21 @@ pub struct SessionSnapshot {
     pub latency_ms: Option<u64>,
     #[serde(rename = "failureReason")]
     pub failure_reason: Option<String>,
+    // v1.3 optional control fields (additive; absent when unset).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
+    #[serde(rename = "definitionOfDone", skip_serializing_if = "Option::is_none")]
+    pub definition_of_done: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iterations: Option<u32>,
+    #[serde(rename = "maxIterations", skip_serializing_if = "Option::is_none")]
+    pub max_iterations: Option<u32>,
+    #[serde(rename = "wallClockDeadline", skip_serializing_if = "Option::is_none")]
+    pub wall_clock_deadline: Option<u64>,
+    #[serde(rename = "lastSupervisorAction", skip_serializing_if = "Option::is_none")]
+    pub last_supervisor_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Rollup status for a supervisor / the orchestrator.

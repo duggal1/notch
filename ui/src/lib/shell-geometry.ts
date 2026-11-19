@@ -16,13 +16,14 @@ export function frameFor(mode: Mode, contentH = 640, n: Notch = notch) {
 }
 
 const K = 0.62; // continuous-corner approximation; a circle is 0.5523
-export function notchPath(w: number, h: number, r: number, e: number): string {
+export function notchPath(w: number, h: number, r: number, e: number, x0 = 0): string {
+  const X = (n: number) => +(n + x0).toFixed(2);
   return [
-    `M0 0`, `A${e} ${e} 0 0 1 ${e} ${e}`, // left ear (concave)
+    `M${X(0)} 0`, `A${e} ${e} 0 0 1 ${X(e)} ${e}`, // left ear (concave)
     `V${h - r}`,
-    `C${e} ${h - r + r * K} ${e + r - r * K} ${h} ${e + r} ${h}`, // bottom-left
-    `H${w - e - r}`,
-    `C${w - e - r + r * K} ${h} ${w - e} ${h - r + r * K} ${w - e} ${h - r}`, // bottom-right
-    `V${e}`, `A${e} ${e} 0 0 1 ${w} 0`, `Z`, // right ear
+    `C${X(e)} ${h - r + r * K} ${X(e + r - r * K)} ${h} ${X(e + r)} ${h}`, // bottom-left
+    `H${X(w - e - r)}`,
+    `C${X(w - e - r + r * K)} ${h} ${X(w - e)} ${h - r + r * K} ${X(w - e)} ${h - r}`, // bottom-right
+    `V${e}`, `A${e} ${e} 0 0 1 ${X(w)} 0`, `Z`, // right ear
   ].join('');
 }

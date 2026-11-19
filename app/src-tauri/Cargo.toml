@@ -34,25 +34,19 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSScreen",
   "NSWindow",
   "NSHapticFeedback",
+  "NSImage",
+  "NSImageRep",
+  "NSBitmapImageRep",
+  "libc",
+  "NSFontDescriptor",
+  "NSRunningApplication",
 ] }
 
-# Agent A (rust-core) is building crates/notchd in parallel. Until its public
-# API lands (serve / snapshot builder / plan executor / herdr client), the app
-# compiles WITHOUT it: the orchestrator logic runs inside src-tauri::engine
-# (same logic as `notchd serve`, with an internal herdr client), with comments
-# pointing at the notchd API it should be swapped for at integration.
-#
-# At integration the lead should:
-#   1. make this a required (non-optional) dependency,
-#   2. enable the `notchd-live` feature,
-#   3. replace the engine internals (engine.rs) with calls into notchd,
-#   4. delete the `optional = true` and this comment.
-notchd = { path = "../../crates/notchd", optional = true }
-
-[features]
-# NOT default. Enabling this before crates/notchd has a public API breaks the
-# build; it exists so the wiring point is explicit, not implicit.
-notchd-live = ["dep:notchd"]
+# Agent A's crate — the real orchestrator. Started in-process as a background
+# thread (reconcile + poll loop + subscriber flusher, mirroring `notchd serve`),
+# with commands as thin wrappers. The socket layer is NOT used; the webview
+# talks to the daemon through Tauri commands + events directly.
+notchd = { path = "../../crates/notchd" }
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }
