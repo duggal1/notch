@@ -343,8 +343,7 @@ impl Daemon {
         }
         // P1: herdr `done` on a DoD-bearing session is NOT a verdict. Revert
         // it and let the verifier decide before any `DONE` status is visible.
-        // RED DEMO: gate temporarily disabled (re-enabled in the next commit).
-        // self.enforce_dod_gate(now, &pool);
+        self.enforce_dod_gate(now, &pool);
 
         let seeds: Vec<Seed> = {
             let inner = lock(&self.inner);
