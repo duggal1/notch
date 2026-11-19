@@ -58,7 +58,8 @@
 //!
 //! Binds `127.0.0.1` only (default port 7407, override with `NOTCH_WS_PORT`;
 //! `0` requests an ephemeral port). At most [`MAX_CLIENTS`] connections are
-//! admitted; the rest are closed with code 1011 before any state is touched.
+//! admitted; the rest complete the HTTP upgrade and are immediately closed
+//! with WebSocket code 1012 (restart) before any state is touched.
 //! No external network, no TLS, no origin check beyond loopback binding.
 //! Each client has a bounded outbox (64 frames): when it fills, the oldest
 //! snapshot (else oldest event) is dropped and `lag` is incremented. Client
