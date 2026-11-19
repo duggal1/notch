@@ -8,6 +8,7 @@
 //!   - persistent path  -> all `run` calls carry the SAME `--session <id>`
 //!   - fallback path    -> persistent attempt + cold retry, logged as `perf`
 //!   - fan-out          -> max concurrent judgments <= 4 and > 1
+//!
 //! Also covers the unit-level grammar via `notchd::decider` directly.
 
 use notchd::clock::FakeClock;
@@ -430,6 +431,10 @@ fn parallel_judgments_are_bounded_and_concurrent() {
     assert!(peak <= 4, "bounded at 4, saw {peak}");
     assert!(peak > 1, "actually parallel, saw {peak}");
     // 6 * 120ms serial = 720ms; 4-wide should be ~240ms plus poll overhead.
+    println!(
+        "perf fan-out: 6 judgments, peak_concurrency={peak}, wall={}ms (serial would be ~720ms)",
+        elapsed.as_millis()
+    );
     assert!(elapsed < Duration::from_millis(650), "fan-out too slow: {elapsed:?}");
     // All six reused the same session id.
     let sids: std::collections::HashSet<String> = calls
@@ -466,6 +471,57 @@ fn gates_still_precede_decider_calls() {
     assert!(daemon.pause_supervisor(&sup).is_ok());
     daemon.poll_once();
     assert_eq!(oc.run_calls().len(), 0, "paused supervisor: no judgment");
+}
+
+/// Ignored benchmark: exercises all three real decision paths and prints the
+/// p50/p95 recorded by the production instrumentation. Run with
+/// `cargo test -p notchd --test perf_decider -- --ignored --nocapture`.
+#[test]
+#[ignore = "benchmark: prints per-path p50/p95"]
+fn bench_after_per_path_p50_p95() {
+    let _guard = test_lock();
+    notchd::decider::reset_decision_stats();
+
+    // Fast path: 10 sessions with locally checkable DoDs, zero calls.
+    {
+        let root = tmp_root("bench-fast");
+        let cwd = root.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("marker.txt"), "READY").unwrap();
+        let (_h, oc, daemon, _c) = build(&root);
+        for _ in 0..10 {
+            submit(&daemon, &cwd, "file:marker.txt contains:READY");
+        }
+        daemon.poll_once();
+        assert_eq!(oc.run_calls().len(), 0);
+    }
+
+    // Persistent path: 10 judgments on one reused session, 120 ms simulated
+    // inference each (the shim stands in for the real model call).
+    {
+        let root = tmp_root("bench-persist");
+        let cwd = root.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (_h, oc, daemon, _clock) = build(&root);
+        for _ in 0..10 {
+            submit(&daemon, &cwd, "cargo test passes on main");
+        }
+        oc.set_mode(RunMode::Slow { ms: 120 });
+        daemon.poll_once();
+    }
+
+    // Fallback path: persistent fails, cold retry fires.
+    {
+        let root = tmp_root("bench-fallback");
+        let cwd = root.join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let (_h, oc, daemon, _c) = build(&root);
+        submit(&daemon, &cwd, "cargo test passes on main");
+        oc.set_mode(RunMode::PersistentFails);
+        daemon.poll_once();
+    }
+
+    println!("AFTER {}", notchd::decider::decision_stats_report());
 }
 
 /// Grammar smoke via the public API (mirrors decider.rs unit tests).
