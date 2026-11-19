@@ -76,7 +76,11 @@ def herdr_agents() -> list:
 
 
 def herdr_panes() -> set:
-    return {a.get("pane_id") for a in herdr_agents() if a.get("pane_id")}
+    ws = os.environ.get("NOTCH_E2E_WS", "")
+    return {
+        a.get("pane_id") for a in herdr_agents()
+        if a.get("pane_id") and (not ws or a.get("workspace_id") == ws)
+    }
 
 
 def tail(sid: str, lines: int = 200, pane: str = "") -> str:

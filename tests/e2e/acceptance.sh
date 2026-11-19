@@ -45,21 +45,11 @@ DAEMON_PIDS=$SCRATCH/daemon.pid; : > "$DAEMON_PIDS"
 MYPANES=$SCRATCH/my-panes.txt; : > "$MYPANES"
 cleanup() {
   rq '{"cmd":"kill_switch"}' > "$ART/kill-switch.json" 2>/dev/null || true
+  # Close ONLY the workspace this run created (never a shared/user pane).
+  if [[ -n "${WS:-}" ]]; then
+    timeout 30 herdr workspace close "$WS" > "$ART/workspace-close.json" 2>/dev/null || true
+  fi
   herdr pane list > "$SCRATCH/post-panes.json" 2>/dev/null || true
-  python3 - "$SCRATCH/post-panes.json" "$SCRATCH" > "$SCRATCH/close-list.txt" 2>/dev/null <<'PY'
-import json,sys
-try: d=json.load(open(sys.argv[1]))
-except Exception: d={}
-roots=sys.argv[2]
-for p in d.get("result",{}).get("panes",[]):
-    cwd=p.get("cwd") or ""
-    if cwd.startswith(roots) and p.get("pane_id"): print(p["pane_id"])
-PY
-  while IFS= read -r pane; do
-    [[ -z "$pane" ]] && continue
-    timeout 15 herdr pane close "$pane" >/dev/null 2>&1 || true
-    print -r -- "closed-by-cwd $pane" >> "$ART/panes-closed.txt"
-  done < "$SCRATCH/close-list.txt"
   while IFS= read -r pid; do
     [[ -z "$pid" ]] && continue
     kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null
@@ -77,11 +67,25 @@ t0=$EPOCHSECONDS
   emit 0 FAIL "cargo build failed; see $SCRATCH/build.log" $(( EPOCHSECONDS-t0 )); exit 3; }
 emit 0 PASS "cargo build -p notchd ok; CLI=$CLI; model=opencode/hy4-flash-free (machine default + decider)" $(( EPOCHSECONDS-t0 ))
 
-# ---- step 1: fresh daemon + baseline panes ---------------------------------
+# ---- step 1: own herdr workspace + fresh daemon + baseline panes -----------
 t0=$EPOCHSECONDS
+herdr agent list > "$SCRATCH/baseline-agents.json" 2>/dev/null
+BASE=$(python3 -c 'import json;d=json.load(open("'"$SCRATCH"'/baseline-agents.json"));print(",".join(sorted(a["pane_id"] for a in d["result"]["agents"])))')
+print -r -- "$BASE" > "$ART/baseline-panes.txt"
+WS_JSON=$(timeout 30 herdr workspace create --cwd "$SCRATCH" --label "notch-e2e-$LABEL" --no-focus 2>&1)
+print -r -- "$WS_JSON" > "$ART/workspace-create.json"
+read -r WS TAB ROOTPANE < <(print -r -- "$WS_JSON" | python3 -c 'import json,sys
+d=json.load(sys.stdin)["result"]
+print(d["workspace"]["workspace_id"], d["tab"]["tab_id"], d["root_pane"]["pane_id"])')
+[[ -n "${WS:-}" ]] || { emit 1 FAIL "workspace create failed: $WS_JSON" $(( EPOCHSECONDS-t0 )); exit 3; }
+export NOTCH_E2E_WS=$WS
+log "own workspace=$WS tab=$TAB root pane=$ROOTPANE (no-focus); baseline shared panes=$BASE"
 (
-  unset HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
+  export HERDR_WORKSPACE_ID=$WS HERDR_TAB_ID=$TAB HERDR_PANE_ID=$ROOTPANE
   export NOTCH_STATE_DIR=$STATE NOTCH_SOCK=$SOCK
+  # unique decider session per run: agents share the machine-wide default
+  # `ses_notchd_supervisor_decider`, which collides across concurrent runs.
+  export NOTCH_DECIDER_SESSION="ses_e2e_${LABEL}_$(date +%s)"
   cd "$REPO"; nohup "$CLI" serve > "$SCRATCH/daemon.log" 2>&1 &
   echo $! >> "$DAEMON_PIDS"
 )
@@ -101,10 +105,7 @@ if [[ "$HELLO" != *hello* ]]; then
   tail -10 "$SCRATCH/daemon.log" > "$ART/daemon-log-tail.txt"
   emit 1 FAIL "daemon did not come up; see $ART/daemon-log-tail.txt" $(( EPOCHSECONDS-t0 )); exit 3
 fi
-herdr agent list > "$SCRATCH/baseline-agents.json" 2>/dev/null
-BASE=$(python3 -c 'import json;d=json.load(open("'"$SCRATCH"'/baseline-agents.json"));print(",".join(sorted(a["pane_id"] for a in d["result"]["agents"])))')
-print -r -- "$BASE" > "$ART/baseline-panes.txt"
-emit 1 PASS "fresh NOTCH_STATE_DIR=$STATE NOTCH_SOCK=$SOCK; hello=$HELLO; baseline panes: $BASE" $(( EPOCHSECONDS-t0 ))
+emit 1 PASS "own herdr workspace $WS (tab $TAB, root $ROOTPANE, --no-focus); fresh NOTCH_STATE_DIR=$STATE NOTCH_SOCK=$SOCK; hello=$HELLO; baseline shared panes: $BASE" $(( EPOCHSECONDS-t0 ))
 
 # ---- step 2: SV-1 with two sessions; six-hop latency for session 1 ---------
 t0=$EPOCHSECONDS
@@ -125,7 +126,12 @@ for attempt in 1 2 3; do
 done
 A1=$(python3 -c 'import json;print(json.dumps([json.loads(l) for l in open("'"$ART"'/hops-S1.jsonl") if "\"hop\":\"a_" in l][0]["ack"]))' 2>/dev/null)
 SID1=$(python3 -c 'import json;print(json.loads(open("'"$ART"'/hops-S1.jsonl").readline())["sid"])' 2>/dev/null)
-A2=$(rq "$(python3 -c 'import json,sys;print(json.dumps({"cmd":"submit_task","task":sys.argv[1],"cwd":sys.argv[2],"definitionOfDone":sys.argv[3],"supervisorId":"SV-1"}))' "$T2" "$SCRATCH/cwd-e2e-2" "$D2")")
+for attempt in 1 2 3; do
+  A2=$(rq "$(python3 -c 'import json,sys;print(json.dumps({"cmd":"submit_task","task":sys.argv[1],"cwd":sys.argv[2],"definitionOfDone":sys.argv[3],"supervisorId":"SV-1"}))' "$T2" "$SCRATCH/cwd-e2e-2" "$D2")")
+  [[ "$A2" == *'"ok":true'* ]] && break
+  log "step2: S1-OC02 spawn failed (agent_pane_busy); retry $attempt/3 after 3s"
+  sleep 3
+done
 SID2=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("sessionId",""))' "$A2" 2>/dev/null)
 SUP=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("supervisorId",""))' "$A2" 2>/dev/null)
 snap > "$SCRATCH/after-submit-snap.json"
@@ -135,6 +141,25 @@ if [[ "$A1" == *'"ok": true'* && -n "$SID1" && -n "$SID2" && "$SUP" == "SV-1" ]]
   emit 2 PASS "SV-1 allocated $SID1 and $SID2; ack1=$A1; ack2=$A2; hops: $ART/hops-S1.jsonl" $(( EPOCHSECONDS-t0 ))
 else
   FAILS=$(( FAILS+1 )); emit 2 FAIL "submit failed: ack1=$A1 ack2=$A2 SID1=$SID1 SID2=$SID2 sup=$SUP" $(( EPOCHSECONDS-t0 ))
+fi
+
+# ---- step 4: handoff through the bus, delivered to the pane tail -----------
+t0=$EPOCHSECONDS
+H="handoff-marker-$(python3 -c 'import secrets;print(secrets.token_hex(6))')"
+ACK4=$(rq "$(python3 -c 'import json,sys;print(json.dumps({"cmd":"message","from":sys.argv[1],"to":sys.argv[2],"type":"handoff","body":sys.argv[3]}))' "$SID1" "$SID2" "$H")")
+S4=$(snap)
+V4=$(SNAP="$S4" H="$H" SID1="$SID1" SID2="$SID2" python3 -c 'import json,os,subprocess
+d=json.loads(os.environ["SNAP"]); h=os.environ["H"]
+m=[x for x in d.get("busMessages",[]) if x.get("from")==os.environ["SID1"] and x.get("to")==os.environ["SID2"] and h in (x.get("preview") or "")]
+tail=""
+for t in (os.environ["SID2"].lower(),):
+  try: tail=subprocess.run(["herdr","agent","read",t,"--lines","200"],capture_output=True,text=True,timeout=10).stdout
+  except Exception: pass
+print("CONTAINED" if m else "MISSING", "tail_marker=" + ("1" if h in tail else "0"), json.dumps(m[:1]))' 2>/dev/null)
+if [[ "$V4" == CONTAINED* ]]; then
+  emit 4 PASS "busMessages $V4; ack=$ACK4" $(( EPOCHSECONDS-t0 ))
+else
+  FAILS=$(( FAILS+1 )); emit 4 FAIL "bus handoff $V4; ack=$ACK4" $(( EPOCHSECONDS-t0 ))
 fi
 
 # ---- step 3: both sessions reach a terminal state ---------------------------
@@ -162,25 +187,6 @@ else
   FAILS=$(( FAILS+1 )); emit 3 FAIL "not both terminal after $(( EPOCHSECONDS-t0 ))s: $R; E2E-1.md=$F1 E2E-2.md=$F2" $(( EPOCHSECONDS-t0 ))
 fi
 
-# ---- step 4: handoff through the bus, delivered to the pane tail -----------
-t0=$EPOCHSECONDS
-H="handoff-marker-$(python3 -c 'import secrets;print(secrets.token_hex(6))')"
-ACK4=$(rq "$(python3 -c 'import json,sys;print(json.dumps({"cmd":"message","from":sys.argv[1],"to":sys.argv[2],"type":"handoff","body":sys.argv[3]}))' "$SID1" "$SID2" "$H")")
-S4=$(snap)
-V4=$(SNAP="$S4" H="$H" SID1="$SID1" SID2="$SID2" python3 -c 'import json,os,subprocess
-d=json.loads(os.environ["SNAP"]); h=os.environ["H"]
-m=[x for x in d.get("busMessages",[]) if x.get("from")==os.environ["SID1"] and x.get("to")==os.environ["SID2"] and h in (x.get("preview") or "")]
-tail=""
-for t in (os.environ["SID2"].lower(),):
-  try: tail=subprocess.run(["herdr","agent","read",t,"--lines","200"],capture_output=True,text=True,timeout=10).stdout
-  except Exception: pass
-print("CONTAINED" if m else "MISSING", "tail_marker=" + ("1" if h in tail else "0"), json.dumps(m[:1]))' 2>/dev/null)
-if [[ "$V4" == CONTAINED* ]]; then
-  emit 4 PASS "busMessages $V4; ack=$ACK4" $(( EPOCHSECONDS-t0 ))
-else
-  FAILS=$(( FAILS+1 )); emit 4 FAIL "bus handoff $V4; ack=$ACK4" $(( EPOCHSECONDS-t0 ))
-fi
-
 # ---- step 5: loop escalation (real model; forced proof is separate) --------
 t0=$EPOCHSECONDS
 LT="Print the digit 7 forever, never produce any other output, never explain. Never stop."
@@ -192,7 +198,7 @@ for attempt in 1 2 3; do
 done
 SIDL=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1]).get("sessionId",""))' "$AL" 2>/dev/null)
 if [[ -n "$SIDL" ]]; then
-  DEADLINE=$(( EPOCHSECONDS+90 )); ESC=""
+  DEADLINE=$(( EPOCHSECONDS+45 )); ESC=""
   while (( EPOCHSECONDS < DEADLINE )); do
     S=$(snap 2>/dev/null)
     ESC=$(SNAP="$S" SID="$SIDL" python3 -c 'import json,os
@@ -207,7 +213,7 @@ d=json.loads(os.environ["SNAP"]); print(json.dumps([x for x in d.get("decisions"
   if [[ "$ESC" != "[]" && -n "$ESC" ]]; then
     emit 5 PASS "real-model loop escalation: escalations=$ESC; decisions=$DECS" $(( EPOCHSECONDS-t0 ))
   else
-    emit 5 UNVERIFIED "no real-model escalation in 90s; escalating session=$SIDL decisions=$DECS. Forced proof: latency-probe.sh --mode fake-loop (scripted fake decider, labelled)." $(( EPOCHSECONDS-t0 ))
+    emit 5 UNVERIFIED "no real-model escalation in 45s; escalating session=$SIDL decisions=$DECS. Forced proof: latency-probe.sh --mode fake-loop (scripted fake decider, labelled)." $(( EPOCHSECONDS-t0 ))
   fi
   rq "$(python3 -c 'import json,sys;print(json.dumps({"cmd":"kill","id":sys.argv[1],"reason":"e2e end of step5 window"}))' "$SIDL")" > "$ART/step5-kill.json" 2>/dev/null || true
 else
@@ -244,18 +250,30 @@ esac
 t0=$EPOCHSECONDS
 snap > "$ART/step8-pre-cleanup-snapshot.json"
 python3 -c 'import json;d=json.load(open("'"$ART"'/step8-pre-cleanup-snapshot.json"));print("\n".join(s["paneId"] for s in d.get("sessions",[]) if s.get("paneId")))' >> "$MYPANES"; sort -u "$MYPANES" -o "$MYPANES"
+rq '{"cmd":"kill_switch"}' > "$ART/kill-switch.json" 2>/dev/null || true
 rq '{"cmd":"cleanup"}' > "$ART/cleanup.json" 2>/dev/null || true
+timeout 30 herdr workspace close "$WS" > "$ART/workspace-close.json" 2>/dev/null || true
 herdr agent list > "$SCRATCH/post-agents.json" 2>/dev/null
+herdr workspace list > "$SCRATCH/post-workspaces.json" 2>/dev/null
 cp "$SCRATCH/post-agents.json" "$ART/post-agents.json"
-CHECK=$(MYPANES="$MYPANES" POST="$SCRATCH/post-agents.json" BASE="$SCRATCH/baseline-agents.json" python3 - <<'PY'
+CHECK=$(MYPANES="$MYPANES" POST="$SCRATCH/post-agents.json" BASE="$SCRATCH/baseline-agents.json" WS="$WS" WSLIST="$SCRATCH/post-workspaces.json" python3 - <<'PY'
 import json,os
 post={a.get("pane_id") for a in json.load(open(os.environ["POST"]))["result"]["agents"]}
 base={a["pane_id"] for a in json.load(open(os.environ["BASE"]))["result"]["agents"]}
 mine={l.strip() for l in open(os.environ["MYPANES"]) if l.strip()}
+ws=os.environ["WS"]
+wslist=[w["workspace_id"] for w in json.load(open(os.environ["WSLIST"]))["result"]["workspaces"]]
+our_left=[a.get("pane_id") for a in json.load(open(os.environ["POST"]))["result"]["agents"] if a.get("workspace_id")==ws]
 rem=sorted(mine&post); miss=sorted(base-post)
-print("REMAIN="+json.dumps(rem)+" BASELINE_DRIFT="+json.dumps(miss)+" CHECKED="+str(len(mine)))
+print("REMAIN="+json.dumps(rem)+" OUR_WS_PANES="+json.dumps(our_left)+" WS_PRESENT="+("1" if ws in wslist else "0")+" BASELINE_DRIFT="+json.dumps(miss)+" CHECKED="+str(len(mine)))
 PY
 )
+# stop the daemon we started (the EXIT trap is a second safety net)
+while IFS= read -r pid; do
+  [[ -z "$pid" ]] && continue
+  kill "$pid" 2>/dev/null || true
+done < "$DAEMON_PIDS"
+sleep 1
 DAEMON_OK=KILLED
 while IFS= read -r pid; do
   [[ -z "$pid" ]] && continue
@@ -267,7 +285,7 @@ cp "$STATE/events.jsonl" "$ART/events-final.jsonl" 2>/dev/null
 cp "$STATE/state.json" "$ART/state-final.json" 2>/dev/null
 cp "$SCRATCH/my-panes.txt" "$ART/my-panes.txt"
 cp "$SCRATCH/post-agents.json" "$ART/post-agents.json"
-if [[ "$CHECK" == *'REMAIN=[]'* && "$DAEMON_OK" == KILLED ]]; then
+if [[ "$CHECK" == *'REMAIN=[]'* && "$CHECK" == *'OUR_WS_PANES=[]'* && "$CHECK" == *WS_PRESENT=0* && "$DAEMON_OK" == KILLED ]]; then
   emit 8 PASS "pane census: $CHECK; daemon=$DAEMON_OK; total=$(( EPOCHSECONDS-RUN_START ))s" $(( EPOCHSECONDS-t0 ))
 else
   FAILS=$(( FAILS+1 )); emit 8 FAIL "pane census: $CHECK; daemon=$DAEMON_OK" $(( EPOCHSECONDS-t0 ))

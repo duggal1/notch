@@ -48,23 +48,13 @@ print -r -- "$MARKER" > "$ART/marker.txt"
 DAEMON_PIDS=$SCRATCH/daemon.pid
 : > "$DAEMON_PIDS"
 cleanup() {
-  # kill-switch only affects panes this daemon manages; then close by cwd for
-  # any pane that escaped management (spawn failures), then stop our daemon.
+  # kill-switch affects panes this daemon manages; then close ONLY our own
+  # workspace (never a shared/user pane), then stop our daemon.
   timeout 20 "$CLI" kill-switch > "$ART/kill-switch.json" 2>/dev/null || true
+  if [[ -n "${WS:-}" ]]; then
+    timeout 30 herdr workspace close "$WS" > "$ART/workspace-close.json" 2>/dev/null || true
+  fi
   herdr pane list > "$SCRATCH/post-panes.json" 2>/dev/null || true
-  python3 - "$SCRATCH/post-panes.json" "$CWD" > "$SCRATCH/close-list.txt" 2>/dev/null <<'PY'
-import json,sys
-try: d=json.load(open(sys.argv[1]))
-except Exception: d={}
-cwd=sys.argv[2]
-for p in d.get("result",{}).get("panes",[]):
-    if p.get("cwd")==cwd and p.get("pane_id"): print(p["pane_id"])
-PY
-  while IFS= read -r pane; do
-    [[ -z "$pane" ]] && continue
-    timeout 15 herdr pane close "$pane" >/dev/null 2>&1 || true
-    print -r -- "closed-by-cwd $pane" >> "$ART/panes-closed.txt"
-  done < "$SCRATCH/close-list.txt"
   while IFS= read -r pid; do
     [[ -z "$pid" ]] && continue
     kill -0 "$pid" 2>/dev/null && { kill "$pid" 2>/dev/null; print -r -- "killed daemon pid $pid" >> "$ART/daemon-stopped.txt"; }
@@ -73,12 +63,22 @@ PY
 }
 trap cleanup EXIT
 
-# daemon env: drop stale herdr triplet; keep HERDR_SOCKET_PATH.
+# Own herdr workspace: every pane created by this run lives here, never in the
+# shared workspace. --no-focus keeps the user's view untouched.
+WS_JSON=$(timeout 30 herdr workspace create --cwd "$SCRATCH" --label "notch-e2e-$LABEL" --no-focus 2>&1)
+print -r -- "$WS_JSON" > "$ART/workspace-create.json"
+read -r WS TAB ROOTPANE < <(print -r -- "$WS_JSON" | python3 -c 'import json,sys
+d=json.load(sys.stdin)["result"]
+print(d["workspace"]["workspace_id"], d["tab"]["tab_id"], d["root_pane"]["pane_id"])')
+export NOTCH_E2E_WS=$WS
 export FAKE_DECIDER_MARKER=$MARKER FAKE_DECIDER_LOG=$ART/decider-calls.jsonl
 : > "$ART/decider-calls.jsonl"
 (
-  unset HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
+  export HERDR_WORKSPACE_ID=$WS HERDR_TAB_ID=$TAB HERDR_PANE_ID=$ROOTPANE
   export NOTCH_STATE_DIR=$STATE NOTCH_SOCK=$SOCK
+  export NOTCH_DECIDER_SESSION="ses_e2e_probe_${LABEL}_$(date +%s)"
+  # tighter poll catches the brief idle window before herdr reports "done"
+  export NOTCH_POLL_INTERVAL_MS=200
   [[ "$MODE" == fake-loop ]] && { export NOTCH_OPENCODE_CMD=$HERE/fake-decider.sh FAKE_DECIDER_MODE=continue; }
   [[ "$MODE" == fake-done ]] && { export NOTCH_OPENCODE_CMD=$HERE/fake-decider.sh FAKE_DECIDER_MODE=done; }
   cd "$REPO"
@@ -114,7 +114,15 @@ python3 "$HERE/e2e_lib.py" probe \
   --sock "$SOCK" --state "$STATE" --cwd "$CWD" --task "$TASK" --dod "$DOD" \
   --marker "$MARKER" --expect "$EXPECT" --out "$ART/hops.jsonl" --budget-ms "$BUDGET_MS"
 RC=$?
-# post-run pane census for the report
+# close our workspace now (trap is the safety net), then prove it is gone
+timeout 20 "$CLI" kill-switch > "$ART/kill-switch.json" 2>/dev/null || true
+timeout 30 herdr workspace close "$WS" > "$ART/workspace-close.json" 2>/dev/null || true
 herdr pane list > "$ART/post-panes.json" 2>/dev/null || true
-print -r -- "{\"label\":\"$LABEL\",\"mode\":\"$MODE\",\"rc\":$RC,\"scratch\":\"$SCRATCH\"}" > "$ART/meta.json"
+herdr workspace list > "$ART/post-workspaces.json" 2>/dev/null || true
+PANE_PROOF=$(WS="$WS" P="$ART/post-panes.json" W="$ART/post-workspaces.json" python3 -c 'import json,os,sys
+ws=os.environ["WS"]
+panes=[a.get("pane_id") for a in json.load(open(os.environ["P"]))["result"].get("panes",[]) if a.get("workspace_id")==ws]
+wsl=[w["workspace_id"] for w in json.load(open(os.environ["W"]))["result"]["workspaces"]]
+print("OUR_PANES="+json.dumps(panes)+" WS_PRESENT="+("1" if ws in wsl else "0"))')
+print -r -- "{\"label\":\"$LABEL\",\"mode\":\"$MODE\",\"rc\":$RC,\"scratch\":\"$SCRATCH\",\"workspace\":\"$WS\",\"pane_proof\":\"$PANE_PROOF\"}" > "$ART/meta.json"
 exit $RC
