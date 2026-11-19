@@ -24,6 +24,7 @@ pub mod herdr;
 pub mod model;
 pub mod paths;
 pub mod plan;
+pub mod proc;
 pub mod registry;
 pub mod snapshot;
 pub mod socket;
