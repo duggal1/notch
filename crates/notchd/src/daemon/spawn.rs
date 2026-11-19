@@ -5,11 +5,40 @@ use super::acks::{RunPlanAck, SpawnAck, SubmitTaskAck};
 use super::lifecycle::SpawnOutcome;
 use super::types::{agent_target, lock, push_warning, Daemon};
 use crate::cleanup;
-use crate::herdr::Herdr;
+use crate::herdr::{Herdr, HerdrError};
 use crate::model::{single_line, truncate_words, SessionState, SupervisorMeta};
 use crate::plan;
 use crate::status::Status;
 use std::path::Path;
+use std::time::Duration;
+
+/// Backoffs before retries 1/2/3 of a transient herdr busy response. Total
+/// worst-case wait is 1.5 s; the attempt count is bounded (never a spin loop).
+const BUSY_RETRY_DELAYS_MS: &[u64] = &[250, 500, 750];
+
+/// Does this herdr failure look like a transient busy state?
+/// `agent_pane_busy` is the observed live string; "busy" also covers other
+/// herdr busy spellings without swallowing real failures.
+fn is_busy_error(err: &HerdrError) -> bool {
+    err.to_string().to_ascii_lowercase().contains("busy")
+}
+
+/// Run `call` once, then retry up to 3 times with 250/500/750 ms backoff, but
+/// ONLY on a busy error. Any other error returns immediately.
+fn retry_busy<T, F: FnMut() -> Result<T, HerdrError>>(mut call: F) -> Result<T, HerdrError> {
+    let mut last = None;
+    for delay in std::iter::once(0u64).chain(BUSY_RETRY_DELAYS_MS.iter().copied()) {
+        if delay > 0 {
+            std::thread::sleep(Duration::from_millis(delay));
+        }
+        match call() {
+            Ok(value) => return Ok(value),
+            Err(e) if is_busy_error(&e) => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("initial attempt always runs"))
+}
 
 /// The slow part of a spawn, factored out so `submit_task` can return its ack
 /// before herdr agent-start readiness completes. All side effects are pure
@@ -61,9 +90,16 @@ pub(crate) fn spawn_detached(
         &session.id,
         crate::worktree::isolate_build_enabled(),
     );
-    let pane = match herdr.pane_split(&session.cwd, &env) {
+    // V2: herdr can report `agent_pane_busy` transiently under a concurrent
+    // 2×2 spawn. Retry with bounded backoff instead of losing the pane; a
+    // permanent busy still fails honestly and the allocated ID is preserved.
+    let pane = match retry_busy(|| herdr.pane_split(&session.cwd, &env)) {
         Ok(p) => p,
         Err(e) => {
+            warnings.push(format!(
+                "{}: pane split failed after bounded busy retry: {e}",
+                session.id
+            ));
             return SpawnOutcome {
                 session,
                 warnings,
@@ -74,8 +110,12 @@ pub(crate) fn spawn_detached(
     };
     session.pane_id = pane.clone();
     let agent_name = agent_target(&session.id);
-    if let Err(e) = herdr.agent_start(&agent_name, &pane) {
+    if let Err(e) = retry_busy(|| herdr.agent_start(&agent_name, &pane)) {
         let _ = herdr.pane_close(&pane);
+        warnings.push(format!(
+            "{}: agent start failed after bounded busy retry: {e}",
+            session.id
+        ));
         return SpawnOutcome {
             session,
             warnings,

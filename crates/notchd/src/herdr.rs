@@ -87,6 +87,7 @@ impl AgentEntry {
 
 type Runner = Arc<dyn Fn(&[String]) -> Result<String, HerdrError> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct Herdr {
     cmd: String,
     runner: Option<Runner>,

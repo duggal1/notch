@@ -335,6 +335,10 @@ impl Daemon {
     pub(crate) fn supervise_once(&self, api_sessions: Option<&[crate::opencode::ApiSession]>) {
         let now = self.now();
         let pool = self.judge_pool();
+        // P2: apply spawns that continued after a fast ack.
+        for outcome in self.drain_spawn_outcomes() {
+            self.apply_spawn_outcome(outcome);
+        }
         // 3.2: drain finished jobs first. Applying a result is pure state work
         // on this thread; no model call ever happens inside `poll_once`.
         let finished = pool.drain_done();
@@ -556,6 +560,41 @@ impl Daemon {
                 },
             };
             let _ = pool.try_submit(job);
+        }
+    }
+
+    /// Commit a background spawn's result to the session tree. The ack was
+    /// already returned; failures land here as warnings + failed status.
+    fn apply_spawn_outcome(&self, outcome: super::lifecycle::SpawnOutcome) {
+        let super::lifecycle::SpawnOutcome { session, warnings, error, pane } = outcome;
+        let cwd = session.cwd.clone();
+        {
+            let mut inner = lock(&self.inner);
+            if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == session.id) {
+                s.pane_id = session.pane_id;
+                s.cwd = session.cwd;
+                s.worktree = session.worktree;
+                s.branch = session.branch;
+                s.base_rev = session.base_rev;
+                s.temp_dir = session.temp_dir;
+                if error.is_some() {
+                    s.status = Status::Failed;
+                    s.failure_reason = Some("spawn_failed".to_string());
+                }
+            }
+            for warning in warnings {
+                push_warning(&mut inner, warning);
+            }
+            self.save_state(&inner);
+        }
+        if let Some(e) = error {
+            let _ = self.event_log.append(None, "escalate", &format!("spawn_failed: {e}"));
+        } else if let Some(pane) = pane {
+            let _ = self.event_log.append(
+                Some(session.id.clone()),
+                "spawn",
+                &format!("pane={pane} cwd={cwd}"),
+            );
         }
     }
 

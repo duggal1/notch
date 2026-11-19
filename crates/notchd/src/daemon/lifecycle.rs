@@ -8,13 +8,33 @@ use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::EventLog;
 use crate::herdr::Herdr;
-use crate::model::SupervisorMeta;
+use crate::model::{SessionState, SupervisorMeta};
 use crate::status::Status;
 use crate::watchdog::Watchdog;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Result of a spawn that continues after `submit_task` has acked. Applied on
+/// the poll thread so failures surface as snapshot warnings + failed status.
+pub(crate) struct SpawnOutcome {
+    pub(crate) session: SessionState,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) pane: Option<String>,
+}
+
+struct SpawnChannel {
+    tx: Sender<SpawnOutcome>,
+    rx: Receiver<SpawnOutcome>,
+}
+
+/// Per-state-dir channels, so test daemons never cross-talk.
+static SPAWN_CHANNELS: OnceLock<Mutex<HashMap<PathBuf, SpawnChannel>>> = OnceLock::new();
+
 
 impl Daemon {
     /// Open the daemon: load registry + state (missing/corrupt -> defaults),
@@ -100,6 +120,37 @@ impl Daemon {
 
     pub(crate) fn now(&self) -> u64 {
         self.clock.now_ms()
+    }
+
+    /// Sender for background spawns. Created once per daemon (state dir).
+    pub(crate) fn spawn_sender(&self) -> Sender<SpawnOutcome> {
+        let map = SPAWN_CHANNELS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+        let key = self.config.state_dir.clone();
+        map.entry(key)
+            .or_insert_with(|| {
+                let (tx, rx) = mpsc::channel();
+                SpawnChannel { tx, rx }
+            })
+            .tx
+            .clone()
+    }
+
+    /// Take every finished background spawn. Called from `supervise_once`.
+    pub(crate) fn drain_spawn_outcomes(&self) -> Vec<SpawnOutcome> {
+        let map = SPAWN_CHANNELS.get_or_init(|| Mutex::new(HashMap::new()));
+        let map = map.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(channel) = map.get(&self.config.state_dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        loop {
+            match channel.rx.try_recv() {
+                Ok(outcome) => out.push(outcome),
+                Err(_) => break,
+            }
+        }
+        out
     }
 
     /// One /api/session fetch via the configured client. Tests inject a
