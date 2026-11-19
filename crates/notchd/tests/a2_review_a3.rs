@@ -93,15 +93,23 @@ fn a_long_stall_must_rearm_the_stuck_escalation() {
     );
     assert!(ack.ok, "submit failed: {:?}", ack.error);
 
-    // Baseline: two polls so the async spawn outcome attaches the pane, then
-    // the watchdog's first poll anchor is recorded.
-    daemon.poll_once();
-    daemon.poll_once();
+    // Baseline: wait for the async spawn outcome to attach the pane (bounded
+    // wall-clock wait for the worker; the fake clock does NOT advance here).
+    let wait_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        daemon.poll_once();
+        let snap: Value = serde_json::to_value(daemon.snapshot()).unwrap();
+        if snap["sessions"].as_array().unwrap().iter().any(|s| s["paneId"] == json!("wA:p1")) {
+            break;
+        }
+        assert!(std::time::Instant::now() < wait_deadline, "async spawn never attached pane");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(stuck_escalations(&daemon), 0, "no stuck verdict at T0");
 
-    // Episode 1: 4 s of silence in 1 s ticks reaches the Stuck threshold
+    // Episode 1: 6 s of silence in 1 s ticks reaches the Stuck threshold
     // (2×2 s) without tripping the stall guard (> 3 s gap).
-    for _ in 0..4 {
+    for _ in 0..6 {
         clock.advance_ms(1_000);
         daemon.poll_once();
     }
@@ -112,11 +120,12 @@ fn a_long_stall_must_rearm_the_stuck_escalation() {
     clock.advance_ms(10_000);
     daemon.poll_once();
 
-    // Episode 2: another 4 s of genuine silence in 1 s ticks. This is a NEW
+    // Episode 2: another 6 s of genuine silence in 1 s ticks. This is a NEW
     // episode; the watchdog must emit a second `stuck` escalation.
-    for _ in 0..4 {
+    for _i in 0..6 {
         clock.advance_ms(1_000);
         daemon.poll_once();
+        println!("post-stall tick {_i}: stuck_escalations={}", stuck_escalations(&daemon));
     }
     let second = stuck_escalations(&daemon);
     assert!(
