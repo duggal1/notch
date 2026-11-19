@@ -45,9 +45,16 @@ impl Daemon {
             // pause, a suspended process. Reset every grace period and skip
             // all liveness actions for this pass.
             let mut inner = lock(&self.inner);
-            for s in inner.sessions.iter_mut() {
-                if !s.status.is_terminal() {
-                    s.revision_changed_at_ms = mono;
+            {
+                // Reset the grace window AND re-arm per-episode actions: a
+                // stall ends the previous silence episode, so the next
+                // genuine stuck episode must escalate again.
+                let mut wd = lock(&self.watchdog);
+                for s in inner.sessions.iter_mut() {
+                    if !s.status.is_terminal() {
+                        s.revision_changed_at_ms = mono;
+                        wd.mark_revision_change(&s.id, mono);
+                    }
                 }
             }
             let detail = format!(
