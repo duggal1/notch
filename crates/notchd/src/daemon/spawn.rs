@@ -523,7 +523,7 @@ impl Daemon {
             number: sup_number,
             title: sup_title,
         };
-        let mut session = SessionState {
+        let session = SessionState {
             id: session_id.clone(),
             sup: sup_id.clone(),
             status: Status::Working,
@@ -599,5 +599,159 @@ impl Daemon {
             session_id: Some(session_id),
             error,
         }
+    }
+}
+
+#[cfg(test)]
+mod busy_retry_tests {
+    //! V2 verifier finding: a herdr `agent_pane_busy` transient lost one of
+    //! four panes in the live 2×2 run. RED first — these assert bounded retry
+    //! around pane split / agent start and honest failure with the ID intact.
+
+    use super::spawn_detached;
+    use crate::herdr::{Herdr, HerdrError};
+    use crate::model::SessionState;
+    use crate::status::Status;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    fn base_session() -> SessionState {
+        SessionState {
+            id: "S2-OC02".to_string(),
+            sup: "SV-2".to_string(),
+            status: Status::Working,
+            title: "probe".to_string(),
+            task: "probe".to_string(),
+            cwd: std::env::temp_dir().to_string_lossy().to_string(),
+            pane_id: String::new(),
+            started_at: 1_700_000_000_000,
+            last_action: None,
+            last_revision: None,
+            latency_ms: None,
+            failure_reason: None,
+            failure_count: 0,
+            revision_changed_at_ms: 0,
+            attribution_baseline: None,
+            goal: None,
+            definition_of_done: None,
+            iterations: 0,
+            max_iterations: 8,
+            wall_clock_deadline: None,
+            last_supervisor_action: None,
+            model: None,
+            session_ref: None,
+            escalated: false,
+            temp_dir: None,
+            worktree: None,
+            branch: None,
+            base_rev: None,
+            backoff_until_ms: 0,
+            consecutive_decider_failures: 0,
+            stuck_strikes: 0,
+            strategy_changed: false,
+            last_tails: std::collections::VecDeque::new(),
+        }
+    }
+
+    #[derive(Default)]
+    struct BusyHerdr {
+        busy_splits: Mutex<u32>,
+        split_calls: Mutex<u32>,
+        busy_starts: Mutex<u32>,
+        start_calls: Mutex<u32>,
+    }
+
+    impl BusyHerdr {
+        fn fake(self: &Arc<Self>) -> Herdr {
+            let state = Arc::clone(self);
+            Herdr::with_runner(move |args: &[String]| {
+                let a = args.get(1).cloned().unwrap_or_default();
+                let b = args.get(2).cloned().unwrap_or_default();
+                let busy = || {
+                    Err(HerdrError::Failed {
+                        args: args.to_vec(),
+                        code: Some(1),
+                        stderr: "agent_pane_busy: pane already hosts an agent".to_string(),
+                    })
+                };
+                match (a.as_str(), b.as_str()) {
+                    ("pane", "split") => {
+                        *state.split_calls.lock().unwrap() += 1;
+                        let mut n = state.busy_splits.lock().unwrap();
+                        if *n > 0 {
+                            *n -= 1;
+                            return busy();
+                        }
+                        Ok(r#"{"id":"cli:pane:split","result":{"type":"pane_info","pane":{"pane_id":"w9:p1"}}}"#.to_string())
+                    }
+                    ("agent", "start") => {
+                        *state.start_calls.lock().unwrap() += 1;
+                        let mut n = state.busy_starts.lock().unwrap();
+                        if *n > 0 {
+                            *n -= 1;
+                            return busy();
+                        }
+                        Ok(r#"{"id":"cli:agent:start","result":{"type":"agent_started","agent":{"pane_id":"w9:p1","agent_status":"working","revision":1}}}"#.to_string())
+                    }
+                    ("agent", "prompt") => Ok(r#"{"id":"cli:agent:prompt","result":{"type":"agent_prompted","agent":{"pane_id":"w9:p1","agent_status":"working","revision":2}}}"#.to_string()),
+                    ("pane", "close") => Ok(r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#.to_string()),
+                    _ => Err(HerdrError::Failed { args: args.to_vec(), code: Some(2), stderr: "unexpected".into() }),
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn busy_pane_split_once_then_success_keeps_id_and_working() {
+        let busy = Arc::new(BusyHerdr {
+            busy_splits: Mutex::new(1),
+            ..Default::default()
+        });
+        let root = std::env::temp_dir().join(format!("notchd-busy-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let outcome = spawn_detached(
+            base_session(),
+            "probe".to_string(),
+            busy.fake(),
+            PathBuf::from(&root),
+            Vec::new(),
+        );
+        assert!(outcome.error.is_none(), "transient busy must be retried: {:?}", outcome.error);
+        assert_eq!(outcome.session.id, "S2-OC02", "allocated ID must survive");
+        assert_eq!(outcome.session.status, Status::Working, "session must end working");
+        assert_eq!(outcome.session.pane_id, "w9:p1");
+        assert_eq!(*busy.split_calls.lock().unwrap(), 2, "one busy response then success");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn permanent_busy_pane_split_fails_after_bounded_retries_keeping_id() {
+        let busy = Arc::new(BusyHerdr {
+            busy_splits: Mutex::new(100),
+            ..Default::default()
+        });
+        let root = std::env::temp_dir().join(format!("notchd-busy-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let outcome = spawn_detached(
+            base_session(),
+            "probe".to_string(),
+            busy.fake(),
+            PathBuf::from(&root),
+            Vec::new(),
+        );
+        let err = outcome.error.expect("permanent busy must fail honestly");
+        assert!(err.contains("busy"), "error must name the busy cause: {err}");
+        assert_eq!(outcome.session.id, "S2-OC02", "failed spawn must not drop the ID");
+        assert!(outcome.session.pane_id.is_empty());
+        assert!(
+            outcome.warnings.iter().any(|w| w.contains("busy") && w.contains("S2-OC02")),
+            "warning must carry the honest reason: {:?}",
+            outcome.warnings
+        );
+        let calls = *busy.split_calls.lock().unwrap();
+        assert!(calls > 1 && calls <= 4, "retry must be bounded (initial + 3): {calls}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
