@@ -59,6 +59,56 @@ fn test_config(root: &Path, stuck_after_secs: u64) -> Config {
     }
 }
 
+/// A fresh fixture starts from a valid empty checkpoint. Without this,
+/// `Daemon::open` warns "state recovery failed ... starting empty" on every
+/// brand-new state dir (A4's strict-recovery path); these tests are about git
+/// attribution, so the state-dir warning would be noise in their assertions.
+fn seed_state(root: &Path) {
+    let state_dir = root.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let path = state_dir.join("state.json");
+    if !path.exists() {
+        std::fs::write(&path, r#"{"version":1}"#).unwrap();
+    }
+}
+
+/// The directory a session ACTUALLY samples. Since per-session worktrees
+/// landed, a session spawned from a git repo with a HEAD runs in its own
+/// private worktree (`<tmp>/notch-<id>/worktree`), not in the cwd handed to
+/// `run_plan`. Post-baseline edits must be made here to be observable.
+fn session_cwd(daemon: &Daemon, session: &str) -> PathBuf {
+    let snap = daemon.snapshot();
+    let s = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == session)
+        .unwrap_or_else(|| {
+            let ids: Vec<&str> = snap.sessions.iter().map(|s| s.id.as_str()).collect();
+            panic!("session {session} missing from snapshot: {ids:?}")
+        });
+    PathBuf::from(&s.cwd)
+}
+
+/// Simulate a post-baseline edit BY the session: write into its real worktree.
+fn write_in_session(daemon: &Daemon, session: &str, rel: &str, body: &str) -> PathBuf {
+    let path = session_cwd(daemon, session).join(rel);
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+/// Run a git command inside a session's real worktree.
+fn git_in_session(daemon: &Daemon, session: &str, args: &[&str]) -> std::process::Output {
+    git(&session_cwd(daemon, session), args)
+}
+
+/// A4's coalesced writer flushes at most once per second and `poll_once` only
+/// marks state dirty. Force a synchronous checkpoint through the public
+/// `record_attribution` API with an EMPTY file set (no attribution change), so
+/// a fixture can assert persisted state deterministically — no sleep/polling.
+fn flush_state(daemon: &Daemon, session: &str) {
+    daemon.record_attribution(session, &[]);
+}
+
 /// Minimal scripted fake herdr (same shape as tests/acceptance.rs).
 struct FakeHerdr {
     agents: Mutex<Vec<Value>>,
@@ -158,6 +208,7 @@ fn agent_entry(pane_id: &str, status: &str, revision: u64) -> Value {
 fn spawn_daemon(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>) -> Daemon {
     let config = test_config(root, 900);
     std::fs::create_dir_all(&config.tmp_dir).unwrap();
+    seed_state(root);
     Daemon::open(config, fake.herdr(), clock).unwrap()
 }
 
@@ -186,6 +237,33 @@ fn commit_all(dir: &Path, message: &str) {
     assert!(
         out.status.success(),
         "git commit failed: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Dirty exactly 300 paths in `dir`: 100 modified tracked `mod_*`, 100
+/// untracked `new*_*`, 100 staged `staged*_*`. Prefixes are parameterized so
+/// the identical fixture can be replayed inside a per-session worktree.
+fn dirty_300(dir: &Path, new_prefix: &str, staged_prefix: &str, mod_body: &str) {
+    for i in 0..100 {
+        std::fs::write(dir.join(format!("mod_{i:03}.rs")), mod_body).unwrap();
+    }
+    for i in 0..100 {
+        std::fs::write(dir.join(format!("{new_prefix}{i:03}.rs")), "fn new() {}\n").unwrap();
+    }
+    for i in 0..100 {
+        std::fs::write(dir.join(format!("{staged_prefix}{i:03}.rs")), "fn staged() {}\n")
+            .unwrap();
+    }
+    let out = std::process::Command::new("git")
+        .args(["-c", "core.fsmonitor=false", "add"])
+        .args((0..100).map(|i| format!("{staged_prefix}{i:03}.rs")))
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git add {staged_prefix}* failed: {:?}",
         String::from_utf8_lossy(&out.stderr)
     );
 }
@@ -265,25 +343,7 @@ fn build_300_dirty_fixture(base: &Path, name: &str) -> PathBuf {
         std::fs::write(repo.join(format!("mod_{i:03}.rs")), "fn base() {}\n").unwrap();
     }
     commit_all(&repo, "mod base");
-    // 100 unstaged modifications.
-    for i in 0..100 {
-        std::fs::write(repo.join(format!("mod_{i:03}.rs")), "fn base() { /* modified */ }\n").unwrap();
-    }
-    // 100 untracked files.
-    for i in 0..100 {
-        std::fs::write(repo.join(format!("new_{i:03}.rs")), "fn new() {}\n").unwrap();
-    }
-    // 100 staged new files.
-    for i in 0..100 {
-        std::fs::write(repo.join(format!("staged_{i:03}.rs")), "fn staged() {}\n").unwrap();
-    }
-    let out = std::process::Command::new("git")
-        .args(["-c", "core.fsmonitor=false", "add"])
-        .args((0..100).map(|i| format!("staged_{i:03}.rs")))
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git add staged_* failed: {:?}", String::from_utf8_lossy(&out.stderr));
+    dirty_300(&repo, "new_", "staged_", "fn base() { /* modified */ }\n");
     repo
 }
 
@@ -341,7 +401,16 @@ fn unborn_head_attribution_signal_no_panic() {
         spawn_working_sessions(&root, &fake, clock, &[repo.as_path()]);
     daemon.poll_once(); // baseline = {staged.rs, untracked.rs}; attributes nothing
     assert_eq!(daemon.snapshot().attribution.len(), 0, "baseline files must not be attributed");
-    assert!(daemon.snapshot().warnings.is_empty(), "no warnings expected: {:?}", daemon.snapshot().warnings);
+    // An unborn HEAD has no commit to branch a per-session worktree from, so
+    // the engine now emits ONE loud fallback warning (HARDENING §3.6) and
+    // keeps using the original cwd. It is a signal, not an error.
+    let warnings = daemon.snapshot().warnings;
+    assert_eq!(
+        warnings.len(), 1,
+        "unborn HEAD: exactly the worktree-fallback warning expected: {warnings:?}"
+    );
+    assert!(warnings[0].contains(&session_ids[0]), "warning must name the session: {warnings:?}");
+    assert!(warnings[0].contains("worktree disabled"), "warning must explain fallback: {warnings:?}");
 
     // A file dirtied after the baseline IS attributed, even though HEAD is unborn.
     std::fs::write(repo.join("after.rs"), "fn after() {}\n").unwrap();
@@ -384,6 +453,14 @@ fn three_hundred_dirty_files_cap_and_deterministic_order() {
         let clock = Arc::new(FakeClock::new(1_763_520_000_000));
         let (daemon, session_ids, panes) =
             spawn_working_sessions(&root, &fake, clock, &[repo.as_path()]);
+        // The worktree is created from the committed base, so replay the dirty
+        // fixture INSIDE the session's own worktree before the first sample.
+        dirty_300(
+            &session_cwd(&daemon, &session_ids[0]),
+            "new_",
+            "staged_",
+            "fn base() { /* replay */ }\n",
+        );
         daemon.poll_once(); // fixture is dirty at first sample -> baseline absorbs all 300
         // (baseline-first-sample rule; the cap itself is exercised below on a clean baseline)
         set_working_revision(&fake, &panes, 2);
@@ -404,25 +481,11 @@ fn three_hundred_dirty_files_cap_and_deterministic_order() {
         let (daemon, session_ids, panes) =
             spawn_working_sessions(&root, &fake, clock, &[repo.as_path()]);
         daemon.poll_once(); // baseline = ∅ (clean tree at first sample)
-        // Re-dirty exactly 300 files the same way (100 unstaged modified +
-        // 100 untracked + 100 staged).
-        for i in 0..100 {
-            std::fs::write(repo.join(format!("mod_{i:03}.rs")), "fn base() { /* v2 */ }\n").unwrap();
-        }
-        for i in 0..100 {
-            std::fs::write(repo.join(format!("new2_{i:03}.rs")), "fn new2() {}\n").unwrap();
-        }
-        for i in 0..100 {
-            std::fs::write(repo.join(format!("staged2_{i:03}.rs")), "fn staged2() {}\n").unwrap();
-        }
-        let add = std::process::Command::new("git")
-            .args(["-c", "core.fsmonitor=false", "add"])
-            .args((0..100).map(|i| format!("staged2_{i:03}.rs")))
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(add.status.success());
-        let sampled = attribution::sample_git(&repo);
+        // Re-dirty exactly 300 files the same way, in the session's worktree
+        // (100 unstaged modified + 100 untracked + 100 staged).
+        let wt = session_cwd(&daemon, &session_ids[0]);
+        dirty_300(&wt, "new2_", "staged2_", "fn base() { /* v2 */ }\n");
+        let sampled = attribution::sample_git(&wt);
         assert_eq!(sampled.len(), 300, "expected 300 dirty paths at poll 2, got {}", sampled.len());
 
         set_working_revision(&fake, &panes, 2);
@@ -431,6 +494,7 @@ fn three_hundred_dirty_files_cap_and_deterministic_order() {
         // full per-session cap is observed via state.json (keep = 512).
         let cap = attribution::per_session_cap();
         assert_eq!(cap, 64);
+        flush_state(&daemon, &session_ids[0]);
         let tracked = state_json_attribution(&root);
         let mut mine: Vec<String> = tracked
             .into_iter()
@@ -551,20 +615,21 @@ fn rename_attributes_new_path_not_old() {
     assert!(files.contains(&"newpath.rs".to_string()), "new path must be attributed: {files:?}");
     assert!(!files.contains(&"oldpath.rs".to_string()), "old path must NOT appear: {files:?}");
 
-    // End-to-end through the daemon. NOTE: the tree is dirty at this point
-    // (staged rename above), so the baseline-first-sample rule absorbs
-    // `newpath.rs` — exactly the rule under test.
+    // End-to-end through the daemon. The session samples its own worktree,
+    // which is created from the committed base (still `oldpath.rs`) and is
+    // clean at spawn, so its baseline is empty. Replay the rename there.
     let fake = FakeHerdr::new();
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let (daemon, session_ids, panes) =
         spawn_working_sessions(&root, &fake, clock, &[repo.as_path()]);
-    daemon.poll_once(); // baseline = {newpath.rs} (dirty tree at first sample)
+    daemon.poll_once(); // baseline = ∅ in the private worktree
 
-    let out = git(&repo, &["mv", "newpath.rs", "renamed.rs"]);
-    assert!(out.status.success());
+    let out = git_in_session(&daemon, &session_ids[0], &["mv", "oldpath.rs", "renamed.rs"]);
+    assert!(out.status.success(), "git mv failed: {:?}", String::from_utf8_lossy(&out.stderr));
+    let wt = session_cwd(&daemon, &session_ids[0]);
     std::fs::write(
-        repo.join("renamed.rs"),
-        std::fs::read_to_string(repo.join("renamed.rs")).unwrap().replace("payload 9 ", "payload 9 EDITED "),
+        wt.join("renamed.rs"),
+        std::fs::read_to_string(wt.join("renamed.rs")).unwrap().replace("payload 9 ", "payload 9 EDITED "),
     )
     .unwrap();
     set_working_revision(&fake, &panes, 2);
@@ -614,11 +679,11 @@ fn submodule_dirty_inner_file_no_garbage_no_crash() {
 
     // Reset so the daemon's first sample sees a CLEAN parent (else the
     // baseline rule vacuously absorbs `sub` and nothing is ever attributed).
-    let out = git(&parent.join("sub"), &["-c", "user.email=attribution-deep@example.com", "-c", "user.name=attribution-deep", "commit", "-qam", "inner dirty"]);
-    assert!(out.status.success(), "submodule commit failed: {:?}", String::from_utf8_lossy(&out.stderr));
-    let out = git(&parent, &["add", "sub"]); // bump the gitlink
-    assert!(out.status.success());
-    commit_all(&parent, "bump submodule");
+    // Restore the tracked inner file instead of committing a new submodule
+    // revision: the gitlink still points at `sub-src`'s "inner base" commit,
+    // which a fresh worktree can fetch when it initializes the submodule.
+    let out = git(&parent.join("sub"), &["checkout", "--", "inner.rs"]);
+    assert!(out.status.success(), "submodule reset failed: {:?}", String::from_utf8_lossy(&out.stderr));
     assert!(attribution::sample_git(&parent).is_empty(), "parent must be clean before baseline");
 
     // End-to-end: baseline on clean parent, then dirty inner file -> poll.
@@ -628,7 +693,15 @@ fn submodule_dirty_inner_file_no_garbage_no_crash() {
         spawn_working_sessions(&root, &fake, clock, &[parent.as_path()]);
     daemon.poll_once(); // baseline = ∅
 
-    std::fs::write(parent.join("sub").join("inner.rs"), "fn inner() { /* dirty again */ }\n").unwrap();
+    // A fresh worktree has an EMPTY submodule checkout: populate it first,
+    // then dirty the inner file inside the session's real worktree.
+    let init = git_in_session(
+        &daemon,
+        &session_ids[0],
+        &["-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q", "--", "sub"],
+    );
+    assert!(init.status.success(), "worktree submodule init failed: {:?}", String::from_utf8_lossy(&init.stderr));
+    write_in_session(&daemon, &session_ids[0], "sub/inner.rs", "fn inner() { /* dirty again */ }\n");
     set_working_revision(&fake, &panes, 2);
     daemon.poll_once();
     let attributed = attributed_files(&daemon, &session_ids[0]);
@@ -660,7 +733,9 @@ fn linked_worktree_cwd_attribution_works() {
         spawn_working_sessions(&root, &fake, clock, &[wt.as_path()]);
     daemon.poll_once(); // baseline = ∅
 
-    std::fs::write(wt.join("wt-only.rs"), "fn wt_only() {}\n").unwrap();
+    // The session gets its OWN worktree, branched from `wt`'s HEAD; write the
+    // post-baseline file there, not into the plan cwd.
+    write_in_session(&daemon, &session_ids[0], "wt-only.rs", "fn wt_only() {}\n");
     set_working_revision(&fake, &panes, 2);
     daemon.poll_once();
     let attributed = attributed_files(&daemon, &session_ids[0]);
@@ -726,7 +801,7 @@ fn hanging_fsmonitor_hook_attribution_returns_within_1s() {
     // End-to-end through the daemon (baseline clean, dirty after baseline).
     let fake = FakeHerdr::new();
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
-    let (daemon, _session_ids, panes) =
+    let (daemon, session_ids, panes) =
         spawn_working_sessions(&root, &fake, clock, &[repo.as_path()]);
     // Reset the repo to clean BEFORE the baseline poll (commit the dirty file),
     // then re-dirty so the post-baseline sample has work to do.
@@ -739,14 +814,16 @@ fn hanging_fsmonitor_hook_attribution_returns_within_1s() {
     eprintln!("[fsmonitor] baseline poll_once wall time: {} ms", baseline_elapsed.as_millis());
     assert!(baseline_elapsed < std::time::Duration::from_millis(1200));
 
-    std::fs::write(repo.join("post2.rs"), "fn post2() {}\n").unwrap();
+    // The fsmonitor config lives in the shared repo config, so the session's
+    // worktree inherits it; `git_run` still forces core.fsmonitor=false.
+    write_in_session(&daemon, &session_ids[0], "post2.rs", "fn post2() {}\n");
     set_working_revision(&fake, &panes, 2);
     let start = std::time::Instant::now();
-    daemon.poll_once(); // attributes post2.rs through the hanging-hook repo
+    daemon.poll_once(); // attributes post2.rs through the hanging-hook worktree
     let poll_elapsed = start.elapsed();
     eprintln!("[fsmonitor] post-baseline poll_once wall time: {} ms", poll_elapsed.as_millis());
     assert!(poll_elapsed < std::time::Duration::from_millis(1200));
-    let attributed = attributed_files(&daemon, "S1-OC01");
+    let attributed = attributed_files(&daemon, &session_ids[0]);
     assert!(attributed.contains(&"post2.rs".to_string()), "attributed: {attributed:?}");
     cleanup(&root);
 }
@@ -793,8 +870,11 @@ fn cwd_repo_toplevel_is_temp_root_and_nested_repo_returns_inner_files() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let (daemon, session_ids, panes) =
         spawn_working_sessions(&scratch, &fake, clock, &[nested_wt.as_path()]);
-    daemon.poll_once(); // baseline = {inner-dirty.rs} (dirty at first sample)
-    std::fs::write(nested_wt.join("another.rs"), "fn another() {}\n").unwrap();
+    // The session's private worktree is branched from the nested worktree's
+    // HEAD (clean), so its baseline is empty; replay the post-baseline edit
+    // there, not in the plan cwd.
+    daemon.poll_once(); // baseline = ∅ in the private worktree
+    write_in_session(&daemon, &session_ids[0], "another.rs", "fn another() {}\n");
     set_working_revision(&fake, &panes, 2);
     daemon.poll_once();
     let attributed = attributed_files(&daemon, &session_ids[0]);
@@ -809,10 +889,10 @@ fn cwd_repo_toplevel_is_temp_root_and_nested_repo_returns_inner_files() {
     cleanup(&scratch);
 }
 
-// ---------- 8. Non-git directory: silent non-signal ----------
+// ---------- 8. Non-git directory: no signal, one loud fallback warning ----------
 
 #[test]
-fn non_git_directory_zero_errors_zero_warnings_no_signal() {
+fn non_git_directory_zero_errors_one_loud_warning_no_signal() {
     let root = tmp_root("nongit");
     let plain = root.join("foo");
     std::fs::create_dir_all(&plain).unwrap();
@@ -822,8 +902,8 @@ fn non_git_directory_zero_errors_zero_warnings_no_signal() {
     let files = attribution::sample_git(&plain);
     assert!(files.is_empty(), "non-git dir must yield no paths: {files:?}");
 
-    // Daemon poll against a non-git cwd: works, attributes nothing,
-    // and surfaces NO warning (the engine treats it as a silent non-signal).
+    // Daemon poll against a non-git cwd: works, attributes nothing, and
+    // surfaces the required loud "worktree disabled" fallback warning.
     let fake = FakeHerdr::new();
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let (daemon, session_ids, _panes) =
@@ -832,9 +912,17 @@ fn non_git_directory_zero_errors_zero_warnings_no_signal() {
     let attributed = attributed_files(&daemon, &session_ids[0]);
     assert!(attributed.is_empty());
     let snap = daemon.snapshot();
+    // HARDENING §3.6: a non-git cwd spawns with a LOUD warning and falls back
+    // to the shared-cwd heuristic. It is the only warning for this fixture.
+    assert_eq!(
+        snap.warnings.len(), 1,
+        "non-git cwd: exactly one documented fallback warning expected: {:?}",
+        snap.warnings
+    );
     assert!(
-        snap.warnings.is_empty(),
-        "non-git cwd must not push a warning (observed behavior): {:?}",
+        snap.warnings[0].contains("not a git repository")
+            && snap.warnings[0].contains("worktree disabled"),
+        "warning must explain the worktree fallback: {:?}",
         snap.warnings
     );
     assert!(snap.conflicts.is_empty());
@@ -892,12 +980,12 @@ fn two_sessions_dirty_repo_at_first_sample_excluded_for_both() {
     cleanup(&root);
 }
 
-/// SPEC QUESTION (see report): with two sessions SHARING one cwd, a file
-/// modified after BOTH baselines is visible to both sessions' `git status`.
-/// The engine cannot tell which session made the edit, so BOTH attribute it
-/// and a conflict is recorded. This test documents the observed behavior.
+/// A5's per-session worktrees FIXED the old shared-cwd double-attribution:
+/// two sessions spawned from the same cwd each sample a private worktree, so
+/// a post-baseline edit made by one is visible to that one only and produces
+/// no filename conflict. This test is the regression proof of that fix.
 #[test]
-fn two_sessions_same_cwd_after_baseline_modification_observed() {
+fn two_sessions_same_cwd_after_baseline_attributed_to_editor_only() {
     let root = tmp_root("two-after");
     let repo = root.join("repo");
     init_repo_with_commit(&repo);
@@ -908,10 +996,10 @@ fn two_sessions_same_cwd_after_baseline_modification_observed() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let (daemon, session_ids, panes) =
         spawn_working_sessions(&root, &fake, clock, &[repo.as_path(), repo.as_path()]);
-    daemon.poll_once(); // both baselines = ∅ (clean tree)
+    daemon.poll_once(); // both baselines = ∅ (clean worktrees)
 
-    // Session S1-OC01 ("one session") modifies a file after both baselines.
-    std::fs::write(repo.join("after_baseline.rs"), "fn after() {}\n").unwrap();
+    // Session S1-OC01 edits in ITS OWN worktree after both baselines.
+    write_in_session(&daemon, &session_ids[0], "after_baseline.rs", "fn after() {}\n");
     set_working_revision(&fake, &panes, 2);
     daemon.poll_once();
 
@@ -919,26 +1007,21 @@ fn two_sessions_same_cwd_after_baseline_modification_observed() {
     let a1 = attributed_files(&daemon, &session_ids[1]);
     eprintln!("[case9 same-cwd] {session_ids:?}: {a0:?} / {a1:?}");
     eprintln!("[case9 same-cwd] conflicts: {:?}", daemon.snapshot().conflicts);
-    // Observed behavior with shared cwd: BOTH sessions attribute the file,
-    // and a conflict is recorded between them.
-    assert!(a0.contains(&"after_baseline.rs".to_string()), "session 0: {a0:?}");
-    assert!(a1.contains(&"after_baseline.rs".to_string()), "session 1: {a1:?}");
+    assert!(a0.contains(&"after_baseline.rs".to_string()), "editor session: {a0:?}");
+    assert!(a1.is_empty(), "non-editor session must not attribute the edit: {a1:?}");
     let conflicts = daemon.snapshot().conflicts;
     assert!(
-        conflicts.iter().any(|c| c.file == "after_baseline.rs"),
-        "expected a conflict on after_baseline.rs: {conflicts:?}"
+        conflicts.is_empty(),
+        "isolated worktrees: no filename conflict expected: {conflicts:?}"
     );
     cleanup(&root);
 }
 
-/// IGNORED: the spawn brief expects "a file modified AFTER both baselines by
-/// one session shows as attributed to that one only" for two sessions sharing
-/// one repo cwd. git status cannot distinguish the editor, so the engine
-/// attributes the file to BOTH sessions (see the observed-behavior test
-/// above). Making this pass would require engine changes, which this task
-/// forbids (report, do not patch src/). Filed as an engine limitation.
+/// Spawn-brief case 9: "a file modified AFTER both baselines by one session
+/// shows as attributed to that one only" for two sessions sharing one repo
+/// cwd. Previously filed as an engine limitation (shared cwd); A5's
+/// per-session worktrees now satisfy it, so this runs un-ignored.
 #[test]
-#[ignore = "engine limitation: shared-cwd git attribution cannot isolate the editing session (spec case 9 wording)"]
 fn two_sessions_same_cwd_after_baseline_attributed_to_one_only() {
     let root = tmp_root("two-spec");
     let repo = root.join("repo");
@@ -952,7 +1035,7 @@ fn two_sessions_same_cwd_after_baseline_attributed_to_one_only() {
         spawn_working_sessions(&root, &fake, clock, &[repo.as_path(), repo.as_path()]);
     daemon.poll_once(); // both baselines = ∅
 
-    std::fs::write(repo.join("after_baseline.rs"), "fn after() {}\n").unwrap();
+    write_in_session(&daemon, &session_ids[0], "after_baseline.rs", "fn after() {}\n");
     set_working_revision(&fake, &panes, 2);
     daemon.poll_once();
 
@@ -985,8 +1068,9 @@ fn two_sessions_same_repository_worktrees_after_baseline_attributed_to_one_only(
         spawn_working_sessions(&root, &fake, clock, &[main_repo.as_path(), wt.as_path()]);
     daemon.poll_once(); // both baselines = ∅
 
-    // Only the main-checkout session "edits" after both baselines.
-    std::fs::write(main_repo.join("session_one_work.rs"), "fn work() {}\n").unwrap();
+    // Only the first session "edits" after both baselines, inside its OWN
+    // private worktree (not the plan cwd).
+    write_in_session(&daemon, &session_ids[0], "session_one_work.rs", "fn work() {}\n");
     set_working_revision(&fake, &panes, 2);
     daemon.poll_once();
 
@@ -1035,6 +1119,19 @@ fn merge_conflict_unmerged_paths_attribution_does_not_choke() {
     // plain relative path (the engine has no special "unmerged" handling).
     let files = attribution::sample_git(&repo);
     assert!(files.contains(&"c.rs".to_string()), "unmerged path expected: {files:?}");
+
+    // The daemon samples its private worktree, which was branched from the
+    // pre-merge main commit. The `side` ref is shared across worktrees, so
+    // replay the conflict there for the poll path.
+    let wt_merge = git_in_session(&daemon, &session_ids[0], &["merge", "side"]);
+    assert!(
+        !wt_merge.status.success(),
+        "worktree merge must conflict: {:?}",
+        String::from_utf8_lossy(&wt_merge.stdout)
+    );
+    let wt_status = git_in_session(&daemon, &session_ids[0], &["status", "--porcelain=v1"]);
+    let wt_status = String::from_utf8_lossy(&wt_status.stdout);
+    assert!(wt_status.contains("UU c.rs"), "worktree must show unmerged c.rs: {wt_status}");
 
     // Poll through the daemon: attributed like any other dirty path, no choke.
     set_working_revision(&fake, &panes, 2);
