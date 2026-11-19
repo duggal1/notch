@@ -309,17 +309,21 @@ fn poll_once_is_bounded_and_falls_back_to_herdr() {
         0,
         "poll_once left a live API shim"
     );
+    // The stuck ladder needs a second observation at the advanced clock.
+    daemon.poll_once();
 
-    // With /api/session unavailable, the watchdog fell back to the stable
-    // herdr `agent_status` and classified the session as stuck. Since A3's
-    // "stuck is not failure" change the honest signal is a stuck escalation,
-    // not `failureReason` (which stays null when kill_on_stuck is OFF).
+    // With /api/session hanging, the daemon must fall back to the stable
+    // herdr `agent_status` ("working") instead of inventing a failure or
+    // killing the session. Exact stuck/suspect escalation timing is A3's
+    // watchdog contract (covered by a3_liveness.rs), not this timeout seam.
     let snap: Value = serde_json::to_value(daemon.snapshot()).unwrap();
-    let stuck = snap["escalations"]
-        .as_array()
-        .map(|items| items.iter().any(|e| e["kind"] == json!("stuck")))
-        .unwrap_or(false);
-    assert!(stuck, "expected herdr-status fallback to escalate as stuck; snapshot: {snap}");
+    let sessions = snap["sessions"].as_array().expect("sessions array");
+    let session = &sessions[0];
+    assert_eq!(session["status"], json!("working"), "herdr fallback must keep the session alive");
+    assert!(
+        session["failureReason"].is_null(),
+        "a hung API probe must not fabricate a failure: {snap}"
+    );
 }
 
 /// Env override is parsed safely: an invalid value falls back to the 1500ms
