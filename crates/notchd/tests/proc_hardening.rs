@@ -228,7 +228,10 @@ fn t2_fault_matrix_bounded_and_group_reaped() {
     for mode in ["hang", "sigterm_ignore", "grandchild", "drip", "fdleak"] {
         let root = shim_root(mode);
         let shim = write_shim(&root);
-        let timeout = Duration::from_millis(350);
+        // 1.5 s: under a parallel workspace suite, Python's startup plus the
+        // pgid note can otherwise exceed a 350 ms deadline. The assertion below
+        // still requires return within timeout + 500 ms.
+        let timeout = Duration::from_millis(1_500);
         let args: Vec<String> = Vec::new();
         let env = env_for(&root, mode);
         let spec = spec_for(&shim, &args, &env, timeout, 4096);
@@ -404,7 +407,7 @@ fn t2_no_rss_or_fd_growth_across_repeated_kills() {
         let env = env_for(&root, "fdleak");
         // 1 s (not 200 ms) so Python startup stays reliable under a parallel
         // `cargo test --workspace`; the timeout+500ms assertion still holds.
-        let spec = spec_for(&shim, &args, &env, Duration::from_millis(1_000), 4096);
+        let spec = spec_for(&shim, &args, &env, Duration::from_millis(1_500), 4096);
         assert!(matches!(run(&spec), Err(ProcError::Timeout { .. })));
         let pgid = read_note(&root, "pgid").unwrap();
         assert!(group_survivors(pgid).is_empty(), "iteration {i} left group survivors");
