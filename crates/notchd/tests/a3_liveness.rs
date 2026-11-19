@@ -180,6 +180,7 @@ struct FakeHerdr {
     calls: Mutex<Vec<Vec<String>>>,
     agents: Mutex<Vec<Value>>,
     split_seq: Mutex<u32>,
+    on_close: Mutex<Option<Box<dyn Fn() + Send + 'static>>>,
 }
 
 impl FakeHerdr {
@@ -188,7 +189,12 @@ impl FakeHerdr {
             calls: Mutex::new(Vec::new()),
             agents: Mutex::new(Vec::new()),
             split_seq: Mutex::new(0),
+            on_close: Mutex::new(None),
         })
+    }
+
+    fn on_close(&self, f: impl Fn() + Send + 'static) {
+        *self.on_close.lock().unwrap() = Some(Box::new(f));
     }
 
     fn set_agents(&self, agents: Vec<Value>) {
@@ -244,7 +250,13 @@ impl FakeHerdr {
                 })
                 .to_string())
             }
-            ("agent", "start") | ("agent", "prompt") | ("pane", "close") => {
+            ("agent", "start") | ("agent", "prompt") => {
+                Ok(r#"{"result":{"type":"ok"}}"#.to_string())
+            }
+            ("pane", "close") => {
+                if let Some(f) = self.on_close.lock().unwrap().as_ref() {
+                    f();
+                }
                 Ok(r#"{"result":{"type":"ok"}}"#.to_string())
             }
             ("agent", "read") => Ok("still working on it\n".to_string()),
@@ -516,6 +528,60 @@ fn blocked_keeps_pane_and_temp_and_never_types_a_prompt() {
     assert_eq!(fake.close_count(), 0, "pane kept for the human");
     assert!(temp.exists(), "temp dir kept for the human");
     assert!(escalation_kinds(&daemon).contains(&"needs_you".to_string()));
+}
+
+// ---------- verifier: production default kills a VERIFIED stuck session ----------
+
+#[test]
+fn stuck_default_config_closes_pane_after_escalation_is_recorded() {
+    let root = tmp_root("stuck-default");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+
+    // At the instant of pane_close, the `stuck` escalation must already be
+    // in the append-only event log: escalation and WIP snapshot come first.
+    let events_path = root.join("state").join("events.jsonl");
+    fake.on_close(move || {
+        let log = std::fs::read_to_string(&events_path).unwrap_or_default();
+        assert!(
+            log.contains("\"kind\":\"escalate\"") && log.contains("stuck"),
+            "stuck escalation must be recorded before pane close: {log}"
+        );
+    });
+
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once(); // prime on the default config
+    fake.clear_calls();
+
+    tick_to(&clock, &daemon, 30_000); // 2x threshold => verified Stuck
+
+    assert_eq!(fake.close_count(), 1, "default config closes a verified stuck pane");
+    let snap = daemon.snapshot();
+    assert_eq!(snap.sessions[0].status, Status::Failed);
+    assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
+    assert!(escalation_kinds(&daemon).contains(&"stuck".to_string()));
+}
+
+#[test]
+fn default_config_stall_grants_grace_and_kills_nobody() {
+    let root = tmp_root("stall-default");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 3);
+    fake.set_agents(panes.iter().map(|p| agent(p, "working", 7)).collect());
+    daemon.poll_once(); // prime all three with the default (kill-on-stuck) config
+
+    // A one-hour scheduler stall looks exactly like a one-hour silence. The
+    // guard must grant grace even though the default config does kill Stuck.
+    clock.advance_mono_ms(3_600_000);
+    daemon.poll_once();
+
+    assert_eq!(fake.close_count(), 0, "stall grants grace: zero kills");
+    let snap = daemon.snapshot();
+    assert!(snap.sessions.iter().all(|s| s.status == Status::Working));
+    assert!(escalation_kinds(&daemon).is_empty());
 }
 
 // ---------- T3: 20 sessions, one truly stuck ----------
