@@ -199,6 +199,10 @@ impl FakeHerdr {
         self.calls.lock().unwrap().clone()
     }
 
+    fn clear_calls(&self) {
+        self.calls.lock().unwrap().clear();
+    }
+
     fn close_count(&self) -> usize {
         self.calls()
             .iter()
@@ -325,12 +329,6 @@ fn spawn(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>, n: usize) ->
     (daemon, panes)
 }
 
-fn session_cwd(root: &Path) -> PathBuf {
-    let bytes = std::fs::read(root.join("state").join("state.json")).unwrap();
-    let v: Value = serde_json::from_slice(&bytes).unwrap();
-    PathBuf::from(v["sessions"][0]["cwd"].as_str().unwrap())
-}
-
 fn escalation_kinds(daemon: &Daemon) -> Vec<String> {
     daemon
         .snapshot()
@@ -338,6 +336,18 @@ fn escalation_kinds(daemon: &Daemon) -> Vec<String> {
         .iter()
         .map(|e| e.kind.clone())
         .collect()
+}
+
+/// Advance real elapsed time in poll-sized steps. Jumping straight to the
+/// threshold would (correctly) trip the stall guard instead of the ladder.
+fn tick_to(clock: &FakeClock, daemon: &Daemon, total_ms: u64) {
+    let mut elapsed = 0;
+    while elapsed < total_ms {
+        let step = 2_000u64.min(total_ms - elapsed);
+        clock.advance_ms(step);
+        daemon.poll_once();
+        elapsed += step;
+    }
 }
 
 // ---------- T3: stall guard + the exact regression ----------
@@ -397,9 +407,9 @@ fn suspect_nudges_and_escalates_once_without_closing_pane() {
     let pane = &panes[0];
     fake.set_agents(vec![agent(pane, "working", 7)]);
     daemon.poll_once();
+    fake.clear_calls(); // discard the spawn prompt from run_plan
 
-    clock.advance_ms(15_000); // exactly the suspicion threshold
-    daemon.poll_once();
+    tick_to(&clock, &daemon, 16_000); // crosses the 15s suspicion threshold
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
     assert_eq!(fake.close_count(), 0, "Suspect never closes a pane");
     assert!(escalation_kinds(&daemon).contains(&"stuck_suspect".to_string()));
@@ -421,8 +431,7 @@ fn stuck_escalates_but_keeps_pane_when_kill_is_off() {
     fake.set_agents(vec![agent(pane, "working", 7)]);
     daemon.poll_once();
 
-    clock.advance_ms(30_000); // 2x threshold
-    daemon.poll_once();
+    tick_to(&clock, &daemon, 30_000); // 2x threshold in poll-sized steps
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Working, "Stuck without opt-in is not failed");
     assert_eq!(fake.close_count(), 0);
@@ -437,7 +446,7 @@ fn stuck_with_kill_on_stuck_snapshots_wip_before_close() {
     let clock = Arc::new(FakeClock::new(T0));
     let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
     let pane = &panes[0];
-    let cwd = session_cwd(&root);
+    let cwd = root.join("work"); // cwd from the plan
 
     // A real git repo with an uncommitted file: the snapshot must capture it.
     let run_git = |args: &[&str]| {
@@ -462,8 +471,7 @@ fn stuck_with_kill_on_stuck_snapshots_wip_before_close() {
     fake.set_agents(vec![agent(pane, "working", 7)]);
     daemon.poll_once();
     daemon.set_kill_on_stuck(true);
-    clock.advance_ms(30_000);
-    daemon.poll_once();
+    tick_to(&clock, &daemon, 30_000);
 
     let subject = String::from_utf8(
         std::process::Command::new("git")
@@ -495,7 +503,8 @@ fn blocked_keeps_pane_and_temp_and_never_types_a_prompt() {
     assert!(temp.exists(), "spawn creates the session temp dir");
 
     fake.set_agents(vec![agent(pane, "working", 7)]);
-    daemon.poll_once(); // prime
+    daemon.poll_once(); // prime (the spawn prompt happened before this)
+    fake.clear_calls();
     fake.set_agents(vec![agent(pane, "blocked", 8)]);
     clock.advance_ms(1_000);
     daemon.poll_once();
@@ -533,7 +542,7 @@ fn twenty_sessions_one_truly_stuck_zero_false_positives() {
             })
             .collect();
         fake.set_agents(agents);
-        clock.advance_ms(15_000);
+        clock.advance_ms(2_000); // one poll interval per tick
         let t = Instant::now();
         daemon.poll_once();
         ticks.push(t.elapsed());

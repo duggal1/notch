@@ -12,6 +12,67 @@
 //! `--opencode-decider` is accepted by the CLI but NOT implemented; when
 //! passed, the deterministic policy is used and a warning is logged.
 
+use std::path::Path;
+use std::process::Command;
+use std::sync::OnceLock;
+
+type SnapshotFn = fn(&Path, &str, &str) -> Result<Option<String>, String>;
+
+static SNAPSHOT_HOOK: OnceLock<SnapshotFn> = OnceLock::new();
+
+/// A5 registers `worktree::snapshot` here at daemon startup. Until then the
+/// git fallback below still snapshots WIP before a stuck pane is closed.
+pub fn register_snapshot_hook(f: SnapshotFn) -> Result<(), SnapshotFn> {
+    SNAPSHOT_HOOK.set(f)
+}
+
+/// Commit WIP before any kill. `None` means the worktree was already clean;
+/// `Err` vetoes the pane close so uncommitted work is never lost.
+pub fn snapshot_worktree(wt: &Path, id: &str, reason: &str) -> Result<Option<String>, String> {
+    if let Some(hook) = SNAPSHOT_HOOK.get() {
+        return hook(wt, id, reason);
+    }
+    let path = wt.to_string_lossy().to_string();
+    let run = |args: &[&str]| -> Result<std::process::Output, String> {
+        Command::new("git")
+            .args(args)
+            .output()
+            .map_err(|e| format!("git {}: {e}", args.get(1).copied().unwrap_or("")))
+    };
+    let status = run(&["-C", &path, "status", "--porcelain"])?;
+    if !status.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            crate::model::truncate(String::from_utf8_lossy(&status.stderr).trim(), 160)
+        ));
+    }
+    if status.stdout.is_empty() {
+        return Ok(None);
+    }
+    let add = run(&["-C", &path, "add", "-A"])?;
+    if !add.status.success() {
+        return Err(format!(
+            "git add failed: {}",
+            crate::model::truncate(String::from_utf8_lossy(&add.stderr).trim(), 160)
+        ));
+    }
+    let message = format!("notch WIP snapshot: {id} ({reason})");
+    let commit = Command::new("git")
+        .args(["-C", &path, "commit", "-m", &message])
+        .output()
+        .map_err(|e| format!("git commit: {e}"))?;
+    if !commit.status.success() {
+        return Err(format!(
+            "git commit failed: {}",
+            crate::model::truncate(String::from_utf8_lossy(&commit.stderr).trim(), 160)
+        ));
+    }
+    let head = run(&["-C", &path, "rev-parse", "HEAD"])?;
+    Ok(Some(
+        String::from_utf8_lossy(&head.stdout).trim().to_string(),
+    ))
+}
+
 #[derive(Debug)]
 pub enum FailureAction {
     /// Re-prompt once. `tail` is the pane output to append.

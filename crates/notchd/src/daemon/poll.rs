@@ -1,22 +1,67 @@
 //! The poll pass: seed (clone) → IO (herdr/git, no locks) → apply (one
 //! short critical section). This is where watchdog decisions are applied
-//! (stuck kill, blocked-failure re-prompt/escalate, done sweep) and where
-//! attribution baselines are tracked.
+//! (suspect nudge, stuck escalation, opt-in pane close) and where blocked
+//! sessions are handed to a human instead of being re-prompted.
+//!
+//! All liveness timing uses the monotonic clock. A scheduler/VM stall longer
+//! than three poll intervals grants grace: revision timestamps are reset and
+//! no kill/nudge/escalation can fire in that pass.
 use super::attribution::record_attribution_locked;
 use super::types::{agent_target, lock, push_warning, Daemon};
 use crate::attribution;
 use crate::cleanup;
 use crate::model::truncate;
 use crate::status::Status;
-use crate::supervisor::{decide_on_failure, reprompt_text, FailureAction};
+use crate::supervisor::{decide_on_failure_with_reason, reprompt_text, FailureAction};
+use crate::watchdog::{Liveness, Obs, Watchdog};
 use std::collections::HashSet;
 use std::path::Path;
 
+const SUSPECT_NUDGE: &str =
+    "Quick check-in: are you still making progress? Continue from the latest state.";
+
 impl Daemon {
+    /// Monotonic instant for every liveness decision.
+    pub(crate) fn mono(&self) -> u64 {
+        self.clock.mono_ms()
+    }
+
+    /// Opt-in pane close on a Stuck session. Default OFF; callers that enable
+    /// it are responsible for the consequences of closing a live pane.
+    pub fn set_kill_on_stuck(&self, enabled: bool) {
+        lock(&self.watchdog).set_kill_on_stuck(enabled);
+    }
+
     /// One watchdog + supervision pass. `run_poll_loop` drives it every
     /// `poll_interval_ms`; tests drive it manually with a fake clock.
     pub fn poll_once(&self) {
-        let now = self.now();
+        let mono = self.mono();
+        let gap = lock(&self.watchdog).note_poll(mono);
+        let stalled = gap
+            .map(|g| Watchdog::is_stall_gap(g, self.config.poll_interval_ms))
+            .unwrap_or(false);
+        if stalled {
+            // The daemon (not the session) went quiet: a long GC pause, a VM
+            // pause, a suspended process. Reset every grace period and skip
+            // all liveness actions for this pass.
+            let mut inner = lock(&self.inner);
+            for s in inner.sessions.iter_mut() {
+                if !s.status.is_terminal() {
+                    s.revision_changed_at_ms = mono;
+                }
+            }
+            let detail = format!(
+                "watchdog stall: poll gap {}ms > {}ms; grace granted",
+                gap.unwrap_or(0),
+                self.config.poll_interval_ms.saturating_mul(3)
+            );
+            push_warning(&mut inner, detail.clone());
+            let _ = self.event_log.append(None, "watchdog", &detail);
+            self.save_state(&inner);
+            drop(inner);
+            self.notify_change();
+        }
+
         let agents = match self.herdr.agent_list() {
             Ok(a) => a,
             Err(e) => {
@@ -34,8 +79,8 @@ impl Daemon {
         // Lazily record each non-terminal session's OpenCode session ref
         // (agent_session.value) once herdr starts reporting it.
         // v1.3: one cached /api/session fetch per poll, shared by the lazy
-        // session_ref/model reconciliation and (later) the decider loop.
-        // Failure is tolerated: the signal degrades to herdr agent_status.
+        // session_ref/model reconciliation, the watchdog's busy second
+        // opinion, and the decider loop. Failure is tolerated.
         let api_sessions: Option<Vec<crate::opencode::ApiSession>> = {
             let has_goal = {
                 let inner = lock(&self.inner);
@@ -79,6 +124,7 @@ impl Daemon {
             failure_count: u32,
             last_revision: Option<u64>,
             revision_changed_at_ms: u64,
+            session_ref: Option<String>,
             baseline: Option<HashSet<String>>,
         }
         let seeds: Vec<Seed> = {
@@ -98,6 +144,7 @@ impl Daemon {
                     failure_count: s.failure_count,
                     last_revision: s.last_revision,
                     revision_changed_at_ms: s.revision_changed_at_ms,
+                    session_ref: s.session_ref.clone(),
                     baseline: s.attribution_baseline.clone(),
                 })
                 .collect()
@@ -107,17 +154,18 @@ impl Daemon {
         struct UpdateEffect {
             idx: usize,
             id: String,
+            pane_id: String,
+            cwd: String,
             revision: Option<u64>,
             revision_changed: bool,
             status: Status,
             last_action: Option<String>,
             files: Vec<String>,
             reprompt_text: Option<String>,
-            reprompt_failed: Option<String>,
-            escalate: Option<String>,
+            escalate: Option<(String, String)>,
+            needs_human: Option<String>,
             mark_done: bool,
-            watchdog_stuck: bool,
-            pane_id: String,
+            liveness: Liveness,
             baseline: Option<HashSet<String>>,
         }
         enum Effect {
@@ -134,48 +182,72 @@ impl Daemon {
             };
             let revision_changed = seed.last_revision != Some(entry.revision);
             let (mapped, reason) = Status::from_herdr(&entry.agent_status);
-            let stuck = seed.status == Status::Working
-                && mapped == Status::Working
-                && lock(&self.watchdog).is_stuck(Status::Working, seed.revision_changed_at_ms, now);
+            // OpenCode's own busy marker is the second opinion on a frozen
+            // herdr revision. Some(false) is deliberately NOT evidence.
+            let oc_busy = seed
+                .session_ref
+                .as_ref()
+                .and_then(|r| api_sessions.as_ref()?.iter().find(|s| &s.id == r))
+                .map(|s| !crate::opencode::is_idle(s));
+            let quiet_for_ms = if seed.revision_changed_at_ms == 0 {
+                // Never persisted: a fresh process has no baseline. Grant a
+                // full grace window instead of treating 0 as ancient history.
+                0
+            } else {
+                mono.saturating_sub(seed.revision_changed_at_ms)
+            };
+            let liveness = if stalled {
+                Liveness::Alive
+            } else {
+                lock(&self.watchdog).classify(Obs {
+                    status: mapped,
+                    revision_changed_now: revision_changed || seed.revision_changed_at_ms == 0,
+                    oc_busy,
+                    quiet_for_ms,
+                })
+            };
             match mapped {
                 Status::Failed => {
                     let tail = self.herdr.agent_read(&agent_target(&seed.id), 20).ok();
-                    match decide_on_failure(seed.failure_count, tail) {
+                    match decide_on_failure_with_reason(reason.as_deref(), seed.failure_count, tail) {
                         FailureAction::Reprompt { tail } => {
                             let text = reprompt_text(&seed.task_head, &tail);
                             match self.herdr.agent_prompt(&agent_target(&seed.id), &text) {
                                 Ok(()) => effects.push(Effect::Update(Box::new(UpdateEffect {
                                     idx: seed.idx,
                                     id: seed.id,
+                                    pane_id: seed.pane_id,
+                                    cwd: seed.cwd,
                                     revision: Some(entry.revision),
                                     revision_changed: true,
                                     status: Status::Working,
                                     last_action: None,
                                     files: Vec::new(),
                                     reprompt_text: Some(text),
-                                    reprompt_failed: None,
                                     escalate: None,
+                                    needs_human: None,
                                     mark_done: false,
-                                    watchdog_stuck: false,
-                                    pane_id: seed.pane_id,
+                                    liveness: Liveness::Alive,
                                     baseline: None,
                                 }))),
                                 Err(e) => effects.push(Effect::Update(Box::new(UpdateEffect {
                                     idx: seed.idx,
                                     id: seed.id,
+                                    pane_id: seed.pane_id,
+                                    cwd: seed.cwd,
                                     revision: Some(entry.revision),
                                     revision_changed,
                                     status: Status::Failed,
                                     last_action: None,
                                     files: Vec::new(),
                                     reprompt_text: None,
-                                    reprompt_failed: Some(format!("re-prompt failed: {e}")),
-                                    escalate: Some(
-                                        reason.unwrap_or_else(|| "blocked_waiting".into()),
-                                    ),
+                                    escalate: Some((
+                                        reason.clone().unwrap_or_else(|| "blocked_waiting".into()),
+                                        format!("re-prompt failed: {e}"),
+                                    )),
+                                    needs_human: None,
                                     mark_done: false,
-                                    watchdog_stuck: false,
-                                    pane_id: seed.pane_id,
+                                    liveness: Liveness::Alive,
                                     baseline: None,
                                 }))),
                             }
@@ -184,17 +256,42 @@ impl Daemon {
                             effects.push(Effect::Update(Box::new(UpdateEffect {
                                 idx: seed.idx,
                                 id: seed.id,
+                                pane_id: seed.pane_id,
+                                cwd: seed.cwd,
                                 revision: Some(entry.revision),
                                 revision_changed,
                                 status: Status::Failed,
                                 last_action: None,
                                 files: Vec::new(),
                                 reprompt_text: None,
-                                reprompt_failed: None,
-                                escalate: Some(reason.unwrap_or_else(|| "blocked_waiting".into())),
+                                escalate: Some((
+                                    reason.clone().unwrap_or_else(|| "blocked_waiting".into()),
+                                    reason.unwrap_or_else(|| "blocked_waiting".into()),
+                                )),
+                                needs_human: None,
                                 mark_done: false,
-                                watchdog_stuck: false,
+                                liveness: Liveness::Alive,
+                                baseline: None,
+                            })))
+                        }
+                        FailureAction::NeedsHuman { reason: why } => {
+                            // A permission prompt is not a failed session and
+                            // must never be answered with typed instructions.
+                            effects.push(Effect::Update(Box::new(UpdateEffect {
+                                idx: seed.idx,
+                                id: seed.id,
                                 pane_id: seed.pane_id,
+                                cwd: seed.cwd,
+                                revision: Some(entry.revision),
+                                revision_changed,
+                                status: Status::Idle,
+                                last_action: None,
+                                files: Vec::new(),
+                                reprompt_text: None,
+                                escalate: None,
+                                needs_human: Some(why),
+                                mark_done: false,
+                                liveness: Liveness::Alive,
                                 baseline: None,
                             })))
                         }
@@ -204,17 +301,18 @@ impl Daemon {
                     effects.push(Effect::Update(Box::new(UpdateEffect {
                         idx: seed.idx,
                         id: seed.id,
+                        pane_id: seed.pane_id,
+                        cwd: seed.cwd,
                         revision: Some(entry.revision),
                         revision_changed,
                         status: Status::Done,
                         last_action: None,
                         files: Vec::new(),
                         reprompt_text: None,
-                        reprompt_failed: None,
                         escalate: None,
+                        needs_human: None,
                         mark_done: true,
-                        watchdog_stuck: false,
-                        pane_id: seed.pane_id,
+                        liveness: Liveness::Alive,
                         baseline: None,
                     })));
                 }
@@ -249,17 +347,18 @@ impl Daemon {
                     effects.push(Effect::Update(Box::new(UpdateEffect {
                         idx: seed.idx,
                         id: seed.id,
+                        pane_id: seed.pane_id,
+                        cwd: seed.cwd,
                         revision: Some(entry.revision),
                         revision_changed,
                         status: mapped,
                         last_action,
                         files,
                         reprompt_text: None,
-                        reprompt_failed: None,
                         escalate: None,
+                        needs_human: None,
                         mark_done: false,
-                        watchdog_stuck: stuck,
-                        pane_id: seed.pane_id,
+                        liveness,
                         baseline: baseline_new,
                     })));
                 }
@@ -272,6 +371,7 @@ impl Daemon {
         let mut attr_jobs: Vec<(String, Vec<String>)> = Vec::new();
         let mut pending_warnings: Vec<String> = Vec::new();
         let mut pending_escalations: Vec<(String, String, String)> = Vec::new();
+        let mut pending_nudges: Vec<(String, String)> = Vec::new();
         {
             let mut inner = lock(&self.inner);
             for effect in effects {
@@ -296,17 +396,18 @@ impl Daemon {
                         let UpdateEffect {
                             idx,
                             id,
+                            pane_id,
+                            cwd,
                             revision,
                             revision_changed,
                             status,
                             last_action,
                             files,
                             reprompt_text,
-                            reprompt_failed,
                             escalate,
+                            needs_human,
                             mark_done,
-                            watchdog_stuck,
-                            pane_id,
+                            liveness,
                             baseline,
                         } = *effect;
                         let Some(s) = inner.sessions.get_mut(idx) else {
@@ -318,7 +419,8 @@ impl Daemon {
                         if let Some(rev) = revision {
                             if revision_changed {
                                 s.last_revision = Some(rev);
-                                s.revision_changed_at_ms = now;
+                                s.revision_changed_at_ms = mono;
+                                lock(&self.watchdog).mark_revision_change(&id, mono);
                             }
                         }
                         if let Some(a) = last_action {
@@ -329,56 +431,115 @@ impl Daemon {
                         if let Some(text) = reprompt_text {
                             s.failure_count = s.failure_count.saturating_add(1);
                             s.status = Status::Working;
-                            s.revision_changed_at_ms = now;
+                            s.revision_changed_at_ms = mono;
                             let detail = truncate(text.lines().next().unwrap_or(""), 80);
                             let _ = self.event_log.append(Some(id.clone()), "reprompt", &detail);
-                        } else if let Some(reason) = escalate {
+                        } else if let Some(why) = needs_human {
+                            // No prompt, no pane close, no temp cleanup. The
+                            // human owns the permission decision now.
+                            s.status = Status::Idle;
+                            s.failure_reason = Some(why.clone());
+                            pending_escalations.push((
+                                id.clone(),
+                                "needs_you".to_string(),
+                                format!("blocked_waiting: {why}"),
+                            ));
+                            let _ = self.event_log.append(
+                                Some(id.clone()),
+                                "needs_you",
+                                "blocked_waiting; pane and temp dir kept",
+                            );
+                        } else if let Some((kind, detail)) = escalate {
                             s.failure_count = s.failure_count.saturating_add(1);
                             s.status = Status::Failed;
-                            s.failure_reason = Some(reason.clone());
-                            let detail = match &reprompt_failed {
-                                Some(e) => format!("{e}; marked failed ({reason})"),
-                                None => format!("failed after re-prompt ({reason})"),
-                            };
-                            pending_escalations.push((id.clone(), "blocked".to_string(), detail));
+                            s.failure_reason = Some(kind.clone());
+                            pending_escalations.push((id.clone(), kind, detail));
                             cleaned.push(id.clone());
                         } else if mark_done {
                             s.status = Status::Done;
                             s.failure_reason = None;
                             let _ = self.event_log.append(Some(id.clone()), "status", "done");
                             cleaned.push(id.clone());
-                        } else if watchdog_stuck {
-                            match self.herdr.pane_close(&pane_id) {
-                                Ok(()) => pending_warnings.push(format!(
-                                    "{id} stuck (no revision change); pane {pane_id} closed"
-                                )),
-                                Err(e) => pending_warnings.push(format!(
-                                    "{id} stuck (no revision change); pane close failed: {e}"
-                                )),
+                        } else {
+                            match liveness {
+                                Liveness::Alive => {
+                                    if s.status != status {
+                                        let from = s.status.as_str();
+                                        s.status = status;
+                                        let _ = self.event_log.append(
+                                            Some(id.clone()),
+                                            "status",
+                                            &format!("{from} -> {}", status.as_str()),
+                                        );
+                                    }
+                                }
+                                Liveness::Suspect => {
+                                    let quiet = mono.saturating_sub(s.revision_changed_at_ms);
+                                    if lock(&self.watchdog).take_suspect_action(&id, mono) {
+                                        pending_nudges.push((id.clone(), SUSPECT_NUDGE.to_string()));
+                                        pending_escalations.push((
+                                            id.clone(),
+                                            "stuck_suspect".to_string(),
+                                            format!("no revision change for {quiet}ms; nudged"),
+                                        ));
+                                        let _ = self.event_log.append(
+                                            Some(id.clone()),
+                                            "watchdog",
+                                            &format!("suspect: quiet {quiet}ms; nudge + escalation"),
+                                        );
+                                    }
+                                }
+                                Liveness::Stuck => {
+                                    let quiet = mono.saturating_sub(s.revision_changed_at_ms);
+                                    if lock(&self.watchdog).take_stuck_action(&id, mono) {
+                                        pending_escalations.push((
+                                            id.clone(),
+                                            "stuck".to_string(),
+                                            format!("no revision change for {quiet}ms"),
+                                        ));
+                                        let _ = self.event_log.append(
+                                            Some(id.clone()),
+                                            "watchdog",
+                                            &format!("stuck: quiet {quiet}ms"),
+                                        );
+                                    }
+                                    if lock(&self.watchdog).should_close_pane(Liveness::Stuck) {
+                                        // Snapshot WIP BEFORE any close. A failed
+                                        // snapshot vetoes the close: never risk
+                                        // losing uncommitted session work.
+                                        match crate::supervisor::snapshot_worktree(
+                                            Path::new(&cwd),
+                                            &id,
+                                            "stuck",
+                                        ) {
+                                            Ok(sha) => {
+                                                pending_warnings.push(format!(
+                                                    "{id} stuck; WIP snapshot {:?}",
+                                                    sha
+                                                ));
+                                                match self.herdr.pane_close(&pane_id) {
+                                                    Ok(()) => pending_warnings.push(format!(
+                                                        "{id} stuck (no revision change); pane {pane_id} closed"
+                                                    )),
+                                                    Err(e) => pending_warnings.push(format!(
+                                                        "{id} stuck (no revision change); pane close failed: {e}"
+                                                    )),
+                                                }
+                                                s.status = Status::Failed;
+                                                s.failure_reason = Some("stuck".to_string());
+                                                cleaned.push(id.clone());
+                                            }
+                                            Err(e) => pending_warnings.push(format!(
+                                                "{id} stuck; WIP snapshot failed ({e}); pane close skipped"
+                                            )),
+                                        }
+                                    } else {
+                                        pending_warnings.push(format!(
+                                            "{id} stuck; kill_on_stuck is OFF — pane kept, escalation only"
+                                        ));
+                                    }
+                                }
                             }
-                            s.status = Status::Failed;
-                            s.failure_reason = Some("stuck".to_string());
-                            let _ = self.event_log.append(
-                                Some(id.clone()),
-                                "watchdog",
-                                "stuck: no revision change",
-                            );
-                            // A stuck-killed session is exactly what the escalation
-                            // inbox exists for — record it (bridge v1.3 §8).
-                            pending_escalations.push((
-                                id.clone(),
-                                "stuck".to_string(),
-                                "stuck: no revision change".to_string(),
-                            ));
-                            cleaned.push(id.clone());
-                        } else if s.status != status {
-                            let from = s.status.as_str();
-                            s.status = status;
-                            let _ = self.event_log.append(
-                                Some(id.clone()),
-                                "status",
-                                &format!("{from} -> {}", status.as_str()),
-                            );
                         }
                         changed = true;
                         if !files.is_empty() {
@@ -393,7 +554,12 @@ impl Daemon {
             for (id, files) in attr_jobs {
                 record_attribution_locked(&mut inner, &self.event_log, &id, &files);
             }
-            // Drain after the effect loop so escalate_session can take the lock itself.
+            // IO after the effect loop so escalate_session can take the lock.
+            for (id, text) in pending_nudges {
+                drop(inner);
+                let _ = self.herdr.agent_prompt(&agent_target(&id), &text);
+                inner = lock(&self.inner);
+            }
             for (id, kind, detail) in pending_escalations {
                 drop(inner);
                 let _ = self.escalate_session(&id, &kind, &detail);
