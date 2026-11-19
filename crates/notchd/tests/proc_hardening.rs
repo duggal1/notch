@@ -157,27 +157,29 @@ fn write_shim(root: &Path) -> PathBuf {
     path
 }
 
-fn spec_for<'a>(
-    shim: &'a Path,
-    root: &'a Path,
-    mode: &'a str,
-    timeout: Duration,
-    max_out: usize,
-) -> (Vec<String>, Vec<(String, String)>, Spec<'a>) {
-    let args: Vec<String> = Vec::new();
-    let env: Vec<(String, String)> = vec![
+fn env_for(root: &Path, mode: &str) -> Vec<(String, String)> {
+    vec![
         ("PROC_SHIM_MODE".into(), mode.into()),
         ("PROC_SHIM_STATE".into(), root.to_string_lossy().into_owned()),
-    ];
-    let spec = Spec {
+    ]
+}
+
+/// `args`/`env` are owned by the caller so the returned `Spec` is valid.
+fn spec_for<'a>(
+    shim: &'a Path,
+    args: &'a [String],
+    env: &'a [(String, String)],
+    timeout: Duration,
+    max_out: usize,
+) -> Spec<'a> {
+    Spec {
         cmd: shim.to_str().unwrap(),
-        args: &args,
+        args,
         cwd: None,
-        env: &env,
+        env,
         timeout,
         max_out,
-    };
-    (args, env, spec)
+    }
 }
 
 fn read_note(root: &Path, name: &str) -> Option<u32> {
@@ -216,7 +218,9 @@ fn t2_fault_matrix_bounded_and_group_reaped() {
         let root = shim_root(mode);
         let shim = write_shim(&root);
         let timeout = Duration::from_millis(350);
-        let (_args, _env, spec) = spec_for(&shim, &root, mode, timeout, 4096);
+        let args: Vec<String> = Vec::new();
+        let env = env_for(&root, mode);
+        let spec = spec_for(&shim, &args, &env, timeout, 4096);
 
         let t = Instant::now();
         let result = run(&spec);
@@ -253,13 +257,17 @@ fn t2_fault_matrix_bounded_and_group_reaped() {
 fn t2_garbage_output_and_nonzero_exit_are_typed() {
     let root = shim_root("garbage");
     let shim = write_shim(&root);
-    let (_a, _e, spec) = spec_for(&shim, &root, "garbage", Duration::from_secs(2), 4096);
+    let args: Vec<String> = Vec::new();
+    let env = env_for(&root, "garbage");
+    let spec = spec_for(&shim, &args, &env, Duration::from_secs(2), 4096);
     let out = run(&spec).expect("exit 0 with garbage bytes must be Ok at proc level");
     assert!(out.stdout.contains("not json {{{"), "stdout was {:?}", out.stdout);
 
     let root = shim_root("exit7");
     let shim = write_shim(&root);
-    let (_a, _e, spec) = spec_for(&shim, &root, "exit7", Duration::from_secs(2), 4096);
+    let args: Vec<String> = Vec::new();
+    let env = env_for(&root, "exit7");
+    let spec = spec_for(&shim, &args, &env, Duration::from_secs(2), 4096);
     match run(&spec) {
         Err(ProcError::Failed { code, stderr }) => {
             assert_eq!(code, Some(7));
@@ -275,7 +283,9 @@ fn t2_garbage_output_and_nonzero_exit_are_typed() {
 fn t2_large_output_is_drained_and_capped() {
     let root = shim_root("bigout");
     let shim = write_shim(&root);
-    let (_a, _e, spec) = spec_for(&shim, &root, "bigout", Duration::from_secs(12), 1024);
+    let args: Vec<String> = Vec::new();
+    let env = env_for(&root, "bigout");
+    let spec = spec_for(&shim, &args, &env, Duration::from_secs(12), 1024);
     let t = Instant::now();
     match run(&spec) {
         Ok(out) => {
@@ -317,7 +327,9 @@ fn t2_no_rss_or_fd_growth_across_repeated_kills() {
     for i in 0..8 {
         let root = shim_root(&format!("loop{i}"));
         let shim = write_shim(&root);
-        let (_a, _e, spec) = spec_for(&shim, &root, "fdleak", Duration::from_millis(200), 4096);
+        let args: Vec<String> = Vec::new();
+        let env = env_for(&root, "fdleak");
+        let spec = spec_for(&shim, &args, &env, Duration::from_millis(200), 4096);
         assert!(matches!(run(&spec), Err(ProcError::Timeout { .. })));
         let pgid = read_note(&root, "pgid").unwrap();
         assert!(group_survivors(pgid).is_empty(), "iteration {i} left group survivors");
