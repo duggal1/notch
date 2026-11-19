@@ -13,7 +13,7 @@ This file is the truthful ledger: what was asked, what exists, what the evidence
 3. Stack, after your correction: **Tauri v2 + Rust + React 19 + TS strict + Tailwind v4 + Vite 8** (Swift host deleted).
 4. **DESIGN.md/FONT.md applied brutally**; typography overrides: Inter only, weights 400/500, sentence case (no all caps), tracking tied to size, grayscale-AA smoothing. Darker flat cards (`#171826`), pointer everywhere, zero slop (zero templates), SF Symbols rendered **on-device** only.
 5. A **standard macOS app** too — regular window, Dock icon, ⌘Tab, real composer; plus the notch popover.
-6. Testing with headless **`opencode run --model opencode/hy4-flash-free`** discipline; panes run the machine default (`opencode/inkling-2-small-free` variant `max`, user-set).
+6. Testing with headless **`opencode run --model opencode/hy4-flash-free`** discipline; panes now run the machine default **`opencode/hy4-flash-free`** too (user reversal 2026-11-19: HY4 Flash Free, not inkling-2-small-free).
 7. "Open it up for me" — the app has been compiled, rebuilt, and **opened on your screen** (pid-verified).
 8. Backend finished by ≥ 6 sub-agents with aggressive headless testing; code quality genuinely better. **Eight agents launched** (see §7); not all have reported.
 
