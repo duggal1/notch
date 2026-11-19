@@ -1,0 +1,6 @@
+# tools/
+
+Lead-owned drivers. One job per tool, args in, JSON out, nonzero exit on failure. Document each here when created.
+
+- `window-shot.sh <bundle-path> [out.png]` — hidden-launch the built app (`open -g -j`), find its window id via `CGWindowListCopyWindowInfo` (fallback: AppleScript on the frontmost? NO — never steal focus; fallback fails closed), capture only that window with `screencapture -x -l <id>`, quit the app, emit JSON `{ok, path, bytes}`. Requires Screen Recording permission for `screencapture` to capture other processes; our own launched instance usually works. If capture fails, exit 3 and print the exact permission to grant (System Settings → Privacy & Security → Screen Recording → allow the terminal/opencode host). Never `open` without `-g -j`.
+- `demo-matrix.mjs` (lives in `ui/`) — builds + serves the popover headlessly, screenshots all demos (owned by ui agent; referenced here for integration).

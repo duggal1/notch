@@ -1,0 +1,62 @@
+[workspace]
+
+[package]
+name = "notch"
+version = "0.1.0"
+description = "notch — macOS notch + menu-bar surface for the OpenCode orchestration control plane"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[lib]
+name = "notch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "notch"
+path = "src/main.rs"
+
+[dependencies]
+# Tauri v2 (macOS only). macos-private-api is required for a transparent
+# undecorated window on macOS — see tauri.conf.json -> app.macOSPrivateApi.
+tauri = { version = "2.12", features = ["macos-private-api", "image-png", "tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# AppKit reach-through for the notch NSWindow (level, collectionBehavior,
+# styleMask) and NSScreen notch geometry. Isolated in macos.rs.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSScreen",
+  "NSWindow",
+  "NSHapticFeedback",
+] }
+
+# Agent A (rust-core) is building crates/notchd in parallel. Until its public
+# API lands (serve / snapshot builder / plan executor / herdr client), the app
+# compiles WITHOUT it: the orchestrator logic runs inside src-tauri::engine
+# (same logic as `notchd serve`, with an internal herdr client), with comments
+# pointing at the notchd API it should be swapped for at integration.
+#
+# At integration the lead should:
+#   1. make this a required (non-optional) dependency,
+#   2. enable the `notchd-live` feature,
+#   3. replace the engine internals (engine.rs) with calls into notchd,
+#   4. delete the `optional = true` and this comment.
+notchd = { path = "../../crates/notchd", optional = true }
+
+[features]
+# NOT default. Enabling this before crates/notchd has a public API breaks the
+# build; it exists so the wiring point is explicit, not implicit.
+notchd-live = ["dep:notchd"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[profile.release]
+lto = true
+codegen-units = 1

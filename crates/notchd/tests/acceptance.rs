@@ -3,7 +3,6 @@
 
 use notchd::attribution;
 use notchd::bus::BusMessage;
-use notchd::cleanup;
 use notchd::config::Config;
 use notchd::daemon::Daemon;
 use notchd::events::EventLog;
@@ -37,7 +36,6 @@ fn test_config(root: &Path, stuck_after_secs: u64) -> Config {
         stuck_after_secs,
         poll_interval_ms: 2000,
         opencode_decider: false,
-        herdr_cmd: None,
     }
 }
 
@@ -163,6 +161,9 @@ fn agent_entry(pane_id: &str, status: &str, revision: u64) -> Value {
 }
 
 fn write_plan(root: &Path) -> PathBuf {
+    for d in ["a", "b", "c", "d"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
     let plan = serde_json::json!({
         "stuck_after_secs": 15,
         "supervisors": [
@@ -182,8 +183,8 @@ fn write_plan(root: &Path) -> PathBuf {
 }
 
 fn spawn_daemon(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>) -> Daemon {
-    let mut config = test_config(root, 15);
-    config.tmp_dir.create_dir_all().unwrap();
+    let config = test_config(root, 15);
+    std::fs::create_dir_all(&config.tmp_dir).unwrap();
     Daemon::open(config, fake.herdr(), clock).unwrap()
 }
 
@@ -196,23 +197,23 @@ fn registry_allocates_unique_ids_never_reused_across_reload() {
     let clock = Arc::new(FakeClock::new(1_000_000));
 
     let mut reg = Registry::load(&path, clock.as_ref());
-    let sv1 = reg.allocate_supervisor(clock.as_ref());
-    let sv2 = reg.allocate_supervisor(clock.as_ref());
+    let sv1 = reg.allocate_supervisor();
+    let sv2 = reg.allocate_supervisor();
     assert_eq!(sv1, "SV-1");
     assert_eq!(sv2, "SV-2");
     let mut seen: Vec<String> = Vec::new();
     for _ in 0..3 {
-        seen.push(reg.allocate_session(1, clock.as_ref()));
-        seen.push(reg.allocate_session(2, clock.as_ref()));
+        seen.push(reg.allocate_session(1));
+        seen.push(reg.allocate_session(2));
     }
     assert_eq!(seen, vec!["S1-OC01", "S2-OC01", "S1-OC02", "S2-OC02", "S1-OC03", "S2-OC03"]);
     reg.save(&path).unwrap();
 
     // "Kill" everything and reload: IDs must never be reused.
     let mut reg2 = Registry::load(&path, clock.as_ref());
-    let sv3 = reg2.allocate_supervisor(clock.as_ref());
+    let sv3 = reg2.allocate_supervisor();
     assert_eq!(sv3, "SV-3");
-    let next1 = reg2.allocate_session(1, clock.as_ref());
+    let next1 = reg2.allocate_session(1);
     assert_eq!(next1, "S1-OC04");
     let mut all: Vec<String> = reg2.ids().to_vec();
     all.sort();
@@ -221,7 +222,7 @@ fn registry_allocates_unique_ids_never_reused_across_reload() {
     assert_eq!(all.len(), before, "duplicate id allocated");
     assert_eq!(
         reg2.ids().len(),
-        3 + 6 + 1 + 1,
+        2 + 6 + 2,
         "every allocation is permanent"
     );
 }
@@ -232,8 +233,8 @@ fn ids_match_the_design_contract_format() {
     let path = root.join("registry.json");
     let clock = Arc::new(FakeClock::new(1_000_000));
     let mut reg = Registry::load(&path, clock.as_ref());
-    let sv = reg.allocate_supervisor(clock.as_ref());
-    let s = reg.allocate_session(1, clock.as_ref());
+    let sv = reg.allocate_supervisor();
+    let s = reg.allocate_session(1);
     assert!(sv.starts_with("SV-"));
     let parts: Vec<&str> = s.split("-OC").collect();
     assert_eq!(parts.len(), 2);
@@ -373,10 +374,10 @@ fn watchdog_kills_only_stuck_working_session() {
 
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
-    assert_eq!(s1.status, "failed");
+    assert_eq!(s1.status, Status::Failed);
     assert_eq!(s1.failure_reason.as_deref(), Some("stuck"));
     let s2 = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap();
-    assert_eq!(s2.status, "done");
+    assert_eq!(s2.status, Status::Done);
     assert!(
         !root.join("tmp").join("notch-S1-OC01").exists(),
         "cleanup hook must remove the per-session temp dir"
@@ -468,11 +469,15 @@ fn failure_reprompts_once_then_marks_failed_with_escalation() {
         .collect();
     let reprompt = prompts
         .iter()
-        .find(|p| p.join(" ").contains("S1-OC01") || p.join(" ").contains(&pane_a))
+        .find(|p| p.join(" ").contains("cannot compile src/auth.rs:12"))
         .expect("expected a re-prompt for the blocked session");
     assert!(
         reprompt.join(" ").contains("cannot compile src/auth.rs:12"),
         "re-prompt must append the tail of pane output: {reprompt:?}"
+    );
+    assert!(
+        reprompt.join(" ").contains("S1-OC01"),
+        "re-prompt targets the session: {reprompt:?}"
     );
 
     // Poll 2: still blocked -> no second re-prompt; mark failed + escalate.
@@ -490,7 +495,7 @@ fn failure_reprompts_once_then_marks_failed_with_escalation() {
 
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
-    assert_eq!(s1.status, "failed");
+    assert_eq!(s1.status, Status::Failed);
     assert_eq!(s1.failure_reason.as_deref(), Some("blocked_waiting"));
     assert!(
         snap.warnings.iter().any(|w| w.contains("S1-OC01")),
@@ -535,7 +540,7 @@ fn session_that_recovers_after_reprompt_is_not_escalated() {
 
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
-    assert_eq!(s1.status, "done");
+    assert_eq!(s1.status, Status::Done);
     assert!(
         !snap.warnings.iter().any(|w| w.contains("S1-OC01")),
         "recovered session must not escalate: {:?}",
@@ -690,7 +695,7 @@ fn cleanup_sweep_removes_dead_session_dirs_and_rotates_events_log() {
 
     let ack = daemon.cleanup(None);
     assert!(ack.ok);
-    assert_eq!(ack.removed, 1);
+    assert_eq!(ack.removed, Some(1));
     assert!(!dead_dir.exists());
     assert!(
         root.join("state").join("events.jsonl.1").exists(),
@@ -700,7 +705,7 @@ fn cleanup_sweep_removes_dead_session_dirs_and_rotates_events_log() {
     // Per-id cleanup of a live session is refused (or reports false removals=0).
     let ack = daemon.cleanup(Some("S2-OC02"));
     assert!(ack.ok);
-    assert_eq!(ack.removed, 0);
+    assert_eq!(ack.removed, Some(0));
 }
 
 // ---------- 8. Snapshot contract ----------
@@ -717,27 +722,27 @@ fn snapshot_matches_bridge_v1_key_set_and_camelcase() {
     let snap = daemon.snapshot();
     let v = serde_json::to_value(&snap).unwrap();
     let obj = v.as_object().unwrap();
-    let top_keys: std::collections::BTreeSet<&String> = obj.keys().collect();
-    let expected_top: std::collections::BTreeSet<&String> =
+    let top_keys: std::collections::BTreeSet<&str> = obj.keys().map(String::as_str).collect();
+    let expected_top: std::collections::BTreeSet<&str> =
         ["version", "generatedAt", "orchestrator", "supervisors", "sessions", "eps", "conflicts", "attribution", "warnings"]
-            .iter()
+            .into_iter()
             .collect();
     assert_eq!(top_keys, expected_top, "top-level key set drifted");
     assert_eq!(obj["version"], 1);
 
     let sup = &obj["supervisors"][0];
-    let sup_keys: std::collections::BTreeSet<&String> = sup.as_object().unwrap().keys().collect();
-    let expected_sup: std::collections::BTreeSet<&String> =
-        ["id", "status", "working", "idle", "failed", "done"].iter().collect();
+    let sup_keys: std::collections::BTreeSet<&str> = sup.as_object().unwrap().keys().map(String::as_str).collect();
+    let expected_sup: std::collections::BTreeSet<&str> =
+        ["id", "status", "working", "idle", "failed", "done"].into_iter().collect();
     assert_eq!(sup_keys, expected_sup);
 
     let ses = &obj["sessions"][0];
-    let ses_keys: std::collections::BTreeSet<&String> = ses.as_object().unwrap().keys().collect();
-    let expected_ses: std::collections::BTreeSet<&String> = [
+    let ses_keys: std::collections::BTreeSet<&str> = ses.as_object().unwrap().keys().map(String::as_str).collect();
+    let expected_ses: std::collections::BTreeSet<&str> = [
         "id", "sup", "status", "title", "task", "cwd", "paneId", "startedAt", "lastAction",
         "lastRevision", "latencyMs", "failureReason",
     ]
-    .iter()
+    .into_iter()
     .collect();
     assert_eq!(ses_keys, expected_ses);
 
@@ -912,7 +917,7 @@ fn kill_marks_failed_runs_cleanup_and_events() {
     assert!(ack.ok);
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
-    assert_eq!(s1.status, "failed");
+    assert_eq!(s1.status, Status::Failed);
     assert_eq!(s1.failure_reason.as_deref(), Some("operator stop"));
     assert!(!root.join("tmp").join("notch-S1-OC01").exists());
     let calls = fake.calls();
@@ -977,8 +982,8 @@ fn start_marks_vanished_panes_done_and_keeps_live_sessions() {
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
     let s2 = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap();
-    assert_eq!(s1.status, "working");
-    assert_eq!(s2.status, "done");
+    assert_eq!(s1.status, Status::Working);
+    assert_eq!(s2.status, Status::Done);
     let log = std::fs::read_to_string(state_dir.join("events.jsonl")).unwrap();
     assert!(log.contains("readopt") || log.contains("done"), "expected a re-adoption/done event: {log}");
 }
@@ -1020,4 +1025,158 @@ fn attribution_is_newest_first_and_capped_at_24() {
 #[allow(dead_code)]
 fn _take(v: VecDeque<u64>) -> VecDeque<u64> {
     v
+}
+
+// ---------- 16. Debounced subscriber push over the socket ----------
+
+#[test]
+fn subscribe_pushes_snapshot_on_change_after_100ms_debounce() {
+    use std::os::unix::net::UnixListener;
+    let root = tmp_root("push");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = Arc::new(spawn_daemon(&root, &fake, clock.clone()));
+    let plan = write_plan(&root);
+    daemon.run_plan(&plan);
+
+    let sock = root.join("notch.sock");
+    let _ = std::fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock).unwrap();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let server = {
+        let daemon = Arc::clone(&daemon);
+        let shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || notchd::socket::serve_with_shutdown(listener, daemon, shutdown))
+    };
+
+    let stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut writer = stream;
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap(); // hello
+    writeln!(writer, "{}", serde_json::json!({"cmd": "subscribe"})).unwrap();
+    writer.flush().unwrap();
+    reader.read_line(&mut line).unwrap(); // ack — hmm, reuse `line`; read fresh
+    let mut l2 = String::new();
+    reader.read_line(&mut l2).unwrap(); // immediate snapshot
+    let snap_line: Value = serde_json::from_str(&l2).unwrap();
+    assert_eq!(snap_line["event"], "snapshot");
+
+    // Trigger a change: kill S1-OC01.
+    daemon.kill("S1-OC01", None).unwrap();
+    // Not yet due — debounce window is 100 ms; fake clock has not advanced.
+    // (The 25 ms flusher in the server also uses the never-advancing fake
+    // clock, so no push can leak early.)
+    clock.advance_ms(150);
+    daemon.flush_subscriber_snapshots();
+
+    let mut pushed = String::new();
+    reader.read_line(&mut pushed).unwrap();
+    let pushed_json: Value = serde_json::from_str(&pushed).unwrap();
+    assert_eq!(pushed_json["event"], "snapshot");
+    let sessions = pushed_json["snapshot"]["sessions"].as_array().unwrap();
+    let s1 = sessions.iter().find(|s| s["id"] == "S1-OC01").unwrap();
+    assert_eq!(s1["status"], "failed");
+
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    drop(writer);
+    let _ = server.join();
+}
+
+// ---------- 17. Corrupt state files never panic ----------
+
+#[test]
+fn corrupt_state_and_registry_files_load_as_defaults() {
+    let root = tmp_root("corrupt");
+    let state_dir = root.join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("state.json"), "{{{{ not json !!!").unwrap();
+    std::fs::write(state_dir.join("registry.json"), "also not json").unwrap();
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+    let snap = daemon.snapshot();
+    assert_eq!(snap.sessions.len(), 0);
+    assert_eq!(snap.supervisors.len(), 0);
+}
+
+// ---------- 18. pane-split output parser tolerance ----------
+
+#[test]
+fn pane_split_parser_accepts_envelope_bare_and_rejects_garbage() {
+    // Envelope with result.pane.pane_id (the schema-plausible shape)
+    let h = Herdr::with_runner(|_args: &[String]| {
+        Ok(serde_json::json!({
+            "id": "cli:pane:split",
+            "result": { "type": "pane_info", "pane": { "pane_id": "w7:p9" } }
+        })
+        .to_string())
+    });
+    assert_eq!(h.pane_split("/tmp", &[]).unwrap(), "w7:p9");
+
+    // Bare pane id on stdout
+    let h = Herdr::with_runner(|_args: &[String]| Ok("w7:p10\n".to_string()));
+    assert_eq!(h.pane_split("/tmp", &[]).unwrap(), "w7:p10");
+
+    // Garbage -> clean error, never a panic
+    let h = Herdr::with_runner(|_args: &[String]| Ok("total garbage output".to_string()));
+    assert!(h.pane_split("/tmp", &[]).is_err());
+}
+
+// ---------- 19. Attribution baseline: pre-dirty files are not attributable ----------
+
+#[test]
+fn first_git_sample_sets_a_baseline_and_only_new_files_attribute() {
+    let root = tmp_root("baseline");
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    // Dirty at spawn time: another agent's in-flight work. Must NOT attribute.
+    std::fs::write(repo.join("other-agents-work.rs"), "fn dirty() {}\n").unwrap();
+
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(1_763_520_000_000));
+    let daemon = spawn_daemon(&root, &fake, clock);
+    let plan_path = root.join("plan.json");
+    std::fs::write(
+        &plan_path,
+        serde_json::json!({
+            "stuck_after_secs": 900,
+            "supervisors": [
+                { "sessions": [ { "title": "A", "prompt": "task a", "cwd": repo } ] }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    daemon.run_plan(&plan_path);
+    let snap = daemon.snapshot();
+    let pane = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    fake.set_agents(vec![agent_entry(&pane, "working", 1)]);
+
+    // Poll 1: sets the baseline; the pre-dirty file must NOT be attributed.
+    daemon.poll_once();
+    let snap = daemon.snapshot();
+    assert!(
+        !snap.attribution.iter().any(|a| a.file.contains("other-agents-work.rs")),
+        "baseline files must not be attributed to the session: {:?}",
+        snap.attribution
+    );
+
+    // Session's own new work appears: must be attributed on the next poll.
+    std::fs::write(repo.join("session-own-work.rs"), "fn mine() {}\n").unwrap();
+    fake.set_agents(vec![agent_entry(&pane, "working", 2)]);
+    daemon.poll_once();
+    let snap = daemon.snapshot();
+    assert!(
+        snap.attribution.iter().any(|a| a.file.contains("session-own-work.rs")),
+        "new files after the baseline must be attributed: {:?}",
+        snap.attribution
+    );
 }

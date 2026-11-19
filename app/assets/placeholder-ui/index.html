@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notch</title>
+<meta name="description" content="notch — macOS notch surface. Placeholder: the UI bundle (ui/dist) is missing.">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    padding-top: 84px; box-sizing: border-box; gap: 14px;
+    font: 400 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    -webkit-font-smoothing: antialiased; color: rgba(255,255,255,.56);
+    letter-spacing: .18em; text-transform: uppercase;
+  }
+  .mark { font-size: 22px; letter-spacing: .3em; color: #fff; }
+  .row { max-width: 420px; text-align: center; text-transform: none; letter-spacing: normal; line-height: 1.6; color: rgba(255,255,255,.42); }
+  .row b { color: rgba(255,255,255,.78); font-weight: 500; }
+</style>
+</head>
+<body>
+  <!-- Honest placeholder, not a fake product surface. The real UI is ui/ (Agent B).
+       tauri.conf.json -> build.frontendDist must become ../../ui/dist once ui/dist
+       exists; see app/README.md. Never crashes the shell: it renders this black
+       plate instead of failing to load. -->
+  <div class="mark">N O T C H</div>
+  <div class="row"><b>Shell up. UI bundle missing (ui/dist).</b><br>
+  Agent B is still building the popover.<br>
+  Until then this black plate is the whole surface.</div>
+</body>
+</html>

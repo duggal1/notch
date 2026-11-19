@@ -1,0 +1,35 @@
+{
+  "stuck_after_secs": 15,
+  "supervisors": [
+    {
+      "cwd": "/Users/harshitduggal/workspace/notch",
+      "sessions": [
+        {
+          "title": "Audit bridge wire drift",
+          "prompt": "Read docs/bridge.md section 1.3 and compare it field-by-field with crates/notchd/src/snapshot.rs. Report any mismatch as a short list. Report only; do not edit files.",
+          "cwd": "/Users/harshitduggal/workspace/notch"
+        },
+        {
+          "title": "Explain stuck criterion",
+          "prompt": "Read crates/notchd/src/watchdog.rs and docs/bridge.md section on the watchdog. Explain the stuck criterion in three sentences. Report only; do not edit files.",
+          "cwd": "/Users/harshitduggal/workspace/notch"
+        }
+      ]
+    },
+    {
+      "cwd": "/Users/harshitduggal/workspace/notch",
+      "sessions": [
+        {
+          "title": "Summarize data laws",
+          "prompt": "Read DESIGN.md section 1 (Laws) and list every law that touches data or status vocabulary. One line per law. Report only; do not edit files.",
+          "cwd": "/Users/harshitduggal/workspace/notch"
+        },
+        {
+          "title": "Report plan config",
+          "prompt": "Read examples/two-by-two.json and report the stuck_after_secs value and how many supervisors and sessions it defines. Report only; do not edit files.",
+          "cwd": "/Users/harshitduggal/workspace/notch"
+        }
+      ]
+    }
+  ]
+}

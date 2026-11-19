@@ -2,20 +2,20 @@
 
 Agent control plane that lives in the MacBook notch. This file is the contract. If an implementation disagrees with it, the implementation is wrong.
 
-Status: v1. Snippets are written to compile, not run. Expect typos, not design errors.
+Status: v1.1 (2026-11-19). Typography override absorbed from FONT.md (weights 400/500 only, sentence case, tracking tied to size). Snippets are written to compile, not run. Expect typos, not design errors.
 
 ---
 
 ## 0. Read first
 
-**What this is.** The visual spec for the notch + menu-bar surface of the orchestration layer (Orchestrator → Supervisors → OpenCode sessions). The four reference images are the visual source of truth:
+**What this is.** The visual spec for the notch + menu-bar surface of the orchestration layer (Orchestrator → Supervisors → OpenCode sessions). `FONT.md` is the type contract and wins on any type conflict. The four reference images are the visual source of truth:
 
 1. Glass squircle app icon, floor glow, a wave bleeding off one edge.
 2. The "Excellent" orb: dark core, lobed lavender rim bloom, white pill, huge numeral, mono caption.
 3. The Stability card: bottom-anchored floor glow, A/B range ticks, floating mono tags, film grain.
 4. The frosted metric board: dot-matrix time series, dot grid with hollow "loss" dots, radar tile.
 
-**Assumed stack.** UI in TypeScript inside a WKWebView in a borderless NSPanel. Swift owns the window, notch geometry, haptics and SF Symbols. Rust owns state and pushes a `Snapshot` over the bridge. One WebGL2 context per effect surface, vanilla TS, no framework. If the surface ends up SwiftUI, §11 has that path.
+**Assumed stack.** React 19 + TypeScript (strict) + Tailwind v4 in a Tauri v2 borderless transparent NSWindow fused to the notch; Rust owns the window, notch geometry, tray, haptics and on-device SF Symbol rasterization; the notchd engine runs in-process and pushes a `Snapshot` over Tauri events. One WebGL2 context per effect surface. If the surface ends up SwiftUI, §11 has that path. `FONT.md` wins on type.
 
 **The contradiction, resolved.** The strict brief bans soft gradients. The references are made of them. Resolution: **geometry is hard, light is soft.** Every edge, radius, grid cell and baseline is exact. The only soft thing allowed is glow, and glow is a data channel: color = status, level = load, motion = liveness. Glow that carries no state gets deleted.
 
@@ -34,8 +34,8 @@ Status: v1. Snippets are written to compile, not run. Expect typos, not design e
 3. **One accent family** (indigo → lilac) plus exactly two signal hues: red for failed, white for done and hot. Nothing else.
 4. **Radii from the scale only:** 8 · 16 · 28 · 36 · 999.
 5. **4pt grid.** Hairlines are 1px. Nothing is off-grid by "optical" excuse.
-6. **Type:** Inter for UI, system mono for labels. Numerals tabular. Weights 400 / 500 / 600 only.
-7. **Labels** are mono, uppercase, 10.5px, tracking `.18em`, 56% white. Always.
+6. **Type:** Inter for UI, system mono for labels. Numerals tabular. Weights 400 / 500 only. Sentence case everywhere — all caps is banned. Tracking tied to size (FONT.md §4).
+7. **Labels** are mono, sentence case, 10.5px, tracking `.08em`, 56% white. Always.
 8. **Motion:** springs for size and position, exponential ease for opacity and color. Nothing linear. Overshoot ≤ 2%. Nothing over 420ms except the wave (0.62s cross + 1.15s settle) and ambient loops.
 9. **Pure functions of time.** Render paths use springs or `f(t)`. Randomness is a seeded PRNG only.
 10. **Ambient loops exist only in `open`.** `rest` is static except on status change.
@@ -64,7 +64,7 @@ Single source of truth. CSS variables are generated from this file, never hand-e
 export const C = {
   void:   '#04051A', // behind everything
   ink:    '#0A0B1E', // text on white (hot state)
-  panel:  '#1E1F2E', // dark card body (ref 3, top of card)
+  panel:  '#171826', // darker card body (user 2026-11-19) — flat, never a gradient; a blur/material host, not a plate
   core:   '#14153A', // orb dark core (ref 2, centre)
   navy:   '#0B0E3A',
   indigo: '#3A33C8',
@@ -136,13 +136,13 @@ export const cssVars = () => Object.entries(C).map(([k, v]) => `--c-${k}:${v}`).
   font-weight: 100 900; font-display: block;   /* bundle it. Same type on every machine. */
 }
 
-html, body { margin: 0; background: transparent; overflow: hidden; -webkit-font-smoothing: antialiased; }
+html, body { margin: 0; background: transparent; overflow: hidden; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; font-synthesis: none; font-optical-sizing: auto; }
 .ui   { font: 500 13px/1.25 Inter, system-ui, sans-serif; letter-spacing: -.01em; color: #fff; }
 
-/* the label: ref 2 "MBPS DOWNLOAD", ref 3 "B 9.21%" */
+/* the label: mono, sentence case — never all caps */
 .label {
   font: 500 10.5px/1 ui-monospace, 'SF Mono', monospace;
-  letter-spacing: .18em; text-transform: uppercase;
+  letter-spacing: .08em; text-transform: none;
   color: rgba(255,255,255,.56);
   font-variant-numeric: slashed-zero tabular-nums;
 }
@@ -156,7 +156,8 @@ html, body { margin: 0; background: transparent; overflow: hidden; -webkit-font-
 /* night: default. The shell must be pure #000 to fuse with the hardware notch. */
 .shell { position: absolute; top: 0; left: 50%; transform: translateX(-50%); background: #000; overflow: hidden; }
 
-.card  { position: relative; isolation: isolate; overflow: hidden; border-radius: 36px; background: #1E1F2E; }
+.card  { position: relative; isolation: isolate; overflow: hidden; border-radius: 36px; background: rgba(23,24,38,.78); -webkit-backdrop-filter: blur(22px) saturate(1.35); }
+/* cards are material hosts on the black shell: darker, flat (zero slope — no body gradients), hairline edge, and they blur the ambient layers behind them (floating IDs, floor glow). Interactive cards carry cursor: pointer. */
 .tile  { border-radius: 28px; }
 
 /* 1px gradient hairline: bright top-left, near-zero middle (ref 2, 3, 4 edges) */
@@ -181,7 +182,7 @@ html, body { margin: 0; background: transparent; overflow: hidden; -webkit-font-
         background: #E9E5FB; color: #0A0B1E; font: 500 12px/1 Inter; letter-spacing: -.01em; }
 ```
 
-Type scale: `88 / 40 / 20 / 13 / 10.5mono`. Nothing between. Copy rules: sentences are plain and carry a number ("Six sessions. Step latency never drifted more than 9.21%."). Units always present. IDs are `S1-OC01`. No exclamation marks, no "Oops".
+Type scale: `88 / 40 / 20 / 13 / 10.5mono`. Nothing between. Copy rules: sentences carry a number ("Six sessions; step latency never drifted more than 9.21%."). Units always present. IDs are `S1-OC01`. No all caps, no exclamation marks, no "Oops".
 
 ---
 
@@ -1109,50 +1110,37 @@ Apple's own. One family, one weight (`semibold` ≈ 1.75px stroke at 16pt). Outl
 | Cleanup | `trash` |
 | Focus herdr pane | `arrow.up.forward.square` |
 
-### 11.1 Web path: Swift serves symbols as tint masks
+### 11.1 On-device rasterization (Tauri path): symbols are Apple Force-native assets served live
 
-The web layer cannot render SF Symbols natively. Swift rasterizes the symbol to a black-on-transparent PNG at 3× and serves it through a custom scheme. CSS paints it with `currentColor`, which is what makes the **white-hover flip work for free**.
+SF Symbols are an Apple-platforms feature — our app IS an Apple-platforms app, so using them is the license's intent. The glyph data is never bundled, exported, or shipped in web content; it is rendered **on-device at runtime** by the Rust backend and handed to the webview as in-memory `data:` URIs. CSS paints the alpha mask with `currentColor`, which is what makes the **white-hover flip work for free**.
 
-```swift
-// SymbolScheme.swift
-import AppKit
-import WebKit
+```rust
+// src-tauri/src/symbols.rs (spec)
+// invoke('symbol', { name, pt, weight }) -> data:image/png;base64,…
+// 1. NSImage::image_with_system_symbol_name(name)  + NSImageSymbolConfiguration { weight: .semibold }
+// 2. NSBitmapImageRep RGBA at size*3, draw() black-on-transparent, representationUsingType:.png
+// 3. base64 -> "data:image/png;base64,{…}"
+// cache: HashMap<(name, pt, weight), String> — raster cache, keyed, unbounded=count of distinct symbols (≤ 16)
+// fallback: if AppKit lookup fails (unknown symbol on this OS), return empty string; the webview
+//           falls back to the hand-authored stroke family (§11.2), never a broken img.
+```
 
-final class SymbolScheme: NSObject, WKURLSchemeHandler {
-    static let weights: [String: NSFont.Weight] = ["regular": .regular, "medium": .medium, "semibold": .semibold, "bold": .bold]
+```css
+.sym { display: inline-block; width: var(--pt, 16px); height: var(--pt, 16px); background: currentColor;
+       -webkit-mask: var(--sym) center / contain no-repeat; mask: var(--sym) center / contain no-repeat; }
+```
 
-    func webView(_ w: WKWebView, start task: WKURLSchemeTask) {
-        guard let url = task.request.url,
-              let c = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let name = c.host?.removingPercentEncoding else { task.didFailWithError(URLError(.badURL)); return }
-        let q = { (k: String) in c.queryItems?.first { $0.name == k }?.value }
-        let pt = CGFloat(Double(q("pt") ?? "") ?? 16)
-        let weight = Self.weights[q("w") ?? ""] ?? .semibold
-        let cfg = NSImage.SymbolConfiguration(pointSize: pt, weight: weight)
-        guard let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg),
-              let png = img.maskPNG(scale: 3) else { task.didFailWithError(URLError(.fileDoesNotExist)); return }
-        let res = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: [
-            "Content-Type": "image/png", "Access-Control-Allow-Origin": "*", "Cache-Control": "max-age=31536000"])!
-        task.didReceive(res); task.didReceive(png); task.didFinish()
-    }
-    func webView(_ w: WKWebView, stop task: WKURLSchemeTask) {}
-}
-
-extension NSImage {
-    /// Alpha is all that matters; the web side tints it.
-    func maskPNG(scale: CGFloat) -> Data? {
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width * scale), pixelsHigh: Int(size.height * scale),
-                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                         colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
-        rep.size = size
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-        draw(in: NSRect(origin: .zero, size: size))
-        NSGraphicsContext.restoreGraphicsState()
-        return rep.representation(using: .png, properties: [:])
-    }
+```ts
+// sym.ts — data-URI source (no symbol:// scheme; Tauri has no custom scheme by default)
+export const symbolUriCache = new Map<string, string>();
+export async function symbolUri(name: string, pt = 16, w: 'semibold' | 'medium' | 'regular' = 'semibold') {
+  const key = `${name}|${pt}|${w}`;
+  if (!symbolUriCache.has(key)) symbolUriCache.set(key, await invoke('symbol', { name, pt, weight: w }));
+  return symbolUriCache.get(key)!;
 }
 ```
+
+License rule, unchanged: never export symbol paths/masks to SVG/PNG and commit them; never ship them in web content served off-device. On-device rasterization only.
 
 ```css
 .sym { display: inline-block; width: var(--pt, 16px); height: var(--pt, 16px); background: currentColor;
@@ -1250,6 +1238,7 @@ This is always-on software in the menu bar. Battery is a design constraint, not 
 | Hidden or occluded | `ticker` sleeps on `document.hidden`; Swift also posts occlusion state |
 | Allocation in render paths | none beyond the three tiny color arrays in `GlowOrb.frame` |
 | Context loss | listen for `webglcontextlost`, `preventDefault()`, rebuild `Pass` on `webglcontextrestored` |
+| SF Symbol rasters | on-device only, cached by `(name, pt, weight)`, ≤ 16 entries — never bundled or shipped |
 
 ---
 
@@ -1262,7 +1251,7 @@ Review every change against this list. Any hit is a rewrite, not a patch.
 3. A hue outside indigo → lilac, red, white.
 4. A radius off the scale (8 · 16 · 28 · 36 · 999).
 5. A drop shadow. Light only.
-6. A third font, a weight outside 400 / 500 / 600, an uppercase label without mono and tracking.
+6. A third font, a weight outside 400 / 500, or any all-caps label.
 7. Numerals that are not tabular, or a metric that jumps instead of rolling.
 8. Linear easing anywhere except the marching-ants tether.
 9. Overshoot above 2%, a "bouncy" spring, a shake on failure.
@@ -1275,5 +1264,6 @@ Review every change against this list. Any hit is a rewrite, not a patch.
 16. A light backdrop behind the shell. The top edge must be pure black.
 17. A grid that is off the 4pt rhythm "because it looks better". It does not.
 18. An effect that survives only at 120Hz on a plugged-in machine.
+19. A card body that is a gradient, lighter than `#171826`, or an interactive card without `cursor: pointer`. Cards are flat, darker, and they blur what sits behind them.
 
 If the result could have come from a mediocre model in one pass, it fails. The standard is a UI that feels inevitable, controlled and sharp under scrutiny, with exactly one soft thing in it: the light, and the light is telling the truth.
