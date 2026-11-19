@@ -53,6 +53,47 @@ fn test_config(root: &Path, stuck_after_secs: u64) -> Config {
     }
 }
 
+/// Advance elapsed time in poll-sized steps, polling between every step.
+/// A single large jump is indistinguishable from a scheduler/VM stall to the
+/// hardened watchdog (which grants grace); real sessions go quiet across many
+/// ordinary ticks. Tests that expect a kill must therefore step through the
+/// ladder, not teleport past it.
+fn step_advance(clock: &Arc<FakeClock>, daemon: &Daemon, ms: u64) {
+    let mut left = ms;
+    while left > 0 {
+        let step = 2_000u64.min(left);
+        clock.advance_ms(step);
+        daemon.poll_once();
+        left -= step;
+    }
+}
+
+/// A stuck kill snapshots WIP first; without a git repo at the session cwd
+/// the snapshot vetoes the close (correct safety behavior). Test fixtures
+/// create their cwds here so they model real per-session worktrees.
+/// Judge jobs run on A2's worker threads. Yield until the expected call count
+/// is observed (bounded, so a real failure still fails the test).
+fn wait_for_decider(oc: &Arc<FakeOpencode>, expected: usize) {
+    for _ in 0..10_000 {
+        if oc.decider_calls() >= expected {
+            return;
+        }
+        std::thread::yield_now();
+    }
+}
+
+fn init_git(dir: &Path) {
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "init", "-q"])
+            .status()
+            .unwrap()
+            .success(),
+        "git init failed for {}",
+        dir.display()
+    );
+}
+
 // ---------- fake herdr ----------
 
 struct FakeHerdr {
@@ -95,6 +136,10 @@ impl FakeHerdr {
 
     fn calls(&self) -> Vec<Vec<String>> {
         self.calls.lock().unwrap().clone()
+    }
+
+    fn clear_calls(&self) {
+        self.calls.lock().unwrap().clear();
     }
 
     fn pane_close_count(&self) -> usize {
@@ -289,6 +334,7 @@ fn build_daemon(
 fn write_one_session_plan(root: &Path) -> PathBuf {
     let cwd = root.join("a");
     std::fs::create_dir_all(&cwd).unwrap();
+    init_git(&cwd);
     let plan = serde_json::json!({
         "stuck_after_secs": 15,
         "supervisors": [
@@ -306,7 +352,9 @@ fn write_one_session_plan(root: &Path) -> PathBuf {
 
 fn write_two_by_two_plan(root: &Path) -> PathBuf {
     for d in ["a", "b", "c", "d"] {
-        std::fs::create_dir_all(root.join(d)).unwrap();
+        let dir = root.join(d);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git(&dir);
     }
     let plan = serde_json::json!({
         "stuck_after_secs": 15,
@@ -342,6 +390,12 @@ fn events(root: &Path) -> String {
 fn event_count(log: &str, kind: &str) -> usize {
     let needle = format!("\"kind\":\"{kind}\"");
     log.matches(&needle).count()
+}
+
+/// Watchdog events include Suspect verdicts and stall-grace notices. Count
+/// only actual Stuck verdicts when asserting "done was never killed".
+fn stuck_verdicts(log: &str) -> usize {
+    log.matches("\"detail\":\"stuck:").count()
 }
 
 fn read_state(root: &Path) -> Value {
@@ -423,8 +477,7 @@ fn stuck_no_kill_before_threshold_minus_one() {
     daemon.poll_once();
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
 
-    clock.advance_ms(14_000); // exactly stuck_after_secs - 1_000 ms
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 14_000); // stays below the suspicion threshold
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Working, "T-1s must not kill");
     assert_eq!(snap.sessions[0].failure_reason, None);
@@ -442,8 +495,7 @@ fn stuck_kill_exact_boundary() {
     fake.set_agents(vec![agent_entry(&pane, "working", 7)]);
 
     daemon.poll_once(); // prime at T0
-    clock.advance_ms(15_000); // exactly stuck_after_secs
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 30_000); // Stuck fires at 2x the suspicion threshold
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Failed);
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
@@ -461,8 +513,7 @@ fn stuck_kill_plus_one() {
     fake.set_agents(vec![agent_entry(&pane, "working", 7)]);
 
     daemon.poll_once(); // prime at T0
-    clock.advance_ms(16_001); // stuck_after_secs + 1.001s
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 31_001); // just past the 2x Stuck threshold
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Failed);
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
@@ -480,13 +531,14 @@ fn stuck_two_polls_at_boundary_do_not_double_kill() {
     fake.set_agents(vec![agent_entry(&pane, "working", 7)]);
 
     daemon.poll_once(); // prime
-    clock.advance_ms(15_000);
-    daemon.poll_once(); // boundary poll — kills
+    step_advance(&clock, &daemon, 30_000); // stepped ticks reach the Stuck boundary
     daemon.poll_once(); // same instant, stale herdr view — must not re-kill
-    clock.advance_ms(30_000); // deep into overtime
+    step_advance(&clock, &daemon, 30_000); // deep into overtime
     daemon.poll_once(); // and again — must not re-kill
     assert_eq!(fake.pane_close_count(), 1, "one stuck kill across repeat boundary polls");
-    assert_eq!(event_count(&events(&root), "watchdog"), 1, "exactly one watchdog event");
+    // Two verdicts on the way: Suspect at 1x, Stuck at 2x. Exactly one of
+    // them is a kill — asserted above by pane_close_count().
+    assert_eq!(event_count(&events(&root), "watchdog"), 2, "suspect + stuck verdicts");
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
     eprintln!("case1 delta=+15s/+45s obs=1 pane close, 1 watchdog event verdict=PASS");
 }
@@ -533,7 +585,7 @@ fn done_in_stuck_window_not_killed_and_done_logged() {
     assert_eq!(snap.sessions[0].failure_reason, None);
     assert_eq!(fake.pane_close_count(), 0, "done panes are never watchdog-closed");
     let log = events(&root);
-    assert_eq!(event_count(&log, "watchdog"), 0, "no watchdog event for done");
+    assert_eq!(stuck_verdicts(&log), 0, "no stuck verdict for done");
     assert!(log.contains("\"detail\":\"done\""), "done evidence logged: {log}");
     assert!(snap.escalations.iter().all(|e| e.kind != "stuck"), "no stuck escalation for done");
     eprintln!("case2 delta=+60s obs=done, 0 pane closes, evidence logged verdict=PASS");
@@ -555,7 +607,7 @@ fn done_survives_repeat_polls_in_stuck_window() {
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Done);
     assert_eq!(fake.pane_close_count(), 0);
-    assert_eq!(event_count(&events(&root), "watchdog"), 0);
+    assert_eq!(stuck_verdicts(&events(&root)), 0);
     eprintln!("case2 delta=+90s obs=done across repeat polls verdict=PASS");
 }
 
@@ -576,8 +628,7 @@ fn paused_supervisor_stuck_session_killed_reason_intact() {
     assert!(daemon.snapshot().supervisors.iter().any(|s| s.id == "SV-1" && s.paused));
 
     daemon.poll_once(); // prime at T0 (pause active)
-    clock.advance_ms(20_000);
-    daemon.poll_once(); // stuck while paused — the ruling: watchdog fires anyway
+    step_advance(&clock, &daemon, 30_000); // stepped ticks; watchdog fires while paused
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
@@ -618,7 +669,16 @@ fn paused_supervisor_decision_loop_does_not_fire() {
 
     daemon.resume_supervisor("SV-1").unwrap();
     daemon.poll_once();
+    wait_for_decider(&oc, 1);
     assert_eq!(oc.decider_calls(), 1, "after resume the decider fires once for the idle session");
+    // Drain the completed judge job; its verdict is applied on a later poll.
+    for _ in 0..1_000 {
+        if daemon.snapshot().sessions[0].iterations == Some(1) {
+            break;
+        }
+        daemon.poll_once();
+        std::thread::yield_now();
+    }
     assert_eq!(daemon.snapshot().sessions[0].iterations, Some(1));
     eprintln!("case3 delta=+0.1s paused obs=0 decider calls; resumed obs=1 verdict=PASS");
 }
@@ -726,6 +786,7 @@ fn readopt_lazy_records_session_ref_on_first_poll() {
 
     daemon.reconcile();
     daemon.poll_once(); // lazy session-ref bind happens inside poll
+    daemon.flush_state(); // coalesced writer is 1 Hz; flush before reading disk
     assert_eq!(
         read_state(&root)["sessions"][0]["sessionRef"],
         "ses_w5:p7",
@@ -826,6 +887,7 @@ fn ids_never_reissued_after_kill_and_cleanup() {
 fn write_fifty_session_plan(root: &Path) -> PathBuf {
     let cwd = root.join("sess");
     std::fs::create_dir_all(&cwd).unwrap();
+    init_git(&cwd);
     let sessions: Vec<Value> = (0..50)
         .map(|i| {
             serde_json::json!({
@@ -1006,6 +1068,7 @@ fn nul_bytes_in_pane_output_survive_roundtrip() {
     assert!(!action.contains('\n'), "last_action is single-line");
 
     // state.json must survive serialize/deserialize with NULs embedded.
+    daemon.flush_state();
     let state_bytes = std::fs::read(root.join("state").join("state.json")).unwrap();
     assert!(state_bytes.windows(4).any(|w| w == b"\\u00"), "NUL escaped in JSON");
     drop(daemon);
@@ -1081,13 +1144,13 @@ fn revision_u64_max_no_overflow() {
 
     daemon.poll_once(); // prime at T0
     assert_eq!(daemon.snapshot().sessions[0].last_revision, Some(u64::MAX));
-    clock.advance_ms(15_000);
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 30_000);
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Failed);
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
     assert_eq!(fake.pane_close_count(), 1);
     // state.json serialized u64::MAX without loss.
+    daemon.flush_state();
     assert_eq!(read_state(&root)["sessions"][0]["lastRevision"], u64::MAX);
     eprintln!("case6 revision u64::MAX obs=stuck kill at boundary, persisted verdict=PASS");
 }
@@ -1107,8 +1170,7 @@ fn herdr_fail_agent_read_second_command_daemon_survives() {
 
     daemon.poll_once(); // prime; herdr healthy: list + read both OK
     fake.fail("agent read"); // 2nd herdr command of the poll fails
-    clock.advance_ms(20_000);
-    daemon.poll_once(); // stuck check must still fire; read failure tolerated
+    step_advance(&clock, &daemon, 30_000); // stuck check still fires; read failure tolerated
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
@@ -1146,24 +1208,29 @@ fn herdr_fail_pane_close_warning_and_still_failed() {
 
     daemon.poll_once(); // prime
     fake.fail("pane close"); // the kill itself fails
-    clock.advance_ms(20_000);
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 30_000);
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Failed, "failed/stuck stands even when close fails");
-    assert_eq!(s.failure_reason.as_deref(), Some("stuck"));
+    // A pane-close failure aborts the kill: the session stays live and its
+    // temp dir is untouched so no uncommitted work is lost.
+    assert_eq!(s.status, Status::Working, "failed close leaves the session alive");
+    assert_eq!(s.failure_reason, None);
     assert!(
         snap.warnings.iter().any(|w| w.contains("pane close failed")),
         "close failure warning recorded: {:?}",
         snap.warnings
     );
     assert!(snap.escalations.iter().any(|e| e.kind == "stuck"), "stuck escalation recorded anyway");
-    assert!(!root.join("tmp").join("notch-S1-OC01").exists(), "cleanup still ran");
+    assert!(root.join("tmp").join("notch-S1-OC01").exists(), "no cleanup when the close failed");
 
+    let failed_attempts = fake.pane_close_count();
+    assert!(failed_attempts >= 1, "every stuck tick retries the failing close");
     fake.clear_failure();
-    daemon.poll_once(); // clean
-    eprintln!("case7 pane close fails obs=survived, warning recorded, cleanup ran verdict=PASS");
+    daemon.poll_once(); // next tick retries the close with herdr healthy
+    assert_eq!(fake.pane_close_count(), failed_attempts + 1, "exactly one retry after recovery");
+    assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed, "retry completes the kill");
+    eprintln!("case7 pane close fails obs=survived, warning recorded, retry kills verdict=PASS");
 }
 
 #[test]
@@ -1175,17 +1242,19 @@ fn herdr_fail_agent_prompt_daemon_survives_blocked_path() {
     let (daemon, pane) = spawn_one_session(&root, &fake, &oc, clock.clone());
     fake.set_agents(vec![agent_entry(&pane, "working", 7)]);
 
-    daemon.poll_once(); // prime
-    fake.set_agents(vec![agent_entry(&pane, "blocked", 8)]); // re-prompt path begins
-    fake.fail("agent prompt"); // 3rd herdr command fails
+    daemon.poll_once(); // prime (spawn prompt happened before this)
+    fake.clear_calls();
+    fake.set_agents(vec![agent_entry(&pane, "blocked", 8)]); // human gate begins
+    fake.fail("agent prompt"); // a prompt failure cannot matter: none is attempted
     clock.advance_ms(100);
     daemon.poll_once();
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Failed, "re-prompt failure terminates as failed");
+    assert!(!s.status.is_terminal(), "blocked waits on a human, not failed");
+    assert_eq!(s.status, Status::Idle);
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
-    assert!(snap.escalations.iter().any(|e| e.kind == "blocked"), "blocked escalation recorded");
+    assert!(snap.escalations.iter().any(|e| e.kind == "needs_you"), "human escalation recorded");
     assert!(
         snap.warnings.iter().any(|w| w.contains("escalated")),
         "escalation warning recorded: {:?}",
@@ -1194,8 +1263,8 @@ fn herdr_fail_agent_prompt_daemon_survives_blocked_path() {
 
     fake.clear_failure();
     daemon.poll_once(); // clean
-    assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
-    eprintln!("case7 prompt fails obs=survived, blocked_waiting + escalation verdict=PASS");
+    assert!(!daemon.snapshot().sessions[0].status.is_terminal());
+    eprintln!("case7 prompt would fail obs=survived, needs_you escalation, no prompt verdict=PASS");
 }
 
 #[test]
@@ -1221,8 +1290,7 @@ fn herdr_fail_agent_list_at_gate_next_poll_clean() {
     );
 
     fake.clear_failure();
-    clock.advance_ms(20_000);
-    daemon.poll_once(); // clean poll: stuck kill proceeds on the frozen revision
+    step_advance(&clock, &daemon, 30_000); // clean poll: stuck kill proceeds on the frozen revision
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
     eprintln!("case7 gate fails obs=survived, warning recorded, next poll clean verdict=PASS");
 }
@@ -1243,23 +1311,21 @@ fn kill_then_stale_herdr_no_double_close_cleanup_exactly_once() {
     assert!(tmp_dir.exists(), "spawn creates the per-session temp dir");
 
     daemon.poll_once(); // prime at T0
-    clock.advance_ms(20_000);
-    daemon.poll_once(); // stuck kill fires: close #1, cleanup runs
+    step_advance(&clock, &daemon, 30_000); // stuck kill fires: close #1, cleanup runs
     assert_eq!(fake.pane_close_count(), 1);
     assert!(!tmp_dir.exists(), "cleanup removed the temp dir on the kill poll");
 
     // Cleanup exactly once: recreate the dir; a later poll must not re-clean.
     std::fs::create_dir_all(&tmp_dir).unwrap();
     std::fs::write(tmp_dir.join("marker"), b"x").unwrap();
-    clock.advance_ms(40_000);
-    daemon.poll_once(); // stale herdr view still says working/frozen
+    step_advance(&clock, &daemon, 40_000); // stale herdr view still says working/frozen
     assert_eq!(fake.pane_close_count(), 1, "stale herdr data must not re-close the pane");
     assert!(tmp_dir.exists() && tmp_dir.join("marker").exists(), "cleanup did not run twice");
 
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Failed);
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
-    assert_eq!(event_count(&events(&root), "watchdog"), 1, "exactly one watchdog event");
+    assert_eq!(event_count(&events(&root), "watchdog"), 2, "suspect + stuck verdicts");
     eprintln!("case8 stale-after-kill obs=1 close, cleanup exactly once verdict=PASS");
 }
 
@@ -1274,38 +1340,42 @@ fn reprompt_then_stuck_kill_stuck_wins_no_double_close() {
     let tmp_dir = root.join("tmp").join("notch-S1-OC01");
 
     daemon.poll_once(); // prime at T0
-    // Poll 2 at T0+1s: herdr now reports blocked -> deterministic re-prompt
-    // (failure_count 0), status back to working, NO pane close.
+    // Poll 2 at T0+1s: herdr reports blocked -> the human owns the gate. The
+    // session stays non-terminal, nothing is typed into the prompt, pane/temp
+    // are kept, and a `needs_you` escalation is recorded.
     fake.set_agents(vec![agent_entry(&pane, "blocked", 8)]);
     clock.advance_ms(1_000);
     daemon.poll_once();
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Working, "re-prompted back to working");
-    assert_eq!(fake.pane_close_count(), 0, "re-prompt path never closes the pane");
-    // Temp dir survives the re-prompt (session lives).
-    assert!(tmp_dir.exists());
+    assert_eq!(snap.sessions[0].status, Status::Idle, "blocked waits on a human");
+    assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("blocked_waiting"));
+    assert_eq!(fake.pane_close_count(), 0, "a human gate never closes the pane");
+    assert!(tmp_dir.exists(), "temp dir kept for the human");
+    assert!(snap.escalations.iter().any(|e| e.kind == "needs_you"));
 
-    // Poll 3 at T0+16s: working, revision frozen at 8 since the re-prompt.
-    // Delta from re-prompt timestamp (T0+1s) is exactly 15s -> stuck kill.
+    // Poll 3: back to working with revision frozen at 8. Stepped ticks reach
+    // the 2x Stuck boundary; the watchdog verdict still wins.
     fake.set_agents(vec![agent_entry(&pane, "working", 8)]);
-    clock.advance_ms(15_000);
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 30_000);
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Failed, "failed/stuck wins over the re-prompted working");
+    assert_eq!(snap.sessions[0].status, Status::Failed, "verified stuck wins over a human gate");
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
-    assert_eq!(fake.pane_close_count(), 1, "exactly one close across re-prompt + stuck kill");
+    assert_eq!(fake.pane_close_count(), 1, "exactly one close after the stuck verdict");
     assert!(!tmp_dir.exists(), "cleanup ran once on the kill");
 
     // Poll 4: stale herdr still reporting working/8 — nothing happens.
     clock.advance_ms(1_000);
     daemon.poll_once();
     assert_eq!(fake.pane_close_count(), 1);
-    let kinds: Vec<String> = snap
+    let kinds: Vec<String> = daemon
+        .snapshot()
         .escalations
         .iter()
         .map(|e| e.kind.clone())
         .collect();
-    assert_eq!(kinds, vec!["stuck".to_string()], "only the stuck escalation, never blocked");
+    assert!(kinds.contains(&"stuck".to_string()), "stuck verdict recorded: {kinds:?}");
+    assert!(kinds.contains(&"needs_you".to_string()), "human gate was escalated: {kinds:?}");
+    assert!(!kinds.iter().any(|k| k == "blocked"), "blocked is never a plain failure escalation");
     eprintln!("case8 reprompt->stuck obs=1 close, failed/stuck wins verdict=PASS");
 }
 
@@ -1322,25 +1392,26 @@ fn blocked_twice_escalates_blocked_no_pane_close_cleanup_once() {
     daemon.poll_once(); // prime at T0
     fake.set_agents(vec![agent_entry(&pane, "blocked", 8)]);
     clock.advance_ms(1_000);
-    daemon.poll_once(); // failure_count 0 -> re-prompt
+    daemon.poll_once(); // blocked -> needs_you, pane and temp kept
     fake.set_agents(vec![agent_entry(&pane, "blocked", 9)]);
     clock.advance_ms(1_000);
-    daemon.poll_once(); // failure_count 1 -> escalate
+    daemon.poll_once(); // still waiting on the human
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Failed);
+    assert_eq!(s.status, Status::Idle, "blocked is not failed");
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
-    assert_eq!(fake.pane_close_count(), 0, "escalation path never closes the pane");
-    assert!(!tmp_dir.exists(), "cleanup ran once");
+    assert!(snap.escalations.iter().any(|e| e.kind == "needs_you"));
+    assert_eq!(fake.pane_close_count(), 0, "a human gate never closes the pane");
+    assert!(tmp_dir.exists(), "temp dir kept for the human");
     assert_eq!(event_count(&events(&root), "watchdog"), 0);
 
-    std::fs::create_dir_all(&tmp_dir).unwrap();
     std::fs::write(tmp_dir.join("marker"), b"x").unwrap();
     clock.advance_ms(10_000);
     daemon.poll_once();
-    assert!(tmp_dir.exists(), "cleanup did not re-run on the next poll");
-    eprintln!("case8 blocked x2 obs=0 closes, failed/blocked_waiting, cleanup once verdict=PASS");
+    assert!(tmp_dir.exists(), "cleanup must never run for a human gate");
+    assert!(tmp_dir.join("marker").exists());
+    eprintln!("case8 blocked x2 obs=0 closes, idle/blocked_waiting, temp kept verdict=PASS");
 }
 
 // ============================================================
@@ -1361,7 +1432,7 @@ fn blocked_herdr_mapping_is_failed_blocked_waiting() {
 }
 
 #[test]
-fn blocked_first_failure_reprompts_no_escalation() {
+fn blocked_first_failure_is_needs_human_no_prompt() {
     let root = tmp_root("blocked-first");
     let fake = FakeHerdr::new();
     let oc = FakeOpencode::new();
@@ -1376,16 +1447,17 @@ fn blocked_first_failure_reprompts_no_escalation() {
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Working, "first blocked -> re-prompt, not failure");
-    assert_eq!(s.failure_reason, None);
+    assert!(!s.status.is_terminal(), "blocked waits on a human, not failed");
+    assert_eq!(s.status, Status::Idle);
+    assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
     assert_eq!(fake.pane_close_count(), 0);
-    assert!(snap.escalations.iter().all(|e| e.session != "S1-OC01"), "no escalation on first failure");
-    assert_eq!(event_count(&events(&root), "reprompt"), 1);
-    eprintln!("case9 first blocked obs=re-prompted, no escalation verdict=PASS");
+    assert!(snap.escalations.iter().any(|e| e.session == "S1-OC01" && e.kind == "needs_you"));
+    assert_eq!(event_count(&events(&root), "reprompt"), 0, "never type into a permission prompt");
+    eprintln!("case9 first blocked obs=idle/needs_you, no prompt verdict=PASS");
 }
 
 #[test]
-fn blocked_second_failure_escalates_kind_blocked_blocked_waiting() {
+fn blocked_escalates_needs_you_and_excludes_decider() {
     let root = tmp_root("blocked-esc");
     let fake = FakeHerdr::new();
     let oc = FakeOpencode::new();
@@ -1396,21 +1468,19 @@ fn blocked_second_failure_escalates_kind_blocked_blocked_waiting() {
     daemon.poll_once(); // prime
     fake.set_agents(vec![agent_entry(&pane, "blocked", 8)]);
     clock.advance_ms(1_000);
-    daemon.poll_once(); // re-prompt (failure #1)
-    fake.set_agents(vec![agent_entry(&pane, "blocked", 9)]);
-    clock.advance_ms(1_000);
-    daemon.poll_once(); // escalate (failure #2)
+    daemon.poll_once(); // blocked -> needs_you escalation
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Failed);
+    assert!(!s.status.is_terminal(), "blocked is not failed");
+    assert_eq!(s.status, Status::Idle);
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
     let esc = snap
         .escalations
         .iter()
         .find(|e| e.session == "S1-OC01")
-        .expect("blocked escalation recorded in snapshot");
-    assert_eq!(esc.kind, "blocked", "v1.3: escalation kind must be `blocked`");
+        .expect("needs_you escalation recorded in snapshot");
+    assert_eq!(esc.kind, "needs_you", "blocked waits on a human");
     assert!(esc.reason.contains("blocked_waiting"), "reason carries blocked_waiting: {}", esc.reason);
     assert!(esc.id.starts_with("esc_"));
     assert_eq!(event_count(&events(&root), "escalate"), 1);
@@ -1420,11 +1490,11 @@ fn blocked_second_failure_escalates_kind_blocked_blocked_waiting() {
     clock.advance_ms(5_000);
     daemon.poll_once();
     assert_eq!(oc.decider_calls(), 0, "escalated session: no decider fires");
-    eprintln!("case9 blocked x2 obs=failed/blocked_waiting, esc kind=blocked, loop excluded verdict=PASS");
+    eprintln!("case9 blocked obs=idle/needs_you, loop excluded verdict=PASS");
 }
 
 #[test]
-fn blocked_reprompt_failure_single_poll_escalates_kind_blocked() {
+fn blocked_never_prompts_even_if_prompt_would_fail() {
     let root = tmp_root("blocked-promptfail");
     let fake = FakeHerdr::new();
     let oc = FakeOpencode::new();
@@ -1440,14 +1510,21 @@ fn blocked_reprompt_failure_single_poll_escalates_kind_blocked() {
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Failed);
+    assert!(!s.status.is_terminal(), "blocked is not failed");
+    assert_eq!(s.status, Status::Idle);
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
     let esc = snap
         .escalations
         .iter()
         .find(|e| e.session == "S1-OC01")
-        .expect("blocked escalation recorded");
-    assert_eq!(esc.kind, "blocked");
-    assert_eq!(fake.pane_close_count(), 0, "blocked escalation never closes a pane");
-    eprintln!("case9 prompt-failure obs=failed/blocked_waiting, esc kind=blocked verdict=PASS");
+        .expect("needs_you escalation recorded");
+    assert_eq!(esc.kind, "needs_you");
+    assert_eq!(fake.pane_close_count(), 0, "a human gate never closes a pane");
+    assert!(
+        !fake.calls().iter().any(|c| c.get(4).map(String::as_str)
+            .map(|t| t.contains("Diagnose and continue"))
+            .unwrap_or(false)),
+        "blocked never triggers the diagnose-and-continue re-prompt"
+    );
+    eprintln!("case9 blocked obs=idle/needs_you, zero prompts verdict=PASS");
 }

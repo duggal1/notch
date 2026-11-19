@@ -26,10 +26,16 @@ impl Daemon {
         self.clock.mono_ms()
     }
 
-    /// Opt-in pane close on a Stuck session. Default OFF; callers that enable
-    /// it are responsible for the consequences of closing a live pane.
+    /// Opt-in pane close on a Stuck session. Production default is ON; callers
+    /// that disable it accept that verified-stuck panes stay open.
     pub fn set_kill_on_stuck(&self, enabled: bool) {
         lock(&self.watchdog).set_kill_on_stuck(enabled);
+    }
+
+    /// Flush the coalesced 1 Hz state writer synchronously. Useful at shutdown
+    /// and for tests that must observe a just-committed field on disk.
+    pub fn flush_state(&self) {
+        self.shutdown_save();
     }
 
     /// One watchdog + supervision pass. `run_poll_loop` drives it every

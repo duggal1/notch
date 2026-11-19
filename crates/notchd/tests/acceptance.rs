@@ -46,6 +46,33 @@ fn test_config(root: &Path, stuck_after_secs: u64) -> Config {
     }
 }
 
+/// Advance real elapsed time in poll-sized steps, polling between steps. A
+/// single large FakeClock jump is indistinguishable from a daemon stall to
+/// the hardened watchdog (grace granted, nobody killed).
+fn step_advance(clock: &Arc<FakeClock>, daemon: &Daemon, ms: u64) {
+    let mut left = ms;
+    while left > 0 {
+        let step = 2_000u64.min(left);
+        clock.advance_ms(step);
+        daemon.poll_once();
+        left -= step;
+    }
+}
+
+/// A stuck kill snapshots WIP first; without a git repo at the session cwd
+/// the snapshot vetoes the close (correct safety behavior).
+fn init_git(dir: &Path) {
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "init", "-q"])
+            .status()
+            .unwrap()
+            .success(),
+        "git init failed for {}",
+        dir.display()
+    );
+}
+
 /// A scripted fake herdr. Records every invocation, returns canned JSON.
 struct FakeHerdr {
     calls: Mutex<Vec<Vec<String>>>,
@@ -267,9 +294,29 @@ fn spawn_daemon_with_opencode(root: &Path, fake: &Arc<FakeHerdr>, oc: &Arc<FakeO
     daemon
 }
 
+/// Judge calls happen on A2's worker threads; yield until the expected count
+/// is observed, then drain with a poll so the verdict is applied.
+fn wait_for_decider(oc: &Arc<FakeOpencode>, daemon: &Daemon, pane: &str, expected: usize) {
+    for _ in 0..20_000 {
+        if oc.decider_calls() >= expected {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    // Marking busy prevents another job being submitted by the single drain
+    // poll; the finished job is still drained and applied.
+    oc.set_api_idle(pane, false);
+    for _ in 0..1_000 {
+        std::thread::yield_now();
+    }
+    daemon.poll_once();
+}
+
 fn write_plan(root: &Path) -> PathBuf {
     for d in ["a", "b", "c", "d"] {
-        std::fs::create_dir_all(root.join(d)).unwrap();
+        let dir = root.join(d);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git(&dir);
     }
     let plan = serde_json::json!({
         "stuck_after_secs": 15,
@@ -469,8 +516,7 @@ fn watchdog_kills_only_stuck_working_session() {
 
     // First poll: records revisions. Advance past stuck_after_secs (15s).
     daemon.poll_once();
-    clock.advance_ms(16_000);
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 30_000); // stepped ticks reach the 2x Stuck threshold
 
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
@@ -517,14 +563,12 @@ fn non_working_session_is_never_killed_and_revision_advance_resets_the_timer() {
         agent_entry(&pane_b, "working", 1),
     ]);
     daemon.poll_once();
-    clock.advance_ms(10_000); // 10s < 15s — no kill yet even with static rev
+    step_advance(&clock, &daemon, 22_000); // both pass Suspect; neither at 2x yet
     fake.set_agents(vec![
-        agent_entry(&pane_a, "working", 2), // advanced -> timer resets
-        agent_entry(&pane_b, "working", 1), // static
+        agent_entry(&pane_a, "working", 2), // advanced -> A's timer resets
+        agent_entry(&pane_b, "working", 1), // static -> B keeps aging
     ]);
-    daemon.poll_once();
-    clock.advance_ms(6_000); // now: A 6s since reset, B 16s since first sight
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 8_000); // B at 30s (Stuck), A only 8s quiet
 
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
@@ -538,7 +582,7 @@ fn non_working_session_is_never_killed_and_revision_advance_resets_the_timer() {
 // ---------- 4. Re-prompt on failure ----------
 
 #[test]
-fn failure_reprompts_once_then_marks_failed_with_escalation() {
+fn blocked_escalates_needs_you_without_prompting() {
     let root = tmp_root("reprompt");
     let fake = FakeHerdr::new();
     *fake.read_text.lock().unwrap() = "error: cannot compile src/auth.rs:12\n".to_string();
@@ -568,42 +612,24 @@ fn failure_reprompts_once_then_marks_failed_with_escalation() {
         ),
     ]);
 
-    // Poll 1: blocked -> failed(blocked_waiting); policy re-prompts once with tail.
+    // Poll 1: blocked -> needs_you. The human owns the permission gate, so
+    // the pane tail is never read and nothing is typed into the prompt.
     daemon.poll_once();
-    let calls = fake.calls();
-    let prompts: Vec<&Vec<String>> = calls
+    let prompts_with_tail = fake
+        .calls()
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
-        .collect();
-    let reprompt = prompts
-        .iter()
-        .find(|p| p.join(" ").contains("cannot compile src/auth.rs:12"))
-        .expect("expected a re-prompt for the blocked session");
-    assert!(
-        reprompt.join(" ").contains("cannot compile src/auth.rs:12"),
-        "re-prompt must append the tail of pane output: {reprompt:?}"
-    );
-    assert!(
-        reprompt.join(" ").contains("s1-oc01"),
-        "re-prompt targets the lowercase herdr agent name: {reprompt:?}"
-    );
-
-    // Poll 2: still blocked -> no second re-prompt; mark failed + escalate.
-    daemon.poll_once();
-    let calls = fake.calls();
-    let reprompt_count = calls
-        .iter()
-        .filter(|c| {
-            c.get(1).map(String::as_str) == Some("agent")
-                && c.get(2).map(String::as_str) == Some("prompt")
-                && c.join(" ").contains("cannot compile")
-        })
+        .filter(|c| c.get(4).map(String::as_str)
+            .map(|t| t.contains("cannot compile src/auth.rs:12"))
+            .unwrap_or(false))
         .count();
-    assert_eq!(reprompt_count, 1, "exactly one re-prompt allowed");
+    assert_eq!(prompts_with_tail, 0, "never diagnose-and-continue into a permission prompt");
 
+    // Poll 2: still blocked -> still non-terminal, still no prompt.
+    daemon.poll_once();
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
-    assert_eq!(s1.status, Status::Failed);
+    assert!(!s1.status.is_terminal(), "blocked is not failed: {}", s1.status);
+    assert_eq!(s1.status, Status::Idle);
     assert_eq!(s1.failure_reason.as_deref(), Some("blocked_waiting"));
     assert!(
         snap.warnings.iter().any(|w| w.contains("S1-OC01")),
@@ -611,8 +637,8 @@ fn failure_reprompts_once_then_marks_failed_with_escalation() {
         snap.warnings
     );
     let esc = &snap.escalations;
-    assert_eq!(esc.len(), 1, "blocked failure must record an escalation: {esc:?}");
-    assert_eq!(esc[0].kind, "blocked");
+    assert!(esc.iter().any(|e| e.kind == "needs_you"), "blocked waits on a human: {esc:?}");
+    assert!(!esc.iter().any(|e| e.kind == "blocked"), "blocked is never a plain failure");
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
     assert!(log.contains("escalate"), "escalate event missing: {log}");
 }
@@ -639,7 +665,7 @@ fn session_that_recovers_after_reprompt_is_not_escalated() {
         agents_blocked.push(agent_entry(pane, "done", 5));
     }
     fake.set_agents(agents_blocked);
-    daemon.poll_once(); // -> re-prompt
+    daemon.poll_once(); // -> needs_you human gate
 
     // Agent recovers: done on next poll.
     let mut agents_done = vec![agent_entry(&pane_a, "done", 6)];
@@ -652,11 +678,15 @@ fn session_that_recovers_after_reprompt_is_not_escalated() {
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
     assert_eq!(s1.status, Status::Done);
+    // `needs_you` is the expected human-gate escalation; a stuck/failure
+    // escalation after recovery would be a false positive.
     assert!(
-        !snap.warnings.iter().any(|w| w.contains("S1-OC01")),
-        "recovered session must not escalate: {:?}",
-        snap.warnings
+        !snap.escalations.iter().any(|e| e.session == "S1-OC01"
+            && (e.kind == "stuck" || e.kind == "blocked")),
+        "recovered session must not be escalated as stuck/failed: {:?}",
+        snap.escalations
     );
+    assert!(!snap.warnings.iter().any(|w| w.contains("stuck")));
 }
 
 // ---------- 5. Bus ----------
@@ -883,7 +913,11 @@ fn empty_tree_is_legal_and_serializes_cleanly() {
     assert_eq!(v["supervisors"].as_array().unwrap().len(), 0);
     assert_eq!(v["sessions"].as_array().unwrap().len(), 0);
     assert_eq!(v["eps"], 0.0);
-    assert_eq!(v["warnings"].as_array().unwrap().len(), 0);
+    // A fresh state dir has no checkpoint; A4's strict loader records exactly
+    // that recovery notice as the sole warning.
+    let warnings = v["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "expected only the fresh-state recovery notice: {warnings:?}");
+    assert!(warnings[0].as_str().unwrap().contains("state unrecoverable"));
 }
 
 // ---------- 9. Socket / NDJSON roundtrip ----------
@@ -1406,11 +1440,20 @@ fn submit_task_spawn_failure_marks_session_failed_and_returns_error() {
     let daemon = spawn_daemon(&root, &fake, clock);
 
     let ack = daemon.submit_task("task that cannot spawn".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
-    assert!(!ack.ok);
-    assert!(ack.error.is_some());
+    // Spawn now runs off the ack path: submit is fast-ack, the failure lands
+    // asynchronously and is observed on a later poll.
+    assert!(ack.ok, "submit must ack before the slow herdr spawn: {:?}", ack.error);
     // The allocated ids are reported and the session is marked failed.
     assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
     assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
+    for _ in 0..100 {
+        let s = daemon.snapshot().sessions.into_iter().find(|s| s.id == "S1-OC01").unwrap();
+        if s.status == Status::Failed {
+            break;
+        }
+        daemon.poll_once();
+        std::thread::yield_now();
+    }
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
     assert_eq!(s1.status, Status::Failed);
@@ -1706,6 +1749,7 @@ fn idle_triggers_one_decider_and_one_reprompt_continue_path() {
     mark_idle(&fake, &oc, &pane, 2);
     oc.push_decision("CONTINUE: create proof.txt containing exactly notch-idle-proof and cat it");
     daemon.poll_once();
+    wait_for_decider(&oc, &daemon, &pane, 1);
 
     assert_eq!(oc.decider_calls(), 1, "one decider call expected");
     let calls = fake.calls();
@@ -1743,6 +1787,8 @@ fn done_verifier_yes_marks_done_and_cleans_up_no_iterations() {
     oc.push_decision("DONE: proof.txt created and cat shows notch-idle-proof");
     oc.push_decision("YES: output proves the DoD is satisfied");
     daemon.poll_once();
+    wait_for_decider(&oc, &daemon, &pane, 1); // judgment call
+    wait_for_decider(&oc, &daemon, &pane, 2); // verifier call
 
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
@@ -1768,6 +1814,8 @@ fn done_verifier_no_reprompts_for_missing_evidence_counts_iteration() {
     oc.push_decision("DONE: proof.txt created");
     oc.push_decision("NO: the file content was never shown; only its existence");
     daemon.poll_once();
+    wait_for_decider(&oc, &daemon, &pane, 1); // judgment call
+    wait_for_decider(&oc, &daemon, &pane, 2); // verifier call
 
     let calls = fake.calls();
     let reprompt = calls
@@ -1797,6 +1845,7 @@ fn three_consecutive_stucks_trigger_strategy_change_then_escalate() {
         mark_idle(&fake, &oc, &pane, 10 + round as u64);
         oc.push_decision("STUCK: the same compile error persists at src/auth.rs:12");
         daemon.poll_once();
+        wait_for_decider(&oc, &daemon, &pane, round as usize);
     }
     let snap = daemon.snapshot();
     let esc = &snap.escalations;
@@ -1831,6 +1880,7 @@ fn budget_exhaustion_escalates_at_max_iterations() {
 ");
         oc.push_decision(&format!("CONTINUE: do the next thing (round {round})"));
         daemon.poll_once();
+        wait_for_decider(&oc, &daemon, &pane, round as usize);
         let s = daemon.snapshot().sessions.into_iter().find(|s| s.id == sid).unwrap();
         eprintln!("[loop] round={round} status={} reason={:?} iterations={:?}", s.status.as_str(), s.failure_reason, s.iterations);
     }
@@ -1870,6 +1920,7 @@ fn paused_supervisor_gets_no_decisions_until_resumed() {
     mark_idle(&fake, &oc, &pane, 31);
     oc.push_decision("CONTINUE: create proof.txt and cat it");
     daemon.poll_once();
+    wait_for_decider(&oc, &daemon, &pane, 1);
     assert_eq!(oc.decider_calls(), 1);
     let snap = daemon.snapshot();
     assert!(!snap.supervisors[0].paused);
@@ -1985,6 +2036,9 @@ fn snapshot_v1_3_blocks_carry_decisions_escalations_and_bus_messages() {
         *fake.read_text.lock().unwrap() = format!("round {round}: cargo test output line {round}");
         oc.push_decision(&format!("CONTINUE: do round {round}"));
         daemon.poll_once();
+        if round <= 8 {
+            wait_for_decider(&oc, &daemon, &pane, round as usize);
+        }
     }
     let snap = daemon.snapshot();
     assert_eq!(snap.decisions.len(), 9);
@@ -2034,6 +2088,7 @@ fn unparseable_decider_output_is_logged_honestly_as_stuck() {
     mark_idle(&fake, &oc, &pane, 70);
     oc.push_decision("hmm, {invalid json, not a verdict}");
     daemon.poll_once();
+    wait_for_decider(&oc, &daemon, &pane, 1);
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
     assert!(s.last_supervisor_action.as_deref().unwrap().contains("decider unparseable"));
@@ -2081,16 +2136,18 @@ fn stuck_kill_records_stuck_escalation_in_snapshot() {
         agent_entry(&pane_b, "done", 3),
     ]);
     daemon.poll_once();
-    clock.advance_ms(16_000);
-    daemon.poll_once();
+    step_advance(&clock, &daemon, 30_000); // stepped ticks reach the Stuck verdict
 
     let snap = daemon.snapshot();
     let esc = &snap.escalations;
-    assert_eq!(esc.len(), 1, "stuck kill must record exactly one escalation: {esc:?}");
-    assert_eq!(esc[0].kind, "stuck");
-    assert_eq!(esc[0].session, "S1-OC01");
-    assert_eq!(esc[0].supervisor, "SV-1");
-    assert!(esc[0].reason.contains("no revision change"), "reason: {}", esc[0].reason);
+    // The ladder emits Suspect then Stuck; exactly one of each.
+    assert_eq!(esc.len(), 2, "suspect + stuck escalations: {esc:?}");
+    assert_eq!(esc.iter().filter(|e| e.kind == "stuck").count(), 1, "one stuck verdict: {esc:?}");
+    assert_eq!(esc.iter().filter(|e| e.kind == "stuck_suspect").count(), 1, "one suspect verdict: {esc:?}");
+    let stuck = esc.iter().find(|e| e.kind == "stuck").unwrap();
+    assert_eq!(stuck.session, "S1-OC01");
+    assert_eq!(stuck.supervisor, "SV-1");
+    assert!(stuck.reason.contains("no revision change"), "reason: {}", stuck.reason);
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
     assert_eq!(s1.status, Status::Failed);
     assert_eq!(s1.failure_reason.as_deref(), Some("stuck"));
