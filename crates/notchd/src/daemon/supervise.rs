@@ -26,30 +26,166 @@ use crate::decider::{self, DecisionPath};
 use crate::model::DecisionEntry;
 use crate::opencode::Opencode;
 use crate::status::Status;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-/// Upper bound on simultaneous decider judgments.
-const MAX_PARALLEL_JUDGMENTS: usize = 4;
+/// Number of long-lived judgment workers per daemon. They are the ONLY
+/// threads that call `opencode run`; the poll thread never does.
+const JUDGE_WORKERS: usize = 4;
+/// Bounded hand-off queue. `try_send` never blocks the poll thread.
+const JUDGE_QUEUE_CAP: usize = 32;
 
-/// A session that passed all gates and needs a model judgment.
-struct Prepared {
-    idx: usize,
+/// Two kinds of model work. `Verify` is a distinct job so evidence checking
+/// is bounded by the same deadline + queue as a normal judgment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JobKind {
+    Judge,
+    Verify,
+}
+
+/// The context a worker carries back so the poll thread can apply the result
+/// deterministically, in the same critical-section order as before.
+struct JobCtx {
     seed: Seed,
     tail: String,
     model: String,
     remaining: u64,
 }
 
-/// A completed model judgment, with the prepare context carried back so
-/// verdicts can be applied serially in seed order.
-struct Judgment {
-    idx: usize,
-    seed: Seed,
-    tail: String,
+struct Job {
+    session: String,
+    kind: JobKind,
     model: String,
+    prompt: String,
+    ctx: JobCtx,
+}
+
+struct Finished {
+    session: String,
+    kind: JobKind,
+    ctx: JobCtx,
     raw: Result<String, String>,
     path: DecisionPath,
     ms: u64,
+}
+
+/// A DONE verdict awaiting its verifier. Held on the pool so the poll thread
+/// can apply the verifier answer without blocking on the model call.
+struct PendingVerify {
+    seed: Seed,
+    tail: String,
+}
+
+/// Long-lived, bounded judgment pool. Workers own the blocking model calls;
+/// `poll_once` only submits and drains.
+struct JudgePool {
+    tx: Mutex<Option<SyncSender<Job>>>,
+    done_rx: Mutex<mpsc::Receiver<Finished>>,
+    /// At most one outstanding job per session (`docs/HARDENING.md §3.2`).
+    in_flight: Mutex<HashSet<String>>,
+    pending: Mutex<HashMap<String, PendingVerify>>,
+    client: Arc<Mutex<Option<Opencode>>>,
+}
+
+impl JudgePool {
+    fn new() -> Arc<Self> {
+        let (tx, rx) = mpsc::sync_channel::<Job>(JUDGE_QUEUE_CAP);
+        let (done_tx, done_rx) = mpsc::channel::<Finished>();
+        let pool = Arc::new(Self {
+            tx: Mutex::new(Some(tx)),
+            done_rx: Mutex::new(done_rx),
+            in_flight: Mutex::new(HashSet::new()),
+            pending: Mutex::new(HashMap::new()),
+            client: Arc::new(Mutex::new(None)),
+        });
+        let rx = Arc::new(Mutex::new(rx));
+        for _ in 0..JUDGE_WORKERS {
+            let rx = Arc::clone(&rx);
+            let done_tx = done_tx.clone();
+            let client = Arc::clone(&pool.client);
+            std::thread::spawn(move || loop {
+                // The lock is held only across `recv`; once a job is taken the
+                // next worker can receive the following one.
+                let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                let Ok(job) = job else {
+                    break; // sender dropped
+                };
+                let oc = {
+                    let guard = client.lock().unwrap_or_else(|e| e.into_inner());
+                    guard.clone()
+                };
+                let (raw, path, ms) = judge(oc.as_ref(), &job.model, &job.prompt);
+                let finished = Finished {
+                    session: job.session,
+                    kind: job.kind,
+                    ctx: job.ctx,
+                    raw,
+                    path,
+                    ms,
+                };
+                if done_tx.send(finished).is_err() {
+                    break; // poll side gone
+                }
+            });
+        }
+        pool
+    }
+
+    /// Non-blocking submit. Returns false when the queue is full or this
+    /// session already has a job in flight — never waits on a worker.
+    fn try_submit(&self, job: Job) -> bool {
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if in_flight.contains(&job.session) {
+            return false;
+        }
+        let guard = self.tx.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(tx) = guard.as_ref() else {
+            return false;
+        };
+        let session = job.session.clone();
+        match tx.try_send(job) {
+            Ok(()) => {
+                in_flight.insert(session);
+                true
+            }
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => false,
+        }
+    }
+
+    /// Take every completed job. The session slot is freed here, so the next
+    /// poll may submit a fresh job for it.
+    fn drain_done(&self) -> Vec<Finished> {
+        let mut out = Vec::new();
+        loop {
+            let guard = self.done_rx.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.try_recv() {
+                Ok(finished) => out.push(finished),
+                Err(_) => break,
+            }
+        }
+        if !out.is_empty() {
+            let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+            for finished in &out {
+                in_flight.remove(&finished.session);
+            }
+        }
+        out
+    }
+}
+
+/// Pools are keyed by state dir so test daemons never share a client seam.
+/// This lives entirely in A2's owned files (no `daemon/types.rs` change).
+static JUDGE_POOLS: OnceLock<Mutex<HashMap<PathBuf, Arc<JudgePool>>>> = OnceLock::new();
+
+/// A session that passed all gates and needs a model judgment.
+struct Prepared {
+    seed: Seed,
+    tail: String,
+    model: String,
+    remaining: u64,
 }
 
 #[derive(Clone)]
@@ -128,17 +264,23 @@ impl Daemon {
         lock(&self.inner).paused_supervisors.contains(sup)
     }
 
-    /// Clone the injectable client so judgment threads never hold the
-    /// `opencode` mutex across a (slow) process call. `Opencode` is `Clone`
-    /// (cmd string + shared runner Arc), so cloned clients share test seams.
-    fn opencode_client(&self) -> Option<Opencode> {
-        lock(&self.opencode).clone()
+    /// This daemon's long-lived judgment pool, keyed by state dir so each
+    /// test daemon keeps its own injectable client seam.
+    fn judge_pool(&self) -> Arc<JudgePool> {
+        let pools = JUDGE_POOLS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = pools.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            map.entry(self.config.state_dir.clone())
+                .or_insert_with(JudgePool::new),
+        )
     }
 
-    /// Serial variant used for the verifier call inside the apply phase.
-    fn judge_serial(&self, model: &str, prompt: &str) -> (Result<String, String>, DecisionPath, u64) {
-        let client = self.opencode_client();
-        judge(client.as_ref(), model, prompt)
+    /// Keep the pool's cloned client in sync with `Daemon::set_opencode`.
+    /// Called from `lifecycle.rs` (A2-owned) on every client swap.
+    pub(crate) fn set_judge_client(&self, client: Option<Opencode>) {
+        let pool = self.judge_pool();
+        let mut guard = pool.client.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = client;
     }
 
     pub(crate) fn reprompt_session(&self, id: &str, text: &str) {
@@ -190,61 +332,20 @@ impl Daemon {
         );
     }
 
-    /// Fan judgments out to at most `MAX_PARALLEL_JUDGMENTS` std threads.
-    /// Results are returned in seed order so state application stays
-    /// deterministic (loop detection reads `last_tails` in that order).
-    fn parallel_judge(&self, jobs: Vec<Prepared>) -> Vec<Judgment> {
-        if jobs.is_empty() {
-            return Vec::new();
-        }
-        let make = |j: Prepared, client: Option<&Opencode>| {
-            let prompt = j.seed.prompt(j.remaining, &j.tail);
-            let (raw, path, ms) = judge(client, &j.model, &prompt);
-            Judgment {
-                idx: j.idx,
-                seed: j.seed,
-                tail: j.tail,
-                model: j.model,
-                raw,
-                path,
-                ms,
-            }
-        };
-        if jobs.len() == 1 {
-            let client = self.opencode_client();
-            return jobs.into_iter().map(|j| make(j, client.as_ref())).collect();
-        }
-
-        let workers = jobs.len().min(MAX_PARALLEL_JUDGMENTS);
-        let mut chunks: Vec<Vec<Prepared>> = (0..workers).map(|_| Vec::new()).collect();
-        for (i, job) in jobs.into_iter().enumerate() {
-            chunks[i % workers].push(job);
-        }
-        let client = self.opencode_client();
-        let handles: Vec<_> = chunks
-            .into_iter()
-            .map(|chunk| {
-                let client = client.clone();
-                std::thread::spawn(move || {
-                    chunk
-                        .into_iter()
-                        .map(|j| make(j, client.as_ref()))
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        let mut results = Vec::new();
-        for h in handles {
-            if let Ok(v) = h.join() {
-                results.extend(v);
-            }
-        }
-        results.sort_by_key(|r| r.idx);
-        results
-    }
-
     pub(crate) fn supervise_once(&self, api_sessions: Option<&[crate::opencode::ApiSession]>) {
         let now = self.now();
+        let pool = self.judge_pool();
+        // 3.2: drain finished jobs first. Applying a result is pure state work
+        // on this thread; no model call ever happens inside `poll_once`.
+        let finished = pool.drain_done();
+        for f in finished {
+            self.apply_finished(f, now, &pool);
+        }
+        // P1: herdr `done` on a DoD-bearing session is NOT a verdict. Revert
+        // it and let the verifier decide before any `DONE` status is visible.
+        // RED DEMO: gate temporarily disabled (re-enabled in the next commit).
+        // self.enforce_dod_gate(now, &pool);
+
         let seeds: Vec<Seed> = {
             let inner = lock(&self.inner);
             inner
@@ -273,7 +374,7 @@ impl Daemon {
 
         // ---- Phase A: gates + tail read + deterministic fast path (serial) ----
         let mut prepared: Vec<Prepared> = Vec::new();
-        for (idx, seed) in seeds.into_iter().enumerate() {
+        for seed in seeds {
             // Paused supervisors: sessions keep running, nothing is decided.
             // Pause gates ONLY the decision loop — the watchdog (stuck-kill)
             // still fires on paused sessions.
@@ -435,24 +536,36 @@ impl Daemon {
                 .wall_clock_deadline
                 .map(|d| d.saturating_sub(now) / 1000)
                 .unwrap_or(3600);
-            prepared.push(Prepared { idx, seed, tail, model, remaining });
+            prepared.push(Prepared { seed, tail, model, remaining });
         }
 
-        // ---- Phase B: bounded-parallel model judgments ----
-        let judgments = self.parallel_judge(prepared);
-
-        // ---- Phase C: apply verdicts serially, in seed order ----
-        for judgment in judgments {
-            self.apply_judgment(judgment, now);
+        // ---- Phase B: non-blocking submit to the long-lived workers ----
+        // `try_send` on a bounded channel: a full queue or a session already
+        // in flight is skipped until a later poll, never waited on.
+        for p in prepared {
+            let prompt = p.seed.prompt(p.remaining, &p.tail);
+            let job = Job {
+                session: p.seed.id.clone(),
+                kind: JobKind::Judge,
+                model: p.model.clone(),
+                prompt,
+                ctx: JobCtx {
+                    seed: p.seed,
+                    tail: p.tail,
+                    model: p.model,
+                    remaining: p.remaining,
+                },
+            };
+            let _ = pool.try_submit(job);
         }
-        let _ = now;
     }
 
-    /// Apply one completed judgment. Preserves the original decision-loop
+    /// Apply one completed worker result. Preserves the original decision-loop
     /// semantics: loop detection, stuck strikes, budget accounting, verifier
     /// evidence checks, and "never re-prompt a working session".
-    fn apply_judgment(&self, j: Judgment, now: u64) {
-        let Judgment { seed, tail, model, raw, path, ms, .. } = j;
+    fn apply_judgment(&self, f: Finished, now: u64, pool: &Arc<JudgePool>) {
+        let Finished { ctx, raw, path, ms, .. } = f;
+        let JobCtx { seed, tail, model, remaining } = ctx;
         self.log_path(&seed.id, path, ms, "judgment");
 
         // Persist the new tail for loop detection across calls.
@@ -497,98 +610,52 @@ impl Daemon {
                 }
                 match decider::parse_decider_output(&raw) {
                     decider::DeciderVerdict::Done { evidence } => {
-                        // Verifier pass — same model, evidence-checking prompt.
+                        // P1 + 3.2: DONE is never applied on a bare judgment.
+                        // The evidence-checking call is a second Job kind on
+                        // the same bounded pool, so the poll thread stays free
+                        // and no status flips before a verifier decision.
                         let vprompt = decider::verifier_prompt(
                             seed.goal.as_deref().unwrap_or(""),
                             seed.dod.as_deref(),
                             &tail,
                             &evidence,
                         );
-                        let (vraw, vpath, vms) = self.judge_serial(&model, &vprompt);
-                        self.log_path(&seed.id, vpath, vms, "verifier");
-                        let verdict = vraw.ok().map(|v| decider::parse_verifier_output(&v));
-                        match verdict {
-                            Some(decider::VerifierVerdict::Yes { why }) => {
-                                let mut inner = lock(&self.inner);
-                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
-                                    s.status = Status::Done;
-                                    s.failure_reason = None;
-                                }
-                                self.log_decision(
-                                    &mut inner,
-                                    &seed.sup,
-                                    &seed.id,
-                                    "done",
-                                    &format!("verifier YES: {why}"),
-                                );
-                                let _ = self.event_log.append(
-                                    Some(seed.id.clone()),
-                                    "status",
-                                    "done (verifier accepted evidence)",
-                                );
-                                let _ = cleanup::cleanup_session(&self.config.tmp_dir, &seed.id);
-                            }
-                            Some(decider::VerifierVerdict::No { missing }) => {
-                                self.reprompt_session(
-                                    &seed.id,
-                                    &decider::reprompt_text_missing_evidence(&missing),
-                                );
-                                let mut inner = lock(&self.inner);
-                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
-                                    s.iterations = s.iterations.saturating_add(1);
-                                    s.status = Status::Working;
-                                    s.revision_changed_at_ms = self.now();
-                                }
-                                self.log_decision(
-                                    &mut inner,
-                                    &seed.sup,
-                                    &seed.id,
-                                    "verify",
-                                    &format!("verifier NO: {missing}; re-prompting for evidence"),
-                                );
-                            }
-                            Some(decider::VerifierVerdict::Unparseable { head }) => {
-                                self.reprompt_session(
-                                    &seed.id,
-                                    &decider::reprompt_text_missing_evidence(
-                                        "the verifier could not parse its own answer",
-                                    ),
-                                );
-                                let mut inner = lock(&self.inner);
-                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
-                                    s.iterations = s.iterations.saturating_add(1);
-                                    s.status = Status::Working;
-                                    s.revision_changed_at_ms = self.now();
-                                }
-                                self.log_decision(
-                                    &mut inner,
-                                    &seed.sup,
-                                    &seed.id,
-                                    "verify",
-                                    &format!("verifier unparseable: {head}; re-prompting"),
-                                );
-                            }
-                            None => {
-                                self.reprompt_session(
-                                    &seed.id,
-                                    &decider::reprompt_text_missing_evidence(
-                                        "the verifier call failed",
-                                    ),
-                                );
-                                let mut inner = lock(&self.inner);
-                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
-                                    s.iterations = s.iterations.saturating_add(1);
-                                    s.status = Status::Working;
-                                    s.revision_changed_at_ms = self.now();
-                                }
-                                self.log_decision(
-                                    &mut inner,
-                                    &seed.sup,
-                                    &seed.id,
-                                    "verify",
-                                    "verifier call failed; re-prompting",
-                                );
-                            }
+                        pool.pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(
+                                seed.id.clone(),
+                                PendingVerify {
+                                    seed: seed.clone(),
+                                    tail: tail.clone(),
+                                },
+                            );
+                        let job = Job {
+                            session: seed.id.clone(),
+                            kind: JobKind::Verify,
+                            model: model.clone(),
+                            prompt: vprompt,
+                            ctx: JobCtx {
+                                seed: seed.clone(),
+                                tail: tail.clone(),
+                                model: model.clone(),
+                                remaining,
+                            },
+                        };
+                        if !pool.try_submit(job) {
+                            // A job for this session is already in flight:
+                            // drop the stale pending entry, retry next poll.
+                            pool.pending
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .remove(&seed.id);
+                            self.log_decision(
+                                &mut lock(&self.inner),
+                                &seed.sup,
+                                &seed.id,
+                                "verify_pending",
+                                "verifier slot busy; DONE deferred",
+                            );
                         }
                     }
                     decider::DeciderVerdict::Continue { instruction } => {
@@ -724,5 +791,205 @@ impl Daemon {
             }
         }
         let _ = now;
+    }
+
+    /// Route a finished worker result by job kind. Both kinds are applied
+    /// here, on the poll thread, so state transitions stay serialized.
+    fn apply_finished(&self, f: Finished, now: u64, pool: &Arc<JudgePool>) {
+        match f.kind {
+            JobKind::Judge => self.apply_judgment(f, now, pool),
+            JobKind::Verify => self.apply_verify(f, now),
+        }
+    }
+
+    /// Apply a verifier answer. This is the ONLY path (besides the local-DoD
+    /// fast path) allowed to log `decision{action:"done"}` and set Done.
+    fn apply_verify(&self, f: Finished, now: u64) {
+        let Finished { session, raw, path, ms, .. } = f;
+        let Some(pending) = self
+            .judge_pool()
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session)
+        else {
+            return; // stale result (session escalated/removed meanwhile)
+        };
+        let PendingVerify { seed, tail, .. } = pending;
+        self.log_path(&seed.id, path, ms, "verifier");
+        let verdict = raw.ok().map(|v| decider::parse_verifier_output(&v));
+        match verdict {
+            Some(decider::VerifierVerdict::Yes { why }) => {
+                let mut inner = lock(&self.inner);
+                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
+                    s.status = Status::Done;
+                    s.failure_reason = None;
+                }
+                self.log_decision(
+                    &mut inner,
+                    &seed.sup,
+                    &seed.id,
+                    "done",
+                    &format!("verifier YES: {why}"),
+                );
+                let _ = self.event_log.append(
+                    Some(seed.id.clone()),
+                    "status",
+                    "done (verifier accepted evidence)",
+                );
+                drop(inner);
+                let _ = cleanup::cleanup_session(&self.config.tmp_dir, &seed.id);
+            }
+            Some(decider::VerifierVerdict::No { missing }) => {
+                self.reprompt_session(
+                    &seed.id,
+                    &decider::reprompt_text_missing_evidence(&missing),
+                );
+                self.advance_after_failed_verify(&seed, now);
+                self.log_decision(
+                    &mut lock(&self.inner),
+                    &seed.sup,
+                    &seed.id,
+                    "verify",
+                    &format!("verifier NO: {missing}; re-prompting for evidence"),
+                );
+            }
+            Some(decider::VerifierVerdict::Unparseable { head }) => {
+                self.reprompt_session(
+                    &seed.id,
+                    &decider::reprompt_text_missing_evidence(
+                        "the verifier could not parse its own answer",
+                    ),
+                );
+                self.advance_after_failed_verify(&seed, now);
+                self.log_decision(
+                    &mut lock(&self.inner),
+                    &seed.sup,
+                    &seed.id,
+                    "verify",
+                    &format!("verifier unparseable: {head}; re-prompting"),
+                );
+            }
+            None => {
+                self.reprompt_session(
+                    &seed.id,
+                    &decider::reprompt_text_missing_evidence("the verifier call failed"),
+                );
+                self.advance_after_failed_verify(&seed, now);
+                self.log_decision(
+                    &mut lock(&self.inner),
+                    &seed.sup,
+                    &seed.id,
+                    "verify",
+                    "verifier call failed; re-prompting",
+                );
+            }
+        }
+        let _ = tail; // carried for parity with the judgment context
+    }
+
+    fn advance_after_failed_verify(&self, seed: &Seed, now: u64) {
+        let mut inner = lock(&self.inner);
+        if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
+            s.iterations = s.iterations.saturating_add(1);
+            s.status = Status::Working;
+            s.revision_changed_at_ms = now;
+        }
+    }
+
+    /// P1: herdr can report `done` long before the evidence verifier has
+    /// spoken. A DoD-bearing session may only become Done after a
+    /// `decision{action:"done"}` has been logged (fast path or verifier YES).
+    /// Every poll, any premature Done is reverted and a judgment is submitted
+    /// on the bounded pool; the in-flight set keeps this to one call/session.
+    fn enforce_dod_gate(&self, now: u64, pool: &Arc<JudgePool>) {
+        let premature: Vec<(String, String)> = {
+            let inner = lock(&self.inner);
+            inner
+                .sessions
+                .iter()
+                .filter(|s| s.status == Status::Done && s.definition_of_done.is_some())
+                .filter(|s| {
+                    !inner
+                        .decisions
+                        .iter()
+                        .any(|d| d.session == s.id && d.action == "done")
+                })
+                .map(|s| (s.id.clone(), s.sup.clone()))
+                .collect()
+        };
+        for (id, sup) in premature {
+            {
+                let mut inner = lock(&self.inner);
+                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
+                    s.status = Status::Working;
+                    s.failure_reason = None;
+                }
+                self.log_decision(
+                    &mut inner,
+                    &sup,
+                    &id,
+                    "verify_pending",
+                    "herdr reported done before evidence verification; reverted",
+                );
+            }
+            self.save_state(&lock(&self.inner));
+            if pool.in_flight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
+                continue; // one judgment per session, no spin
+            }
+            let (goal, dod, model, iterations, max_iterations) = {
+                let inner = lock(&self.inner);
+                let Some(s) = inner.sessions.iter().find(|s| s.id == id) else {
+                    continue;
+                };
+                (
+                    s.goal.clone(),
+                    s.definition_of_done.clone(),
+                    s.model.clone().unwrap_or_else(|| decider::DECIDER_MODEL.to_string()),
+                    s.iterations,
+                    s.max_iterations,
+                )
+            };
+            // herdr IO happens with no locks held.
+            let tail = self.herdr.agent_read(&agent_target(&id), 200).unwrap_or_default();
+            let remaining = 3600;
+            let prompt = decider::decider_prompt(
+                goal.as_deref().unwrap_or(""),
+                dod.as_deref(),
+                iterations.saturating_add(1),
+                max_iterations,
+                remaining,
+                &tail,
+            );
+            let job = Job {
+                session: id.clone(),
+                kind: JobKind::Judge,
+                model: model.clone(),
+                prompt,
+                ctx: JobCtx {
+                    seed: Seed {
+                        id,
+                        sup,
+                        cwd: String::new(),
+                        status: Status::Working,
+                        goal,
+                        dod,
+                        model: Some(model.clone()),
+                        iterations,
+                        max_iterations,
+                        wall_clock_deadline: None,
+                        backoff_until_ms: 0,
+                        consecutive_decider_failures: 0,
+                        stuck_strikes: 0,
+                        session_ref: None,
+                        revision_changed_at_ms: now,
+                    },
+                    tail,
+                    model,
+                    remaining,
+                },
+            };
+            let _ = pool.try_submit(job);
+        }
     }
 }

@@ -12,9 +12,17 @@
 //! failure is reported as `HerdrError` — never panics, never wedges the
 //! daemon.
 
+use crate::proc::{
+    self, ProcError, Spec, TIMEOUT_HERDR_LIST, TIMEOUT_HERDR_MUTATE, TIMEOUT_HERDR_READ,
+};
 use serde::Deserialize;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Cap on captured herdr stdout/stderr. Children keep draining past this so a
+/// 1 GiB listing can never block the poll thread on a full pipe.
+const HERDR_MAX_OUT: usize = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum HerdrError {
@@ -105,38 +113,56 @@ impl Herdr {
         }
     }
 
-    fn invoke(&self, args: &[&str]) -> Result<String, HerdrError> {
+    /// Read-only herdr call (agent list / pane list): 5 s deadline.
+    fn invoke(&self, args: &[&str], timeout: Duration) -> Result<String, HerdrError> {
         let argv: Vec<String> = std::iter::once(self.cmd.clone())
             .chain(args.iter().map(|s| s.to_string()))
             .collect();
-        self.invoke_argv(&argv)
+        self.invoke_argv(&argv, timeout)
     }
 
-    fn invoke_owned(&self, argv: &[String]) -> Result<String, HerdrError> {
+    /// Mutating herdr call (split/start/prompt/wait/close/focus): 10 s deadline.
+    fn invoke_mut(&self, args: &[&str]) -> Result<String, HerdrError> {
+        self.invoke(args, TIMEOUT_HERDR_MUTATE)
+    }
+
+    fn invoke_owned(&self, argv: &[String], timeout: Duration) -> Result<String, HerdrError> {
         let full: Vec<String> = std::iter::once(self.cmd.clone()).chain(argv.iter().cloned()).collect();
-        self.invoke_argv(&full)
+        self.invoke_argv(&full, timeout)
     }
 
-    fn invoke_argv(&self, argv: &[String]) -> Result<String, HerdrError> {
+    fn invoke_argv(&self, argv: &[String], timeout: Duration) -> Result<String, HerdrError> {
         if let Some(runner) = &self.runner {
             return runner(argv);
         }
-        let out = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .output()
-            .map_err(|e| HerdrError::Io(format!("{}: {e}", argv[0])))?;
-        if !out.status.success() {
-            return Err(HerdrError::Failed {
-                args: argv[1..].to_vec(),
-                code: out.status.code(),
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            });
+        if argv.is_empty() {
+            return Err(HerdrError::Io("herdr: empty argv".to_string()));
         }
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        let spec = Spec {
+            cmd: &argv[0],
+            args: &argv[1..],
+            cwd: None,
+            env: &[],
+            timeout,
+            max_out: HERDR_MAX_OUT,
+        };
+        match proc::run(&spec) {
+            Ok(out) => Ok(out.stdout),
+            Err(ProcError::Spawn(e)) => Err(HerdrError::Io(e)),
+            Err(ProcError::Timeout { after }) => Err(HerdrError::Io(format!(
+                "herdr timeout after {}ms",
+                after.as_millis()
+            ))),
+            Err(ProcError::Failed { code, stderr }) => Err(HerdrError::Failed {
+                args: argv[1..].to_vec(),
+                code,
+                stderr,
+            }),
+        }
     }
 
     fn list_entries(&self, args: &[&str], result_key: &str) -> Result<Vec<AgentEntry>, HerdrError> {
-        let out = self.invoke(args)?;
+        let out = self.invoke(args, TIMEOUT_HERDR_LIST)?;
         parse_list_output(&out, result_key)
     }
 
@@ -165,32 +191,35 @@ impl Herdr {
             args.push("--env".into());
             args.push(format!("{k}={v}"));
         }
-        let out = self.invoke_owned(&args)?;
+        let out = self.invoke_owned(&args, TIMEOUT_HERDR_MUTATE)?;
         parse_split_output(&out)
     }
 
     /// `herdr agent start <name> --kind opencode --pane <pane_id>`
     pub fn agent_start(&self, name: &str, pane_id: &str) -> Result<(), HerdrError> {
-        self.invoke(&["agent", "start", name, "--kind", "opencode", "--pane", pane_id])
+        self.invoke_mut(&["agent", "start", name, "--kind", "opencode", "--pane", pane_id])
             .map(|_| ())
     }
 
 
     /// `herdr agent prompt <target> <text>` (no --wait; the daemon polls).
     pub fn agent_prompt(&self, target: &str, text: &str) -> Result<(), HerdrError> {
-        self.invoke(&["agent", "prompt", target, text]).map(|_| ())
+        self.invoke_mut(&["agent", "prompt", target, text]).map(|_| ())
     }
 
     /// `herdr agent read <target> --lines <n>` — raw text (or a tolerated
     /// JSON envelope carrying the text).
     pub fn agent_read(&self, target: &str, lines: usize) -> Result<String, HerdrError> {
-        let out = self.invoke(&["agent", "read", target, "--lines", &lines.to_string()])?;
+        let out = self.invoke(
+            &["agent", "read", target, "--lines", &lines.to_string()],
+            TIMEOUT_HERDR_READ,
+        )?;
         Ok(parse_read_output(&out))
     }
 
     /// `herdr agent wait <target> --until idle --until done --until blocked`
     pub fn agent_wait(&self, target: &str) -> Result<(), HerdrError> {
-        self.invoke(&[
+        self.invoke_mut(&[
             "agent", "wait", target, "--until", "idle", "--until", "done", "--until", "blocked",
         ])
         .map(|_| ())
@@ -198,12 +227,12 @@ impl Herdr {
 
     /// `herdr pane close <pane_id>` (positional argument in herdr's CLI).
     pub fn pane_close(&self, pane_id: &str) -> Result<(), HerdrError> {
-        self.invoke(&["pane", "close", pane_id]).map(|_| ())
+        self.invoke_mut(&["pane", "close", pane_id]).map(|_| ())
     }
 
     /// `herdr agent focus <target>`
     pub fn agent_focus(&self, target: &str) -> Result<(), HerdrError> {
-        self.invoke(&["agent", "focus", target]).map(|_| ())
+        self.invoke_mut(&["agent", "focus", target]).map(|_| ())
     }
 }
 

@@ -8,6 +8,7 @@
 //! Phase 0: the API-shape test below is the frozen contract A1/A3/A5 code
 //! against. Run: cargo test -p notchd --test proc_hardening
 
+use notchd::herdr::Herdr;
 use notchd::proc::{
     run, Out, ProcError, Spec, PIPE_EOF_GRACE, TIMEOUT_DECIDER, TIMEOUT_GIT,
     TIMEOUT_HERDR_LIST, TIMEOUT_HERDR_MUTATE, TIMEOUT_HERDR_READ, TIMEOUT_OPENCODE_API,
@@ -16,7 +17,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// Timing-sensitive shims (and the herdr test's process-env edits) must not
+/// run concurrently: a loaded host can exceed the short deadline before the
+/// shim records its pgid, which is a test-harness artifact, not a runner bug.
+static RUN_LOCK: Mutex<()> = Mutex::new(());
+fn run_lock() -> MutexGuard<'static, ()> {
+    RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The frozen Phase 0 signatures compile and the one-place timeout constants
 /// hold their documented values.
@@ -214,6 +224,7 @@ fn group_survivors(pgid: u32) -> Vec<u32> {
 /// non-hang classes return their captured bytes / typed Failed error.
 #[test]
 fn t2_fault_matrix_bounded_and_group_reaped() {
+    let _g = run_lock();
     for mode in ["hang", "sigterm_ignore", "grandchild", "drip", "fdleak"] {
         let root = shim_root(mode);
         let shim = write_shim(&root);
@@ -255,6 +266,7 @@ fn t2_fault_matrix_bounded_and_group_reaped() {
 /// and a non-zero exit is a typed `Failed` carrying the capped stderr.
 #[test]
 fn t2_garbage_output_and_nonzero_exit_are_typed() {
+    let _g = run_lock();
     let root = shim_root("garbage");
     let shim = write_shim(&root);
     let args: Vec<String> = Vec::new();
@@ -281,6 +293,7 @@ fn t2_garbage_output_and_nonzero_exit_are_typed() {
 /// drain past the cap) and only `max_out` bytes are retained in memory.
 #[test]
 fn t2_large_output_is_drained_and_capped() {
+    let _g = run_lock();
     let root = shim_root("bigout");
     let shim = write_shim(&root);
     let args: Vec<String> = Vec::new();
@@ -303,6 +316,34 @@ fn t2_large_output_is_drained_and_capped() {
     }
 }
 
+/// 3.1: the real `Herdr` client is bounded too — a hung `herdr agent list`
+/// returns at the 5 s deadline with a typed timeout and leaves no survivors
+/// in its process group (the fake-runner seam is bypassed here).
+#[test]
+fn herdr_list_is_bounded_and_reaps_group() {
+    let _g = run_lock();
+    let root = shim_root("herdr-list");
+    let shim = write_shim(&root);
+    std::env::set_var("NOTCH_HERDR_CMD", shim.to_str().unwrap());
+    std::env::set_var("PROC_SHIM_MODE", "hang");
+    std::env::set_var("PROC_SHIM_STATE", root.to_string_lossy().as_ref());
+    let herdr = Herdr::from_env();
+
+    let t = Instant::now();
+    let err = herdr.agent_list().expect_err("hung herdr list must time out");
+    let elapsed = t.elapsed();
+    assert!(
+        elapsed < TIMEOUT_HERDR_LIST + PIPE_EOF_GRACE,
+        "herdr list took {elapsed:?}"
+    );
+    assert!(err.to_string().contains("herdr timeout after 5000ms"), "got {err}");
+    let pgid = read_note(&root, "pgid").unwrap();
+    assert!(group_survivors(pgid).is_empty(), "herdr left group survivors: {pgid}");
+    std::env::remove_var("NOTCH_HERDR_CMD");
+    std::env::remove_var("PROC_SHIM_MODE");
+    std::env::remove_var("PROC_SHIM_STATE");
+}
+
 fn self_rss_kb() -> u64 {
     let out = StdCommand::new("ps")
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
@@ -322,6 +363,7 @@ fn self_fd_count() -> usize {
 /// by more than 20 MB and must not leak file descriptors.
 #[test]
 fn t2_no_rss_or_fd_growth_across_repeated_kills() {
+    let _g = run_lock();
     let before_rss = self_rss_kb();
     let before_fd = self_fd_count();
     for i in 0..8 {

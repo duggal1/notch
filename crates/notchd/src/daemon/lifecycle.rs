@@ -77,7 +77,8 @@ impl Daemon {
             clock.clone(),
         );
 
-        Ok(Daemon {
+        let opencode = crate::opencode::Opencode::from_env();
+        let daemon = Daemon {
             config,
             herdr,
             clock,
@@ -90,8 +91,11 @@ impl Daemon {
             subscribers: Mutex::new(Subscribers::default()),
             pending_change: Mutex::new(None),
             start_ms,
-            opencode: Mutex::new(Some(crate::opencode::Opencode::from_env())),
-        })
+            opencode: Mutex::new(Some(opencode.clone())),
+        };
+        // 3.2: the pool's worker threads get the same client seam.
+        daemon.set_judge_client(Some(opencode));
+        Ok(daemon)
     }
 
     pub(crate) fn now(&self) -> u64 {
@@ -107,7 +111,9 @@ impl Daemon {
 
     /// Replace the opencode client (test seam).
     pub fn set_opencode(&self, client: crate::opencode::Opencode) {
-        *lock(&self.opencode) = Some(client);
+        *lock(&self.opencode) = Some(client.clone());
+        // Keep the long-lived judge workers on the same (test-injectable) seam.
+        self.set_judge_client(Some(client));
     }
 
     pub(crate) fn register_supervisor_locked(&self, inner: &mut Inner, sup: &SupervisorMeta) {
