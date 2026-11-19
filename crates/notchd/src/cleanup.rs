@@ -29,10 +29,10 @@ pub fn session_tmp_dir(root: &Path, id: &str) -> PathBuf {
 /// Returns true if a directory was removed.
 pub fn cleanup_session(root: &Path, id: &str) -> io::Result<bool> {
     if let Some(wt) = crate::worktree::load(root, id) {
-        if wt.path.exists() {
-            if crate::worktree::snapshot(&wt.path, id, "cleanup").is_err() {
-                return Ok(false); // snapshot failed — never delete unseen work
-            }
+        if wt.path.exists()
+            && crate::worktree::snapshot(&wt.path, id, "cleanup").is_err()
+        {
+            return Ok(false); // snapshot failed — never delete unseen work
         }
         if crate::worktree::remove(&wt).is_err() {
             return Ok(false); // dirty or git failure — keep everything

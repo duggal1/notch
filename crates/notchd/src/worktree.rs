@@ -405,7 +405,7 @@ pub fn isolate_build_enabled() -> bool {
     std::env::var("NOTCH_ISOLATE_BUILD")
         .map(|v| {
             let v = v.trim();
-            !v.is_empty() && v != "0" && v.to_ascii_lowercase() != "false"
+            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
         })
         .unwrap_or(false)
 }
