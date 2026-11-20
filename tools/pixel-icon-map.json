@@ -1,0 +1,22 @@
+{
+  "_comment": "Semantic UI icon -> exact @hugeicons/core-free-icons@4.4.0 export. One family, one stroke weight (1.5), one raster grid. Never substitute a generic icon for a different meaning.",
+  "orchestrator": "HierarchyIcon",
+  "logs": "TextAlignLeftIcon",
+  "reprompt": "RefreshIcon",
+  "focus": "ExternalLinkIcon",
+  "kill": "Cancel01Icon",
+  "copy": "Copy01Icon",
+  "check": "CheckIcon",
+  "trash": "TrashIcon",
+  "bubble": "Message01Icon",
+  "pause": "PauseIcon",
+  "play": "PlayIcon",
+  "chevron-down": "ChevronDownIcon",
+  "close": "Cancel01Icon",
+  "search": "Search01Icon",
+  "grid": "Grid2X2Icon",
+  "list": "ListViewIcon",
+  "alert": "Alert02Icon",
+  "plus": "Add01Icon",
+  "window": "AppWindowMacIcon"
+}

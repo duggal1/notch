@@ -5,9 +5,8 @@ import { useEffect, useState, type MouseEvent } from 'react';
 import { DistortionWave, type PaletteName } from '../../vendor/distortion-waves/src';
 import type { Snapshot, Escalation, Session } from '../../lib/bridge';
 import { fmtAge } from '../../lib/format';
-import { RepromptIcon, KillIcon, CheckIcon } from '../Icons';
+import { PixelIcon } from '../PixelIcon';
 import { DitherField } from '../pixel/DitherField';
-import { PixelSphere } from '../pixel/PixelSphere';
 
 const KIND_LABEL: Record<Escalation['kind'], string> = {
   stuck: 'Stuck',
@@ -38,13 +37,13 @@ export function EscalationsTab({ snapshot, onRepromptFresh, onReassign, onKill }
     window.requestAnimationFrame(() => setActed(next));
   };
 
-  const cards = (confirmed: boolean) => escalations.map((esc) => {
+  const cards = (confirmed: boolean) => escalations.map((esc, i) => {
     const s: Session | undefined = sessionOf(esc.session);
     const isActed = confirmed && acted?.id === esc.id;
     const paletteFor = (kind: Escalation['kind']): PaletteName =>
       kind === 'stuck' || kind === 'blocked' ? 'sunset' : 'ocean';
     return (
-      <div key={esc.id} className="esc-card" role="article" aria-label={`Escalation ${esc.id} — ${KIND_LABEL[esc.kind]} — session ${esc.session}`}>
+      <div key={esc.id} style={{ animationDelay: `${Math.min(i, 8) * 34}ms` }} className="esc-card" role="article" aria-label={`Escalation ${esc.id} — ${KIND_LABEL[esc.kind]} — session ${esc.session}`}>
         <div className="esc-rail"><DitherField mode="linear" angle={90} cell={2} floor={0} /></div>
         <div className="esc-body">
           <div className="esc-head">
@@ -57,23 +56,23 @@ export function EscalationsTab({ snapshot, onRepromptFresh, onReassign, onKill }
           </div>
           <p className="esc-reason">{esc.reason}</p>
           {isActed ? (
-            <div className="esc-done"><CheckIcon size={11} /> {acted?.label}</div>
+            <div className="esc-done"><PixelIcon name="check" size={11} /> {acted?.label}</div>
           ) : (
             <div className="esc-actions">
-              <button className="esc-btn esc-btn--primary" onClick={() => onRepromptFresh(esc.session, s?.goal ?? s?.task ?? 'the goal')}>
-                <RepromptIcon size={12} /><span>Re-prompt fresh</span>
+              <button className="esc-btn esc-btn--primary ripple" onClick={() => onRepromptFresh(esc.session, s?.goal ?? s?.task ?? 'the goal')}>
+                <PixelIcon name="reprompt" size={12} /><span>Re-prompt fresh</span>
               </button>
-              <button className="esc-btn" onClick={async (e) => {
+              <button className="esc-btn ripple" onClick={async (e) => {
                 const id = await onReassign(esc.supervisor, s?.goal ?? s?.task ?? 'the goal', s?.definitionOfDone, s?.model);
                 if (id) act(e, { id: esc.id, label: `Reassigned to ${id}`, palette: paletteFor(esc.kind) });
               }}>
                 <span>Reassign</span>
               </button>
-              <button className="esc-btn esc-btn--kill" onClick={(e) => {
+              <button className="esc-btn esc-btn--kill ripple" onClick={(e) => {
                 onKill(esc.session);
                 act(e, { id: esc.id, label: 'Kill sent', palette: 'sunset' });
               }}>
-                <KillIcon size={12} /><span>Kill session</span>
+                <PixelIcon name="kill" size={12} /><span>Kill session</span>
               </button>
             </div>
           )}
@@ -92,8 +91,7 @@ export function EscalationsTab({ snapshot, onRepromptFresh, onReassign, onKill }
       </div>
       {escalations.length === 0 ? (
         <div className="empty-state">
-          <PixelSphere size={112} cell={4} live />
-          <span className="empty-title">All clear</span>
+          <span className="display">All clear.</span>
           <p className="empty-line">Every session is inside its budget and moving. Nothing needs you right now.</p>
         </div>
       ) : (

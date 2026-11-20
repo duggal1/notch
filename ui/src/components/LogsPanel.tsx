@@ -1,8 +1,7 @@
 // LogsPanel.tsx — in-panel log sheet. Solid near-black, spring in.
 import { AnimatePresence, motion } from 'motion/react';
 import type { LogsPayload } from '../lib/bridge';
-import { Sym } from './Symbol';
-import { KillIcon } from './Icons';
+import { PixelIcon } from './PixelIcon';
 
 export function LogsPanel({ open, payload, onClose }: { open: boolean; payload: LogsPayload | null; onClose: () => void }) {
   return (
@@ -21,7 +20,7 @@ export function LogsPanel({ open, payload, onClose }: { open: boolean; payload: 
             <span className="label" style={{ color: 'var(--t2)' }}>{payload?.id ?? '—'} · Logs</span>
             <button className="text-btn" onClick={onClose} aria-label="Close logs">
               <span className="dim">esc</span>
-              <Sym name="xmark" pt={14} fallback={KillIcon} />
+              <PixelIcon name="close" size={14} />
             </button>
           </div>
           <pre className="logs-pre">{payload?.lines.join('\n') ?? 'Waiting for log lines…'}</pre>

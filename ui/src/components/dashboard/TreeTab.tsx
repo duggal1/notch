@@ -7,7 +7,7 @@ import { SupervisorRow } from '../SupervisorRow';
 import { Transcript } from './Transcript';
 import { Composer, type ComposerTarget } from './Composer';
 import { Inspector } from './Inspector';
-import { SearchIcon, PlusIcon } from '../Icons';
+import { PixelIcon } from '../PixelIcon';
 import { useLogsPoller } from '../../lib/use-logs';
 import { PixelSphere } from '../pixel/PixelSphere';
 import { PixelMeter } from '../pixel/PixelMeter';
@@ -94,7 +94,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
         </div>
         <div className="sidebar-body">
           <label className="sidebar-filter">
-            <SearchIcon size={12} />
+            <PixelIcon name="search" size={12} />
             <input className="sidebar-filter-input" placeholder="Filter id or status" value={filter}
               onChange={(e) => setFilter(e.target.value)} aria-label="Filter by id or status" spellCheck={false} />
           </label>
@@ -142,10 +142,10 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
         </div>
         <div className="sidebar-actions">
           <button className="sidebar-btn ripple" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
-            <PlusIcon size={11} /><span>New supervisor</span>
+            <PixelIcon name="plus" size={11} /><span>New supervisor</span>
           </button>
           <button className="sidebar-btn ripple" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
-            <PlusIcon size={11} /><span>New session</span>
+            <PixelIcon name="plus" size={11} /><span>New session</span>
           </button>
         </div>
       </aside>

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { DistortionWave, type PaletteName } from '../../vendor/distortion-waves/src';
 import type { Session, Supervisor, Snapshot } from '../../lib/bridge';
 import { middleTruncate, fmtElapsed } from '../../lib/format';
-import { RepromptIcon, PauseIcon, PlayIcon, KillIcon, FocusIcon, BubbleIcon } from '../Icons';
+import { PixelIcon } from '../PixelIcon';
 import { PixelMeter } from '../pixel/PixelMeter';
 
 const STATUS_PALETTE: Record<string, PaletteName> = {
@@ -93,14 +93,14 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
           </div>
           <div className="control-row">
             <button className="ctl ripple" onClick={onFocusComposer} title="Message this supervisor">
-              <BubbleIcon size={12} /><span>Message</span>
+              <PixelIcon name="bubble" size={12} /><span>Message</span>
             </button>
             <button className="ctl ripple" onClick={() => onTogglePause(supervisor)} title={supervisor.paused ? 'Resume supervisor' : 'Pause supervisor'}>
-              {supervisor.paused ? <PlayIcon size={11} /> : <PauseIcon size={11} />}
+              {supervisor.paused ? <PixelIcon name="play" size={11} /> : <PixelIcon name="pause" size={11} />}
               <span>{supervisor.paused ? 'Resume' : 'Pause'}</span>
             </button>
             <button className="ctl ctl--kill ripple" onClick={() => onKill(supervisor.id)} title="Kill every session under this supervisor">
-              <KillIcon size={12} /><span>Kill all</span>
+              <PixelIcon name="kill" size={12} /><span>Kill all</span>
             </button>
           </div>
           <div className="inspector-list">
@@ -197,17 +197,17 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
 
         <div className="control-row">
           <button className="ctl ripple" onClick={() => onReprompt(s.id)} title="Re-prompt this session">
-            <RepromptIcon size={12} /><span>Re-prompt</span>
+            <PixelIcon name="reprompt" size={12} /><span>Re-prompt</span>
           </button>
           <button className="ctl ripple" onClick={() => onTogglePause(ownSup!)} disabled={!ownSup} title={ownSup?.paused ? 'Resume supervisor' : 'Pause supervisor'}>
-            {ownSup?.paused ? <PlayIcon size={11} /> : <PauseIcon size={11} />}
+            {ownSup?.paused ? <PixelIcon name="play" size={11} /> : <PixelIcon name="pause" size={11} />}
             <span>{ownSup?.paused ? 'Resume' : 'Pause'}</span>
           </button>
           <button className="ctl ctl--kill ripple" onClick={() => onKill(s.id)} title="Kill session">
-            <KillIcon size={12} /><span>Kill</span>
+            <PixelIcon name="kill" size={12} /><span>Kill</span>
           </button>
           <button className="ctl ripple" onClick={() => onOpenHerdr(s.id)} title="Open this session in herdr">
-            <FocusIcon size={12} /><span>Herdr</span>
+            <PixelIcon name="focus" size={12} /><span>Herdr</span>
           </button>
         </div>
       </div>

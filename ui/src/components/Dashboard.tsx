@@ -13,8 +13,7 @@ import { TreeTab, type Selection } from './dashboard/TreeTab';
 import { MultiplexerTab } from './dashboard/MultiplexerTab';
 import { CommsTab } from './dashboard/CommsTab';
 import { EscalationsTab } from './dashboard/EscalationsTab';
-import { AlertIcon, BubbleIcon, GridIcon, OrchestratorMark, TrashIcon } from './Icons';
-import { Sym } from './Symbol';
+import { PixelIcon, type PixelIconName } from './PixelIcon';
 import { useWhiteHot } from '../lib/hot';
 import { PixelMeter } from './pixel/PixelMeter';
 import { DitherField } from './pixel/DitherField';
@@ -22,11 +21,11 @@ import { FleetDeck } from './fleet/FleetDeck';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
 
-const TABS: { id: Tab; label: string; title: string; Icon: typeof OrchestratorMark }[] = [
-  { id: 'tree', label: 'Tree', title: 'Control plane', Icon: OrchestratorMark },
-  { id: 'multiplexer', label: 'Mux', title: 'Session array', Icon: GridIcon },
-  { id: 'comms', label: 'Comms', title: 'The wire', Icon: BubbleIcon },
-  { id: 'escalations', label: 'Alarms', title: 'Alarms', Icon: AlertIcon },
+const TABS: { id: Tab; label: string; title: string; icon: PixelIconName }[] = [
+  { id: 'tree', label: 'Tree', title: 'Control plane', icon: 'orchestrator' },
+  { id: 'multiplexer', label: 'Mux', title: 'Session array', icon: 'grid' },
+  { id: 'comms', label: 'Comms', title: 'The wire', icon: 'bubble' },
+  { id: 'escalations', label: 'Alarms', title: 'Alarms', icon: 'alert' },
 ];
 
 function readStorage<T>(key: string): T | null {
@@ -169,7 +168,7 @@ export function Dashboard() {
                     if (e.key === 'ArrowUp') { e.preventDefault(); switchTab(order[(i - 1 + order.length) % order.length]!); }
                   }}
                 >
-                  <span className="rail-glyph"><t.Icon size={17} /></span>
+                  <span className="rail-glyph"><PixelIcon name={t.icon} size={17} /></span>
                   <span>{t.label}</span>
                   {isEsc && <span className="rail-badge" aria-label={`${escalations.length} unresolved escalations`}>{escalations.length}</span>}
                 </button>
@@ -232,14 +231,14 @@ export function Dashboard() {
                   onClick={killSwitch}
                   title="Close every managed pane, mark all sessions failed, clean up"
                 >
-                  <Sym name="trash" pt={13} fallback={TrashIcon} />
+                  <PixelIcon name="trash" size={13} />
                   <span>{armed ? 'Confirm — kill all' : 'Kill switch'}</span>
                 </button>
               }
               revealedContent={<div className="kill-done" role="status">All sessions stopped</div>}
             >
               <span className="killswitch killswitch--ghost">
-                <Sym name="trash" pt={13} fallback={TrashIcon} />
+                <PixelIcon name="trash" size={13} />
                 <span>Kill switch</span>
               </span>
             </DistortionWave>

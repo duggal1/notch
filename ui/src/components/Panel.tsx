@@ -7,8 +7,7 @@ import { Drift } from './Drift';
 import { SupervisorRow } from './SupervisorRow';
 import { TreeList } from './TreeList';
 import { EmptyState } from './EmptyState';
-import { FocusIcon, TrashIcon } from './Icons';
-import { Sym } from './Symbol';
+import { PixelIcon } from './PixelIcon';
 import { PixelMeter } from './pixel/PixelMeter';
 import { PixelSphere } from './pixel/PixelSphere';
 import { DitherField } from './pixel/DitherField';
@@ -62,8 +61,7 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
       <header className="p-head">
         <span className="p-brand">
           <span className="p-mark" aria-hidden="true">
-            <DitherField mode="linear" angle={135} cell={2} floor={0.08} ceil={0.62} />
-            <img className="brand-logo" src="/logo.svg" alt="" />
+            <span className="brand-logo" />
           </span>
           <span className="p-status">
             <i className={`live-dot live-dot--${top}`} />
@@ -82,7 +80,6 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
             <span className="p-eps-unit">ev/s</span>
           </span>
         </span>
-        <DitherField className="p-head-rule" mode="linear" angle={90} cell={2} floor={0.4} />
       </header>
 
       {/* state: the wave passes across both cards when the top status flips */}
@@ -164,10 +161,10 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
 
       <footer className="p-foot">
         <button className="text-btn ripple" onClick={openDashboard}>
-          <Sym name="macwindow" pt={15} fallback={FocusIcon} />Open dashboard
+          <PixelIcon name="window" size={15} />Open dashboard
         </button>
         <button className="text-btn ripple" onClick={onCleanup}>
-          <Sym name="trash" pt={14} fallback={TrashIcon} />{sweepSent ? 'Sweep sent' : 'Sweep orphans'}
+          <PixelIcon name="trash" size={14} />{sweepSent ? 'Sweep sent' : 'Sweep orphans'}
         </button>
       </footer>
     </div>

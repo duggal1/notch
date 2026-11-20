@@ -1,11 +1,10 @@
 // CommsTab.tsx — the wire. Newest first, filter by from/to/type/body.
-// Same-supervisor traffic carries a dark fuchsia spine; cross-supervisor carries the hot one.
-// Clicking a message jumps the tree selection to the sender.
+// Each message is one soft card: route on top, payload underneath. Same-supervisor traffic
+// carries a dark fuchsia spine; cross-supervisor carries the hot one. Click jumps to the sender.
 import { useMemo, useState } from 'react';
 import type { Snapshot } from '../../lib/bridge';
-import { SearchIcon } from '../Icons';
+import { PixelIcon } from '../PixelIcon';
 import { TYPE_COLOR } from '../../lib/bus';
-import { PixelSphere } from '../pixel/PixelSphere';
 
 export function CommsTab({ snapshot, onJumpToTree }: {
   snapshot: Snapshot | null;
@@ -34,45 +33,48 @@ export function CommsTab({ snapshot, onJumpToTree }: {
           <span>Cross sup <i className="marker marker--lilac" /></span>
         </div>
         <label className="comms-filter">
-          <SearchIcon size={12} />
+          <PixelIcon name="search" size={12} />
           <input value={filter} onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter from, to, type, body" aria-label="Filter messages" spellCheck={false} />
         </label>
-        <span className="comms-legend-note">Newest first · bus is the only channel</span>
-      </div>
-
-      <div className="comms-cols" aria-hidden="true">
-        <span className="label">Time</span>
-        <span className="label">Route</span>
-        <span className="label">Type</span>
-        <span className="label">Payload</span>
+        <span className="comms-legend-note">Newest first · the bus is the only channel</span>
       </div>
 
       <div className="comms-list">
         {filtered.length === 0 ? (
           <div className="empty-state">
-            <PixelSphere size={96} cell={4} live={messages.length === 0} />
-            <span className="empty-title">{messages.length === 0 ? 'The bus is silent' : 'No match'}</span>
+            <span className="display">{messages.length === 0 ? 'The bus is silent.' : 'No match.'}</span>
             <p className="empty-line">
               {messages.length === 0
-                ? 'Nothing has been said yet. Every cross-supervisor message will land here, newest first.'
+                ? 'Nothing has been said yet. Every cross-supervisor message lands here, newest first.'
                 : `Nothing matches “${filter.trim()}”. Clear the filter to see all ${messages.length} messages.`}
             </p>
+            {messages.length > 0 && (
+              <button className="esc-btn esc-btn--primary ripple" onClick={() => setFilter('')}>Clear filter</button>
+            )}
           </div>
-        ) : filtered.map((m) => {
+        ) : filtered.map((m, i) => {
           const cross = supOf.get(m.from) !== supOf.get(m.to);
           return (
-            <button key={m.id} className={`comms-row${cross ? ' comms-row--cross' : ''}`} onClick={() => onJumpToTree(m.from)}>
-              <span className="comms-time">{new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-              <span className="comms-pair">{m.from} <span className="comms-arrow">→</span> {m.to}</span>
-              <span className="type-chip" style={{ color: TYPE_COLOR[m.type] }}>
-                <i className="type-dot" style={{ background: TYPE_COLOR[m.type] }} />
-                {m.type}
+            <button
+              key={m.id}
+              style={{ animationDelay: `${Math.min(i, 10) * 26}ms` }}
+              className={`comms-row${cross ? ' comms-row--cross' : ''}`}
+              onClick={() => onJumpToTree(m.from)}
+            >
+              <span className="comms-line">
+                <span className="comms-time">{new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                <span className="comms-pair">{m.from} <span className="comms-arrow">→</span> {m.to}</span>
+                <span className="type-chip" style={{ color: TYPE_COLOR[m.type] }}>
+                  <i className="type-dot" style={{ background: TYPE_COLOR[m.type] }} />
+                  {m.type}
+                </span>
               </span>
               <span className="comms-preview">{m.preview}</span>
             </button>
           );
         })}
+        {filtered.length > 0 && <div className="wire-end"><span>end of wire</span></div>}
       </div>
     </div>
   );

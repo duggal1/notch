@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { send, type Snapshot } from '../../lib/bridge';
 import { useLogsPoller } from '../../lib/use-logs';
-import { GridIcon, ListIcon } from '../Icons';
+import { PixelIcon } from '../PixelIcon';
 import { DitherField } from '../pixel/DitherField';
 import { PixelMeter } from '../pixel/PixelMeter';
 
@@ -36,10 +36,10 @@ export function MultiplexerTab({ snapshot, onJumpToTree, onAssign }: {
         <span className="label">{failed} failed</span>
         <div className="layout-toggle" role="group" aria-label="Layout">
           <button className={layout === 'grid' ? 'toggle-btn is-active' : 'toggle-btn'} onClick={() => setLayout('grid')} aria-pressed={layout === 'grid'} aria-label="Grid layout">
-            <GridIcon size={13} />
+            <PixelIcon name="grid" size={13} />
           </button>
           <button className={layout === 'list' ? 'toggle-btn is-active' : 'toggle-btn'} onClick={() => setLayout('list')} aria-pressed={layout === 'list'} aria-label="List layout">
-            <ListIcon size={13} />
+            <PixelIcon name="list" size={13} />
           </button>
         </div>
       </div>

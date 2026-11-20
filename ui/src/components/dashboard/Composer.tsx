@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VoiceBeam } from '../../vendor/voice-glow/src';
 import { submitTask, listModels, type Session } from '../../lib/bridge';
-import { CheckIcon, ChevronDownIcon, CloseIcon } from '../Icons';
+import { PixelIcon } from '../PixelIcon';
 
 export type ComposerTarget = { kind: 'supervisor' | 'session'; id: string } | null;
 
@@ -148,7 +148,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
             <span>→ {targetChipLabel}</span>
             <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
               onClick={() => setTargetSession(null)}>
-              <CloseIcon size={9} />
+              <PixelIcon name="close" size={9} />
             </button>
           </div>
         )}
@@ -167,7 +167,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
         </div>
         <div className="composer-dod">
           <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
-            <ChevronDownIcon size={9} className={dodOpen ? 'rotate-180' : ''} />
+            <PixelIcon name="chevron-down" size={9} className={dodOpen ? 'rotate-180' : ''} />
             Done when…
           </button>
           {dodOpen && (
@@ -185,7 +185,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
           <div ref={menuRef} className="model-picker">
             <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
               <span className="tabular-nums">{model}</span>
-              <ChevronDownIcon size={10} />
+              <PixelIcon name="chevron-down" size={10} />
             </button>
             {modelOpen && (
               <ul className="model-menu" role="listbox" aria-label="Model">
@@ -193,7 +193,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
                   <li key={m} role="option" aria-selected={m === model}>
                     <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
                       <span className="tabular-nums">{m}</span>
-                      {m === model && <CheckIcon size={10} />}
+                      {m === model && <PixelIcon name="check" size={10} />}
                     </button>
                   </li>
                 ))}
@@ -207,7 +207,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
       </VoiceBeam>
       {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
       {error && <div className="composer-error" role="alert">{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
-      {done && state.id && <div className="composer-ok"><CheckIcon size={11} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
+      {done && state.id && <div className="composer-ok"><PixelIcon name="check" size={11} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
     </div>
   );
 }

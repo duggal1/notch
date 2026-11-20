@@ -2,8 +2,7 @@
 import { memo } from 'react';
 import type { Session } from '../lib/bridge';
 import { failureLabel, fmtElapsed } from '../lib/format';
-import { LogsIcon, RepromptIcon, FocusIcon, KillIcon } from './Icons';
-import { Sym } from './Symbol';
+import { PixelIcon } from './PixelIcon';
 
 export const SessionRow = memo(function SessionRow({ session, now, killing, onLogs, onReprompt, onFocus, onKill }: {
   session: Session;
@@ -40,17 +39,17 @@ export const SessionRow = memo(function SessionRow({ session, now, killing, onLo
         </div>
         <div className="row-actions" data-actions>
           <button className="act" aria-label="Logs" title="Logs" onClick={(e) => { e.stopPropagation(); onLogs(session); }}>
-            <Sym name="text.alignleft" pt={16} fallback={LogsIcon} />
+            <PixelIcon name="logs" size={16} />
           </button>
           <button className="act act--reprompt" aria-label="Re-prompt" title="Re-prompt" data-emphasis={failed ? '' : undefined}
             onClick={(e) => { e.stopPropagation(); onReprompt(session); }}>
-            <Sym name="arrow.clockwise" pt={16} fallback={RepromptIcon} />
+            <PixelIcon name="reprompt" size={16} />
           </button>
           <button className="act" aria-label="Focus pane" title="Focus pane" onClick={(e) => { e.stopPropagation(); onFocus(session.id); }}>
-            <Sym name="arrow.up.forward.square" pt={16} fallback={FocusIcon} />
+            <PixelIcon name="focus" size={16} />
           </button>
           <button className="act" aria-label="Kill session" title="Kill" onClick={(e) => { e.stopPropagation(); onKill(session.id); }}>
-            <Sym name="xmark" pt={16} fallback={KillIcon} />
+            <PixelIcon name="kill" size={16} />
           </button>
         </div>
       </div>

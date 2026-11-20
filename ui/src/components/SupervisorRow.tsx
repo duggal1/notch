@@ -2,8 +2,7 @@
 import { memo, useMemo } from 'react';
 import type { Supervisor, Session, Decision } from '../lib/bridge';
 import { fmtAge, capitalizeSentence } from '../lib/format';
-import { Sym } from './Symbol';
-import { BubbleIcon, PauseIcon, PlayIcon, KillIcon } from './Icons';
+import { PixelIcon } from './PixelIcon';
 
 export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisions, now, onMessage, onTogglePause, onKill, onSelect, variant }: {
   sup: Supervisor;
@@ -50,15 +49,15 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
           <span className="sup-actions" data-actions>
             <button className="act" aria-label={`Message ${sup.id}`} title="Message supervisor"
               onClick={(e) => { e.stopPropagation(); onMessage(sup.id); }}>
-              <Sym name="bubble.left" pt={15} fallback={BubbleIcon} />
+              <PixelIcon name="bubble" size={15} />
             </button>
             <button className="act" aria-label={sup.paused ? `Resume ${sup.id}` : `Pause ${sup.id}`} title={sup.paused ? 'Resume' : 'Pause'}
               onClick={(e) => { e.stopPropagation(); onTogglePause(sup); }}>
-              {sup.paused ? <Sym name="play.fill" pt={14} fallback={PlayIcon} /> : <Sym name="pause.fill" pt={14} fallback={PauseIcon} />}
+              {sup.paused ? <PixelIcon name="play" size={14} /> : <PixelIcon name="pause" size={14} />}
             </button>
             <button className="act" aria-label={`Kill all sessions under ${sup.id}`} title={`Kill every session under ${sup.id}`}
               onClick={(e) => { e.stopPropagation(); onKill(sup.id); }}>
-              <Sym name="xmark" pt={15} fallback={KillIcon} />
+              <PixelIcon name="kill" size={15} />
             </button>
           </span>
         </span>
