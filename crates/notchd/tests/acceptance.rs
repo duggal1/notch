@@ -1842,6 +1842,9 @@ fn three_consecutive_stucks_trigger_strategy_change_then_escalate() {
 
     // Idle rounds with the same blocker three times -> strategy change; fourth -> escalate.
     for round in 1..=4u32 {
+        // Real supervisors re-prompt seconds apart; staying inside the 2 s
+        // burst window would (correctly) trigger the fleet start-hold guard.
+        clock.advance_ms(46_000); // spaced like a real supervisor, not a dead-start storm
         mark_idle(&fake, &oc, &pane, 10 + round as u64);
         oc.push_decision("STUCK: the same compile error persists at src/auth.rs:12");
         daemon.poll_once();
@@ -1875,6 +1878,7 @@ fn budget_exhaustion_escalates_at_max_iterations() {
     // Eight CONTINUE rounds (the default max). Advance the fake pane output
     // every round so the loop detector does not (correctly) fire.
     for round in 1..=8u32 {
+        clock.advance_ms(46_000); // spaced like a real supervisor: outside burst AND 45 s storm windows
         mark_idle(&fake, &oc, &pane, 20 + round as u64);
         *fake.read_text.lock().unwrap() = format!("round {round}: cargo test output line {round}
 ");
@@ -2032,6 +2036,7 @@ fn snapshot_v1_3_blocks_carry_decisions_escalations_and_bus_messages() {
     // first: 8 continue decisions + 1 budget escalation, then the decider
     // stops calling (per the contract, escalation halts the loop).
     for round in 1..=13u32 {
+        clock.advance_ms(46_000); // outside the fleet guard's burst and storm windows
         mark_idle(&fake, &oc, &pane, 50 + round as u64);
         *fake.read_text.lock().unwrap() = format!("round {round}: cargo test output line {round}");
         oc.push_decision(&format!("CONTINUE: do round {round}"));
