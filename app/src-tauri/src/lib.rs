@@ -218,7 +218,6 @@ pub fn run() -> Result<(), String> {
             commands::focus,
             commands::cleanup,
             commands::submit_task,
-            commands::message,
             commands::pause_supervisor,
             commands::resume_supervisor,
             commands::kill_switch,

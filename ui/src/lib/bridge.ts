@@ -99,7 +99,6 @@ export type UiAction =
   | { cmd: 'haptic'; kind: 'alignment' | 'levelChange' }
   | { cmd: 'snapshot' }
   | { cmd: 'submit_task'; task: string; cwd?: string; title?: string; definitionOfDone?: string; model?: string; supervisorId?: string }
-  | { cmd: 'message'; from: string; to: string; type: BusMessageType; body: string }
   | { cmd: 'pause_supervisor'; id: string }
   | { cmd: 'resume_supervisor'; id: string }
   | { cmd: 'kill_switch' }

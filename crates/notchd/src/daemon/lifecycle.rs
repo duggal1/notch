@@ -158,11 +158,11 @@ impl Daemon {
         out
     }
 
-    /// One /api/session fetch via the configured client. Tests inject a
-    /// fake via `set_opencode`; the default is `Opencode::from_env()`.
-    pub(crate) fn opencode_api_sessions(&self) -> Option<Vec<crate::opencode::ApiSession>> {
-        let guard = lock(&self.opencode);
-        guard.as_ref().and_then(|oc| oc.api_session_list().ok())
+    pub(crate) fn opencode_api_sessions(
+        &self,
+    ) -> Result<Option<Vec<crate::opencode::ApiSession>>, crate::herdr::HerdrError> {
+        let client = lock(&self.opencode).clone();
+        client.map(|client| client.api_session_list()).transpose()
     }
 
     /// Replace the opencode client (test seam).

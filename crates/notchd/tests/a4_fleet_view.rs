@@ -5,47 +5,17 @@
 //! (working > failed), and the ledger numbers must be the ones passed in from
 //! the ledger — never array lengths or a hash of `generatedAt`.
 
+#[path = "fixtures/headless_herdr.rs"]
+mod headless_herdr;
+
+use headless_herdr::HeadlessHerdr;
 use notchd::clock::FakeClock;
 use notchd::config::Config;
 use notchd::daemon::Daemon;
 use notchd::herdr::Herdr;
 use notchd::snapshot::fleet_view;
 use serde_json::json;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
-const T0: u64 = 1_700_000_000_000;
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn root() -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let p = std::env::temp_dir().join(format!("notch-a4-fleet-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&p);
-    std::fs::create_dir_all(&p).unwrap();
-    p
-}
-
-fn fake_herdr() -> Herdr {
-    Herdr::with_runner(|args: &[String]| {
-        Ok(json!({"result": {"type": "ok", "args": args}}).to_string())
-    })
-}
-
-fn real_daemon(dir: &Path) -> Daemon {
-    Daemon::open(
-        Config {
-            state_dir: dir.join("state"),
-            tmp_dir: dir.join("tmp"),
-            stuck_after_secs: 600,
-            poll_interval_ms: 2000,
-            opencode_decider: false,
-        },
-        fake_herdr(),
-        Arc::new(FakeClock::new(T0)),
-    )
-    .unwrap()
-}
 
 fn snap_with(statuses: &[&str]) -> serde_json::Value {
     let sessions: Vec<_> = statuses
@@ -147,14 +117,36 @@ fn fence_moves_with_real_ledger_not_with_generated_at() {
 
 #[test]
 fn real_daemon_mixed_fleet_top_status_is_one_truth() {
-    let dir = root();
-    let d = real_daemon(&dir);
-    let cwd = dir.to_string_lossy().to_string();
-    let a = d.submit_task("a".into(), Some(cwd.clone()), None, None, None, None);
-    let b = d.submit_task("b".into(), Some(cwd), None, None, None, None);
-    let failed = b.session_id.unwrap();
-    let _working = a.session_id.unwrap();
-    d.kill(&failed, Some("test".into())).unwrap();
+    let server = HeadlessHerdr::start();
+    let herdr = Herdr::from_env();
+    let cwd = server.root.to_str().unwrap();
+    let working = herdr.pane_split(cwd, &[]).unwrap();
+    let stopped = herdr.pane_split(cwd, &[]).unwrap();
+    server.report(&working, "working");
+    server.report(&stopped, "working");
+    let state_dir = server.root.join("state");
+    std::fs::create_dir(&state_dir).unwrap();
+    let checkpoint = json!({
+        "version": 1,
+        "supervisors": [{"id":"SV-1", "number":1}],
+        "sessions": [
+            {"id":"S1-OC01","sup":"SV-1","status":"working","title":"First","task":"First","cwd":cwd,"paneId":working},
+            {"id":"S1-OC02","sup":"SV-1","status":"working","title":"Second","task":"Second","cwd":cwd,"paneId":stopped}
+        ]
+    });
+    std::fs::write(state_dir.join("state.json"), checkpoint.to_string()).unwrap();
+    let d = Daemon::open(
+        Config {
+            state_dir,
+            tmp_dir: server.root.join("tmp"),
+            opencode_decider: false,
+            ..Config::default()
+        },
+        herdr,
+        Arc::new(FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
+    d.kill("S1-OC02", Some("fleet test".into())).unwrap();
 
     let snap = d.snapshot();
     let value = serde_json::to_value(&snap).unwrap();

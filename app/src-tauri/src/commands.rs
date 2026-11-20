@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
 use notchd::approvals::card_digest as engine_card_digest;
-use notchd::daemon::{KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, SubmitTaskAck};
+use notchd::daemon::{KillAck, KillSwitchAck, ModelsAck, OkAck, SubmitTaskAck};
 use notchd::snapshot::fleet_view;
 use notchd::Daemon;
 
@@ -122,32 +122,6 @@ pub async fn submit_task(
     }
 }
 
-/// bridge.md §3 v1.3: agent-to-agent message over the bus. The only ingress.
-/// Delivery = `herdr agent prompt <target> <body>` + attribution in the bus.
-///
-/// bridge.md §3 v1.3: agent-to-agent message over the bus — the only
-/// ingress. Validated by the engine (type, body, known sessions); delivered
-/// verbatim to the target as a normal prompt (`herdr agent prompt <to>
-/// <body>`) and logged to the comms view.
-#[tauri::command]
-pub async fn message(
-    from: String,
-    to: String,
-    r#type: String,
-    body: String,
-    daemon: State<'_, Arc<Daemon>>,
-) -> Result<MessageAck, String> {
-    if from.trim().is_empty() || to.trim().is_empty() {
-        return Err("message requires from and to".into());
-    }
-    let ack = daemon.message(&from, &to, &r#type, &body);
-    if ack.ok {
-        Ok(ack)
-    } else {
-        Err(ack.error.unwrap_or_else(|| "message failed".into()))
-    }
-}
-
 /// bridge.md §3 v1.3: stop the supervisor's re-prompting/new-work decisions.
 /// Live sessions keep running.
 #[tauri::command]
@@ -204,7 +178,7 @@ pub(crate) fn show_dashboard(app: &AppHandle) -> Result<serde_json::Value, Strin
         }
         // A borderless always-on-top popover can own focus; AppKit activation is what
         // actually pulls the dashboard in front of the app the user was in (Ghostty).
-        if let Err(e) = app.run_on_main_thread(|| macos::activate_foreground()) {
+        if let Err(e) = app.run_on_main_thread(macos::activate_foreground) {
             eprintln!("[notch] show_dashboard activation dispatch failed: {e}");
         }
         eprintln!("[notch] show_dashboard: shown + focused");

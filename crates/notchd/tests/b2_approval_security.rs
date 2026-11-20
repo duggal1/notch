@@ -1,7 +1,6 @@
 //! B2 security regression: the signed approval channel on a REAL in-process
 //! `Daemon`. No mocks of `approvals.rs`, no fake clock hand-rolled, no sleeps.
-//! The fake herdr is the only external binary stand-in (no herdr in CI), and
-//! it never touches the approval path.
+//! This path requires no external process.
 //!
 //! Attacks covered: forged signature, replay, expired card (16 min TTL),
 //! wrong digest, tampered card -> all REJECTED. Valid -> consumed once.
@@ -38,11 +37,7 @@ fn config(r: &Path) -> Config {
 }
 
 fn daemon(r: &Path, clock: Arc<FakeClock>) -> Daemon {
-    let herdr = Herdr::with_runner(|args: &[String]| match args.get(1).map(String::as_str) {
-        Some("agent") => Ok(r#"{"result":{"agents":[]}}"#.to_string()),
-        _ => Ok(r#"{"result":{"type":"ok"}}"#.to_string()),
-    });
-    Daemon::open(config(r), herdr, clock).unwrap()
+    Daemon::open(config(r), Herdr::from_env(), clock).unwrap()
 }
 
 fn issue(d: &Daemon, id: &str) -> (String, ApprovalCard) {

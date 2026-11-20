@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# wiring-check.sh — bidirectional command wiring check. No args, no deps.
-# Backend = every #[tauri::command] fn under app/src-tauri/src.
-# Frontend = every cmd name in the ui/src typed command vocabulary/call sites.
-# Exit 0 clean; exit 1 listing offenders. Owned by A5; A6 hooks into gate.sh.
+# Check Tauri declarations, registrations, and frontend call sites.
+set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export LC_ALL=C
 
-backend="$(
-  grep -rhA1 '#\[tauri::command\]' "$ROOT"/app/src-tauri/src --include=*.rs \
-  | grep -oE 'fn [a-z_0-9]+' | sed 's/^fn //' | sort -u
-)"
-frontend="$(
-  grep -rhoE "cmd: '[a-z_0-9]+'|invoke(<[^>]*>)?\\('[a-z_0-9]+'" "$ROOT"/ui/src \
-    --include=*.ts --include=*.tsx \
-  | grep -oE "'[a-z_0-9]+'" | tr -d "'" | sort -u
-)"
+backend="$(grep -rhA1 '#\[tauri::command\]' "$ROOT"/app/src-tauri/src --include='*.rs' |
+  grep -oE 'fn [a-z_0-9]+' | sed 's/^fn //' | sort -u)"
+registered="$(sed -n '/tauri::generate_handler!\[/,/^ *\])/p' "$ROOT/app/src-tauri/src/lib.rs" |
+  grep -oE 'commands::[a-z_0-9]+' | sed 's/^commands:://' | sort -u)"
+frontend="$(grep -rh --include='*.ts' --include='*.tsx' . "$ROOT/ui/src" |
+  sed -E '/^[[:space:]]*(\/\/|\|[[:space:]]*\{[[:space:]]*cmd:)/d' |
+  grep -oE "cmd: [^,;{}]*|invoke(<[^>]*>)?\\('[a-z_0-9]+'" |
+  grep -oE "'[a-z_0-9]+'" | tr -d "'" | sort -u)"
 
-no_caller="$(comm -23 <(printf '%s\n' "$backend") <(printf '%s\n' "$frontend"))"
-no_command="$(comm -13 <(printf '%s\n' "$backend") <(printf '%s\n' "$frontend"))"
-
-if [ -z "$no_caller" ] && [ -z "$no_command" ]; then
-  printf 'wiring-check: OK (%s commands)\n' "$(printf '%s\n' "$backend" | grep -c .)"
-  exit 0
+if [ -z "$backend" ] || [ -z "$registered" ] || [ -z "$frontend" ]; then
+  printf 'wiring-check: declarations, registrations and callers must all be present\n' >&2
+  exit 1
 fi
-[ -n "$no_caller" ] && printf 'backend command has no frontend caller:\n%s\n' "$no_caller"
-[ -n "$no_command" ] && printf 'frontend caller has no backend command:\n%s\n' "$no_command"
-exit 1
+
+compare() {
+  diff -u --label "$1" --label "$3" <(printf '%s\n' "$2") <(printf '%s\n' "$4")
+}
+
+compare declarations "$backend" registrations "$registered" || exit 1
+compare registrations "$registered" callers "$frontend" || exit 1
+printf 'wiring-check: OK (%s commands)\n' "$(printf '%s\n' "$registered" | wc -l | tr -d ' ')"

@@ -191,7 +191,20 @@ impl Daemon {
                     .any(|s| !s.status.is_terminal() && s.goal.is_some())
             };
             if has_goal {
-                self.opencode_api_sessions()
+                match self.opencode_api_sessions() {
+                    Ok(sessions) => sessions,
+                    Err(error) => {
+                        let mut inner = lock(&self.inner);
+                        push_warning(
+                            &mut inner,
+                            format!(
+                                "OpenCode session probe failed: {}",
+                                truncate(&error.to_string(), 160)
+                            ),
+                        );
+                        None
+                    }
+                }
             } else {
                 None
             }
