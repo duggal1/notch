@@ -133,6 +133,15 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
     let hello = c.read_value();
     assert_eq!(hello["event"], "hello");
 
+    // The fleet frame is emitted on connect only when units exist; seed one
+    // real session so the post-flood fleet assertion is meaningful.
+    let work = server.root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let seed = c.rpc_ack("submit_task", &json!({
+        "cmd":"submit_task", "task":"flood seed", "cwd": work.to_string_lossy()
+    }));
+    assert_eq!(seed["ok"], true, "seed failed: {seed}");
+
     // 100,000 randomized valid frames; every one must be acked inline.
     let mut seed = 0x1234_5678u64;
     let n = 100_000usize;
@@ -197,8 +206,18 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
         .expect("fleet stream dead after 100k + boundary frames");
     let units = fleet["fleet"]["units"].as_array().unwrap();
     assert!(units.iter().any(|u| u["id"] == "ORCH"), "fleet lost ORCH after abuse: {units:?}");
-    let pong = fresh.rpc_ack("ping", &json!({"cmd":"ping"}));
-    assert_eq!(pong["ok"], true, "daemon wedged after 100k + boundary frames");
+    fresh.send(&json!({"cmd":"ping"}));
+    let ping_deadline = Instant::now() + Duration::from_secs(15);
+    let mut pong_ok = false;
+    while Instant::now() < ping_deadline {
+        if let Some(v) = fresh.read_value_within(Duration::from_secs(1)) {
+            if v["event"] == "ack" && v["cmd"] == "ping" {
+                pong_ok = v["ok"] == true;
+                break;
+            }
+        }
+    }
+    assert!(pong_ok, "daemon wedged after 100k + boundary frames");
 }
 
 #[test]
