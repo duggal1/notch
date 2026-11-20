@@ -175,7 +175,11 @@ impl Daemon {
                     .collect::<Vec<_>>(),
                 BUS_MESSAGES_CAP,
             ),
-            warnings: inner.warnings.clone(),
+            warnings: {
+                let mut warnings = inner.warnings.clone();
+                warnings.extend(super::state::write_warnings_for(&self.state_path()));
+                warnings
+            },
         }
     }
 

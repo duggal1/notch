@@ -106,6 +106,35 @@ fn writer_for(path: &Path) -> Arc<StateWriter> {
     writer
 }
 
+// Write/append failures used to be dropped with `let _ =`, so a disk error
+// was invisible to the operator. Keep the latest failure per state path and
+// fold it into the existing snapshot `warnings` channel (no new error model).
+static WRITE_ERRORS: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+
+fn write_errors() -> &'static Mutex<HashMap<PathBuf, String>> {
+    WRITE_ERRORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_write_error(path: &Path, what: &str, e: &io::Error) {
+    let msg = format!("{what} failed for {}: {e}", path.display());
+    write_errors()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), msg);
+}
+
+/// Latest persistence failure for this daemon's state path, surfaced in
+/// `snapshot.warnings`. Kept per-path so test daemons never cross-talk.
+pub(crate) fn write_warnings_for(path: &Path) -> Vec<String> {
+    write_errors()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
 fn writer_loop(path: PathBuf, writer: Arc<StateWriter>) {
     let mut guard = lock(&writer.pending);
     loop {
@@ -119,7 +148,9 @@ fn writer_loop(path: PathBuf, writer: Arc<StateWriter>) {
         if writer.stop.load(Ordering::SeqCst) {
             // Final drain: never lose the last dirty snapshot on shutdown.
             if let Some(bytes) = guard.take() {
-                let _ = durable::write_atomic(&path, &bytes);
+                if let Err(e) = durable::write_atomic(&path, &bytes) {
+                    record_write_error(&path, "state checkpoint write", &e);
+                }
                 *lock(&writer.last_write) = Instant::now();
             }
             break;
@@ -128,7 +159,9 @@ fn writer_loop(path: PathBuf, writer: Arc<StateWriter>) {
         let due = timed_out.timed_out() || lock(&writer.last_write).elapsed() >= WRITE_INTERVAL;
         if due && guard.is_some() && lock(&writer.last_write).elapsed() >= WRITE_INTERVAL {
             if let Some(bytes) = guard.take() {
-                let _ = durable::write_atomic(&path, &bytes);
+                if let Err(e) = durable::write_atomic(&path, &bytes) {
+                    record_write_error(&path, "state checkpoint write", &e);
+                }
                 *lock(&writer.last_write) = Instant::now();
             }
         }
@@ -146,7 +179,9 @@ fn write_now(path: &Path, bytes: &[u8]) {
     let writer = writer_for(path);
     // Drop any older pending snapshot: it must not overwrite this one later.
     lock(&writer.pending).take();
-    let _ = durable::write_atomic(path, bytes);
+    if let Err(e) = durable::write_atomic(path, bytes) {
+        record_write_error(path, "state checkpoint write", &e);
+    }
     *lock(&writer.last_write) = Instant::now();
     writer.dirty.store(false, Ordering::SeqCst);
 }
@@ -265,7 +300,7 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
         // ONE append (one O_APPEND write + one fsync) for the entire delta.
         // Per-entity appends made a 20-session soak poll take >5 s.
         // A failed append is non-fatal: the checkpoint still holds the state.
-        let _ = ledger.append(
+        if let Err(e) = ledger.append(
             LedgerSource::System,
             None,
             None,
@@ -274,7 +309,9 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
                 ops: ops.into_iter().map(|(_, op)| op).collect(),
             },
             ts,
-        );
+        ) {
+            record_write_error(state_path, "ledger append", &e);
+        }
     }
     lock(persisted()).insert(state_path.to_path_buf(), current);
 }
@@ -490,13 +527,15 @@ impl Daemon {
     }
 
     pub(crate) fn state_file(&self, inner: &Inner) -> StateFile {
+        let mut warnings = inner.warnings.clone();
+        warnings.extend(write_warnings_for(&self.state_path()));
         StateFile {
             version: 1,
             supervisors: inner.supervisors.clone(),
             sessions: inner.sessions.clone(),
             attribution: inner.attribution.clone(),
             conflicts: inner.conflicts.clone(),
-            warnings: inner.warnings.clone(),
+            warnings,
             stuck_after_secs: Some(lock(&self.watchdog).stuck_after_ms() / 1000),
             paused_supervisors: inner.paused_supervisors.iter().cloned().collect(),
             decisions: inner.decisions.clone(),
@@ -596,5 +635,41 @@ mod a4_tests {
             "a corrupt live file must surface a parse warning: {:?}",
             state.warnings
         );
+    }
+
+    #[test]
+    fn disk_write_failure_surfaces_in_snapshot_warnings() {
+        let dir = test_dir("writefail");
+        let state_path = dir.join("state.json");
+        std::fs::write(&state_path, r#"{"version":1}"#).unwrap();
+        let config = crate::config::Config {
+            state_dir: dir.clone(),
+            tmp_dir: dir.clone(),
+            ..crate::config::Config::default()
+        };
+        let daemon = Daemon::open(
+            config,
+            crate::herdr::Herdr::with_runner(|_| Ok("[]".to_string())),
+            Arc::new(crate::clock::SystemClock),
+        )
+        .unwrap();
+
+        // Force a real disk error: a directory cannot be atomically renamed
+        // over by the checkpoint temp file.
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::create_dir(&state_path).unwrap();
+        {
+            let inner = lock(&daemon.inner);
+            daemon.save_now(&inner);
+        }
+        let snap = daemon.snapshot();
+        assert!(
+            snap.warnings
+                .iter()
+                .any(|w| w.contains("state checkpoint write failed")),
+            "a swallowed disk error must surface in snapshot.warnings: {:?}",
+            snap.warnings
+        );
+        let _ = std::fs::remove_dir(&state_path);
     }
 }
