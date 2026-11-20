@@ -709,6 +709,9 @@ impl Daemon {
                         }
                     }
                     decider::DeciderVerdict::Continue { instruction } => {
+                        if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                            return;
+                        }
                         let mut inner = lock(&self.inner);
                         let three_identical = inner
                             .sessions
@@ -748,6 +751,9 @@ impl Daemon {
                         );
                     }
                     decider::DeciderVerdict::Stuck { blocker } => {
+                        if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                            return;
+                        }
                         let mut inner = lock(&self.inner);
                         let prev_strikes = inner
                             .sessions
@@ -807,6 +813,9 @@ impl Daemon {
                         );
                     }
                     decider::DeciderVerdict::Unparseable { head } => {
+                        if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                            return;
+                        }
                         let strikes = seed.stuck_strikes.saturating_add(1);
                         self.reprompt_session(&seed.id, &decider::reprompt_text_stuck(
                             "the supervisor's judgment could not be parsed; start from the simplest verifiable step",
@@ -891,6 +900,9 @@ impl Daemon {
                 let _ = cleanup::cleanup_session(&self.config.tmp_dir, &seed.id);
             }
             Some(decider::VerifierVerdict::No { missing }) => {
+                if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                    return;
+                }
                 self.reprompt_session(
                     &seed.id,
                     &decider::reprompt_text_missing_evidence(&missing),
@@ -905,6 +917,9 @@ impl Daemon {
                 );
             }
             Some(decider::VerifierVerdict::Unparseable { head }) => {
+                if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                    return;
+                }
                 self.reprompt_session(
                     &seed.id,
                     &decider::reprompt_text_missing_evidence(
@@ -921,6 +936,9 @@ impl Daemon {
                 );
             }
             None => {
+                if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                    return;
+                }
                 self.reprompt_session(
                     &seed.id,
                     &decider::reprompt_text_missing_evidence("the verifier call failed"),
