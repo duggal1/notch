@@ -2,7 +2,7 @@
 // A prompt gutter and a hard 1px well: this is a terminal you type work into, not a chat box.
 // The dither appears only during `sending`: pixels leave the Assign button and fly into the beam.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { submitTask, listModels, type Session } from '../../lib/bridge';
+import { submitTask, listModels, invokePayload, type Session } from '../../lib/bridge';
 import { PixelIcon } from '../PixelIcon';
 
 export type ComposerTarget = { kind: 'supervisor' | 'session'; id: string } | null;
@@ -92,21 +92,20 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     const text = task.trim();
     if (!text || state === 'sending') return;
     const cwdClean = cwd.trim();
-    if (cwdClean && !cwdClean.startsWith('/')) { setCwdHint(true); return; }
+    if (!targetSession && cwdClean && !cwdClean.startsWith('/')) { setCwdHint(true); return; }
     const t0 = performance.now();
     setState('sending');
     try { localStorage.setItem('notch.cwd', cwdClean); localStorage.setItem('notch.model', model); } catch { /* storage may be unavailable */ }
-    const res = await submitTask({
-      task: text,
-      cwd: cwdClean || undefined,
-      definitionOfDone: dod.trim() || undefined,
-      model: model || undefined,
-      supervisorId: targetSupervisorId,
-    });
+    const res = targetSession
+      ? await invokePayload({ cmd: 'reprompt', id: targetSession, text }, { ok: false, error: 'Could not re-prompt the session', sessionId: targetSession })
+      : await submitTask({
+          task: text, cwd: cwdClean || undefined, definitionOfDone: dod.trim() || undefined,
+          model: model || undefined, supervisorId: targetSupervisorId,
+        });
     const ms = Math.round(performance.now() - t0);
     if (res.ok) {
       setTask(''); setDod(''); setCwdHint(false);
-      setState({ ok: true, id: res.sessionId, ms });
+      setState({ ok: true, id: res.sessionId ?? targetSession ?? undefined, ms });
       window.setTimeout(autosize, 0);
       window.setTimeout(() => setState('idle'), 2400);
     } else {
@@ -142,14 +141,14 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
             ref={taRef}
             className="composer-input"
             rows={1}
-            placeholder="What should the agent do?"
+            placeholder={targetSession ? "What should this agent do next?" : "What should the agent do?"}
             value={task}
             onChange={(e) => { setTask(e.target.value); autosize(); }}
             onKeyDown={onKeyDown}
             aria-label="Assign work to a session"
           />
         </div>
-        <div className="composer-dod">
+        {!targetSession && <div className="composer-dod">
           <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
             <PixelIcon name="chevron" size={12} className={dodOpen ? 'rotate-180' : ''} />
             Done when…
@@ -158,8 +157,9 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
             <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
               placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
           )}
-        </div>
+        </div>}
         <div className="composer-row">
+          {!targetSession && <>
           <label className="cwd-field">
             <PixelIcon name="folder" size={12} />
             <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
@@ -184,8 +184,9 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
               </ul>
             )}
           </div>
+          </>}
           <button className="assign-btn" data-sending={state === 'sending' || undefined} onClick={send} disabled={state === 'sending' || !task.trim()}>
-            {state === 'sending' ? 'Assigning…' : 'Assign'}
+            {state === 'sending' ? 'Sending…' : targetSession ? 'Re-prompt' : 'Assign'}
           </button>
         </div>
       </div>

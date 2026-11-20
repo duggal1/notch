@@ -10,7 +10,6 @@ import { Inspector } from './Inspector';
 import { PixelIcon } from '../PixelIcon';
 import { useLogsPoller } from '../../lib/use-logs';
 import { PixelSphere } from '../pixel/PixelSphere';
-import { DitherField } from '../pixel/DitherField';
 import { PixelMeter } from '../pixel/PixelMeter';
 
 export type Selection = ComposerTarget;
@@ -84,7 +83,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   const load = snapshot ? Math.min(1, snapshot.eps / 40) : 0;
 
   return (
-    <div className={`tree-grid${hasTarget ? ' tree-grid--target' : ''}`}>
+    <div className={`tree-grid${hasTarget ? ' tree-grid--target' : ''}${idle ? ' tree-grid--idle' : ''}`}>
       <aside className="sidebar" aria-label="Supervisors">
         <div className="sidebar-head">
           <span className="label">Supervisors</span>
@@ -152,7 +151,10 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
           <button className="sidebar-btn ripple" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
             <PixelIcon name="plus" size={12} /><span>New supervisor</span>
           </button>
-          <button className="sidebar-btn ripple" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
+          <button className="sidebar-btn" disabled={supervisors.length === 0} onClick={() => {
+            const id = selectedSupervisor?.id ?? selectedSession?.sup ?? supervisors[0]?.id;
+            if (id) { onSelect({ kind: 'supervisor', id }); onFocusComposerRequest(); }
+          }}>
             <PixelIcon name="plus" size={12} /><span>New session</span>
           </button>
         </div>
@@ -168,9 +170,9 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
           <div className={idle ? 'tree-start' : 'tree-workspace'}>
             {idle ? (
               <>
-                <div className="tree-start-art" aria-hidden="true">
-                  <DitherField mode="radial" cell={4} floor={0} ceil={0.42} />
-                  <span className="brand-logo" />
+                <div className="tree-start-heading">
+                  <span className="tree-start-mark brand-logo" aria-hidden="true" />
+                  <h2 className="title">Assign the first task</h2>
                 </div>
                 <div className="tree-start-choices">
                   <span className="label">Start from</span>
