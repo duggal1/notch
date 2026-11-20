@@ -338,53 +338,40 @@ impl Daemon {
             if !candidate.contains(char::is_whitespace) && !Path::new(&candidate).exists() {
                 continue;
             }
-            let mut child = match std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&candidate)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-            {
-                Ok(c) => c,
+            let args = ["-c".to_string(), candidate.clone()];
+            let spec = crate::proc::Spec {
+                cmd: "sh",
+                args: &args,
+                cwd: None,
+                env: &[],
+                timeout: std::time::Duration::from_millis(3000),
+                max_out: 1 << 16,
+            };
+            match crate::proc::run(&spec) {
+                // A hook that exits non-zero is still best-effort: the old
+                // try_wait loop treated any exit as "ok" and returned.
+                Ok(_) | Err(crate::proc::ProcError::Failed { .. }) => {
+                    let _ = self.event_log.append(
+                        None,
+                        "status",
+                        &format!("pre-spawn hook ok: {candidate}"),
+                    );
+                    return;
+                }
+                Err(crate::proc::ProcError::Timeout { .. }) => {
+                    let mut inner = lock(&self.inner);
+                    push_warning(
+                        &mut inner,
+                        format!("pre-spawn hook timed out ({candidate}); spawning anyway"),
+                    );
+                    return;
+                }
                 Err(e) => {
                     let _ = self.event_log.append(
                         None,
                         "status",
                         &format!("pre-spawn hook skipped ({e})"),
                     );
-                    continue;
-                }
-            };
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
-            loop {
-                match child.try_wait() {
-                    Ok(Some(_)) => {
-                        let _ = self.event_log.append(
-                            None,
-                            "status",
-                            &format!("pre-spawn hook ok: {candidate}"),
-                        );
-                        return;
-                    }
-                    Ok(None) if std::time::Instant::now() >= deadline => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let mut inner = lock(&self.inner);
-                        push_warning(
-                            &mut inner,
-                            format!("pre-spawn hook timed out ({candidate}); spawning anyway"),
-                        );
-                        return;
-                    }
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
-                    Err(e) => {
-                        let _ = self.event_log.append(
-                            None,
-                            "status",
-                            &format!("pre-spawn hook error ({e})"),
-                        );
-                        return;
-                    }
                 }
             }
         }
