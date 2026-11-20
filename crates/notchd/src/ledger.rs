@@ -344,7 +344,7 @@ impl Ledger {
 
     /// Called with [`ledger_guard`] held. Appends one whole buffer with a
     /// single O_APPEND write; carries epoch high-water marks across rotation.
-    fn append_locked(&mut self, line: Line) -> io::Result<u64> {
+    fn append_locked(&mut self, mut line: Line) -> io::Result<u64> {
         if crate::events::rotate_if_oversized(&self.path, MAX_LEDGER_BYTES)? {
             let anchor = Op::EpochAnchor {
                 epochs: self.epochs.iter().map(|(k, v)| (k.clone(), *v)).collect(),
@@ -361,6 +361,7 @@ impl Ledger {
             };
             crate::durable::append_durable(&self.path, &encode(&first)?)?;
             self.last_seq = first.seq;
+            line.seq = first.seq + 1;
         }
         crate::durable::append_durable(&self.path, &encode(&line)?)?;
         self.last_seq = line.seq;
@@ -440,10 +441,12 @@ impl Ledger {
             op,
             refused: (epoch < current).then(|| "stale_epoch".to_string()),
         };
-        self.append_locked(line.clone())
+        let seq = self
+            .append_locked(line.clone())
             .map_err(|e| Box::new(parked_from_line(&line, &format!("append failed: {e}"))))?;
         if let Some(reason) = &line.refused {
             let mut parked = parked_from_line(&line, reason);
+            parked.seq = seq;
             // AgentBox main/store/pending-writes.mts:59-84 returns a receipt so
             // the refused writer can find its payload after reclaiming.
             match park(&self.dir, &parked) {
@@ -452,7 +455,7 @@ impl Ledger {
             }
             return Err(Box::new(parked));
         }
-        Ok(line.seq)
+        Ok(seq)
     }
 }
 
