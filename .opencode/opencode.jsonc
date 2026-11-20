@@ -1,0 +1,5 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Installed by `a2a ptc`. Keeps every agent in this project aware of cw.
+  "instructions": [".opencode/a2a-cw-instructions.md"],
+}
