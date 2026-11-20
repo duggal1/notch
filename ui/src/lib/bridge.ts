@@ -15,8 +15,8 @@ export interface Session {
   cwd: string;
   paneId: string;
   startedAt: number; // ms epoch
-  lastAction: string; // best-effort, single line
-  lastRevision: number;
+  lastAction: string | null; // best-effort, single line; null until a poll samples it
+  lastRevision: number | null; // herdr pane revision; null until known
   latencyMs: number | null;
   failureReason: string | null;
   // v1.3 optional store
@@ -39,7 +39,7 @@ export interface Supervisor {
   paused?: boolean;
 }
 
-export type DecisionAction = 'reprompt' | 'done' | 'escalate' | 'verify' | 'assign';
+export type DecisionAction = 'reprompt' | 'done' | 'escalate' | 'verify' | 'assign' | 'backoff';
 export interface Decision {
   at: number;
   supervisor: string;
@@ -119,7 +119,7 @@ async function invokeInner(a: UiAction): Promise<unknown> {
     const { cmd, ...args } = a;
     return invoke(cmd, args);
   }
-  return demoInvoke?.(a);
+  return undefined; // browser with no WS credential: no fake provider, no invented data
 }
 
 /** Invoke and return the payload (v1.3: commands return payloads directly). */
@@ -137,10 +137,6 @@ export const submitTask = (a: Omit<Extract<UiAction, { cmd: 'submit_task' }>, 'c
   invokePayload<{ ok: boolean; supervisorId?: string; sessionId?: string; error?: string }>({ cmd: 'submit_task', ...a }, { ok: false, error: 'submit_task unavailable outside the app' });
 export const listModels = () =>
   invokePayload<{ models: string[]; error?: string }>({ cmd: 'list_models' }, { models: [], error: 'list_models unavailable outside the app' });
-
-// Demo provider hook — demos.ts registers itself here in browser mode.
-let demoInvoke: ((a: UiAction) => unknown) | null = null;
-export function registerDemoInvoke(fn: (a: UiAction) => unknown) { demoInvoke = fn; }
 
 type Handlers = { onSnapshot: (s: Snapshot) => void; onFleet?: (s: Snapshot) => void };
 
@@ -196,7 +192,7 @@ export async function subscribe({ onSnapshot, onFleet }: Handlers): Promise<() =
     disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
     return () => { for (const d of disposers) d(); };
   }
-  const { installDemo } = await import('./demos');
-  const stopDemo = await installDemo({ onSnapshot: deliver });
-  return () => { stopDemo(); for (const d of disposers) d(); };
+  // No WS credential and no Tauri: nothing to subscribe to. The UI keeps its
+  // honest empty state; no seeded/demo snapshots are invented.
+  return () => { for (const d of disposers) d(); };
 }

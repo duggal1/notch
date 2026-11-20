@@ -36,7 +36,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   }, []);
 
   // revision clocks for the quiet marker — keyed by session id, updated when lastRevision moves
-  const revRef = useRef<Record<string, number>>({});
+  const revRef = useRef<Record<string, number | null>>({});
   const revAtRef = useRef<Record<string, number>>({});
   useEffect(() => {
     if (!snapshot) return;
