@@ -314,3 +314,48 @@ fn reopen_repairs_a_torn_suffix_beyond_the_replay_window() {
     );
     assert_eq!(read_lines(&path).unwrap().len(), 2);
 }
+
+#[test]
+fn rotation_preserves_both_the_epoch_anchor_and_first_guarded_write() {
+    use notchd::ledger::MAX_LEDGER_BYTES;
+    use std::io::{Seek, SeekFrom};
+
+    for stale in [false, true] {
+        let dir = root();
+        let mut ledger = Ledger::open(&dir).unwrap();
+        let old = ledger.claim("old", "S1-OC01", 300_000, 1_000).unwrap();
+        let new = ledger.claim("new", "S1-OC01", 300_000, 1_001).unwrap();
+        let claims = std::fs::read(ledger.path()).unwrap();
+        let mut file = OpenOptions::new().write(true).open(ledger.path()).unwrap();
+        file.seek(SeekFrom::Start(MAX_LEDGER_BYTES + 1)).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.write_all(&claims).unwrap();
+        drop(file);
+
+        let (holder, epoch) = if stale { ("old", old) } else { ("new", new) };
+        let result = ledger.append_guarded(
+            holder,
+            epoch,
+            "S1-OC01",
+            upsert_session("S1-OC01", "after rotation"),
+            1_002,
+        );
+        assert!(ledger.path().with_extension("jsonl.1").is_file());
+        let lines = read_lines(ledger.path()).unwrap();
+        assert_eq!(
+            lines.iter().map(|line| line.seq).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        let folded = replay(StateFile::empty(), &lines);
+        assert_eq!(folded.epochs["S1-OC01"], new);
+        if stale {
+            let receipt = result.expect_err("the archived claim cannot write");
+            assert_eq!(receipt.seq, folded.refused[0].seq);
+            assert!(receipt.file.as_ref().unwrap().is_file());
+            assert!(folded.state.sessions.is_empty());
+        } else {
+            assert_eq!(result.unwrap(), folded.last_seq);
+            assert_eq!(folded.state.sessions[0].title, "after rotation");
+        }
+    }
+}
