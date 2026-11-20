@@ -465,7 +465,7 @@ impl Daemon {
         let _ = crate::registry::persist_locked(reg, &self.registry_path());
     }
 
-    fn state_file(&self, inner: &Inner) -> StateFile {
+    pub(crate) fn state_file(&self, inner: &Inner) -> StateFile {
         StateFile {
             version: 1,
             supervisors: inner.supervisors.clone(),
@@ -487,11 +487,15 @@ impl Daemon {
     /// Serialization itself is also capped at 1 Hz so a 12,800-call burst does
     /// not rebuild the whole tree 12,800 times.
     pub(crate) fn save_state(&self, inner: &Inner) {
-        // The ledger delta is appended at the SAME cadence as the checkpoint
-        // (1 Hz), immediately before the enqueue. Appending on every mutation
-        // made a 20-session soak poll >5 s; the 1 Hz checkpoint is the floor
-        // by design (HARDENING §3.5), so replay is too.
-        let state = self.state_file(inner);
+        self.save_state_snapshot(self.state_file(inner));
+    }
+
+    /// IO half of `save_state`. Callers that hold the `inner` mutex must build
+    /// the `StateFile` under the lock, drop the guard, THEN call this — no disk
+    /// IO while a daemon lock is held. Ledger + checkpoint share the 1 Hz
+    /// cadence (HARDENING §3.5); appending on every mutation made a 20-session
+    /// soak poll >5 s.
+    pub(crate) fn save_state_snapshot(&self, state: StateFile) {
         let writer = writer_for(&self.state_path());
         writer.dirty.store(true, Ordering::SeqCst);
         let mut last = lock(&writer.last_enqueue);

@@ -388,14 +388,16 @@ impl ApprovalInbox {
                 return Err(NotchError::Protocol("invalid approval note".into()));
             }
         }
-        let pending = {
-            let map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            map.get(id)
-                .map(|p| (p.digest.clone(), p.issued_mono, p.issued_at_ms))
-        };
-        let Some((digest, issued_mono, issued_at_ms)) = pending else {
+        // Hold ONE pending guard from the "is it still pending?" check through
+        // consume. Releasing it between check and remove let two threads answer
+        // the same card and both succeed (A9 review, real N-thread race).
+        // Lock order stays pending -> pending_order -> answered; a rejected
+        // answer leaves the card pending.
+        let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(p) = map.get(id) else {
             return Err(NotchError::NotFound(format!("no pending approval `{id}`")));
         };
+        let (digest, issued_mono, issued_at_ms) = (p.digest.clone(), p.issued_mono, p.issued_at_ms);
         let mono = self.clock.mono_ms();
         if mono.saturating_sub(issued_mono) > DEFAULT_APPROVAL_TTL_MS {
             return Err(NotchError::Protocol(format!("approval `{id}` expired")));
@@ -423,18 +425,15 @@ impl ApprovalInbox {
             mode: mode.to_string(),
             sig,
         };
-        {
-            let mut map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            map.remove(id);
-            self.pending_order
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .retain(|x| x != id);
-            self.answered
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(id.to_string(), answer.clone());
-        }
+        map.remove(id);
+        self.pending_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|x| x != id);
+        self.answered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.to_string(), answer.clone());
         Ok(answer)
     }
 
