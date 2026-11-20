@@ -21,6 +21,7 @@ pub mod config;
 pub mod daemon;
 pub mod events;
 pub mod herdr;
+pub mod ledger;
 pub mod model;
 pub mod paths;
 pub mod plan;

@@ -26,6 +26,35 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Append one buffer to an append-only file with a SINGLE `O_APPEND` write,
+/// then `fsync`. Stolen from agentbox `main/store/work-items.mts:70-113`:
+/// `O_APPEND` makes the offset-seek and the write one atomic step against other
+/// appenders, but only for one `write` call. We use `write` (not `write_all`)
+/// and reject a short write outright — a half-written line would be skipped by
+/// the ledger fold and the refused write would be lost with nobody hearing
+/// about it. Creates missing parent directories. No `unsafe`, no new deps.
+pub(crate) fn append_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let written = f.write(bytes)?;
+    if written != bytes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            format!(
+                "short append ({written} of {} bytes) writing {}",
+                bytes.len(),
+                path.display()
+            ),
+        ));
+    }
+    f.sync_data()?;
+    Ok(())
+}
+
 /// Depth of the rolling backup chain (`path.bak1` … `path.bakN`).
 const BACKUPS: usize = 3;
 
@@ -254,6 +283,37 @@ mod tests {
     fn set_mtime(path: &Path, at: std::time::SystemTime) {
         let file = fs::File::options().write(true).open(path).unwrap();
         file.set_modified(at).unwrap();
+    }
+
+    #[test]
+    fn append_durable_never_interleaves_concurrent_lines() {
+        // Each appender writes one whole line with a single O_APPEND write.
+        // A reader that splits on '\n' must see every line intact, never a
+        // splice of two writers' bytes (agentbox's short-write contract).
+        let dir = test_dir("append");
+        let path = dir.join("ledger.jsonl");
+        let mut handles = Vec::new();
+        for t in 0..8u32 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..200u32 {
+                    let line = format!("{{\"writer\":{t},\"i\":{i}}}\n");
+                    append_durable(&path, line.as_bytes()).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 1600, "no line may be lost or merged");
+        let mut seen = std::collections::HashSet::new();
+        for line in lines {
+            let v: serde_json::Value = serde_json::from_str(line).expect("each line must be a whole JSON object");
+            assert!(seen.insert((v["writer"].as_u64().unwrap(), v["i"].as_u64().unwrap())));
+        }
+        assert_eq!(seen.len(), 1600);
     }
 
     #[test]

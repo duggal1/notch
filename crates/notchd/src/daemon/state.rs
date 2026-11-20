@@ -15,6 +15,7 @@
 use super::types::{lock, Daemon, Inner};
 use crate::config::Config;
 use crate::durable;
+use crate::ledger::{self, Op as LedgerOp, Source as LedgerSource};
 use crate::model::{SessionState, StateFile};
 use crate::registry::Registry;
 use std::collections::HashMap;
@@ -150,6 +151,131 @@ fn write_now(path: &Path, bytes: &[u8]) {
 }
 
 // ---------------------------------------------------------------------------
+// Replay-over-checkpoint: the ledger is authoritative, state.json a cache.
+// ---------------------------------------------------------------------------
+
+/// Canonical JSON of the last state we persisted per state path. Lets us turn
+/// every mutation into a small whole-entity ledger diff instead of a second
+/// full-state snapshot on every 1 Hz write.
+static PERSISTED: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+
+fn persisted() -> &'static Mutex<HashMap<PathBuf, String>> {
+    PERSISTED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// `StateFile` is contract-owned and intentionally not `Clone`; a serde
+/// round-trip gives replay a base without editing model.rs.
+fn clone_state(state: &StateFile) -> StateFile {
+    serde_json::from_value(serde_json::to_value(state).unwrap_or(serde_json::Value::Null))
+        .unwrap_or_else(|_| StateFile::empty())
+}
+
+/// (ledger entity name, state.json vector name) pairs, in a fixed order so a
+/// diff always appends lines in the same sequence.
+const ENTITIES: [(&str, &str); 7] = [
+    ("supervisor", "supervisors"),
+    ("session", "sessions"),
+    ("attribution", "attribution"),
+    ("conflict", "conflicts"),
+    ("decision", "decisions"),
+    ("escalation", "escalations"),
+    ("bus", "bus_messages"),
+];
+
+/// Append the delta from the last persisted state to `state` as system-ledger
+/// lines before the checkpoint is written. System lines carry no epoch, so
+/// they are never fenced and a crash between the two leaves the ledger ahead
+/// of the checkpoint — replay then reconstructs the newer state.
+fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
+    let current = match serde_json::to_string(state) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    {
+        let map = lock(persisted());
+        if map.get(state_path).is_some_and(|last| last == &current) {
+            return;
+        }
+    }
+    let previous: Option<StateFile> = lock(persisted())
+        .get(state_path)
+        .and_then(|s| serde_json::from_str(s).ok());
+    let now = serde_json::to_value(state).unwrap_or(serde_json::Value::Null);
+    let before = previous
+        .as_ref()
+        .and_then(|p| serde_json::to_value(p).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    let mut ops: Vec<(String, LedgerOp)> = Vec::new();
+    for (entity, key) in ENTITIES {
+        let cur = now[key].as_array().cloned().unwrap_or_default();
+        let prev = before[key].as_array().cloned().unwrap_or_default();
+        let id_of = |v: &serde_json::Value| {
+            v.get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let cur_by: std::collections::BTreeMap<String, serde_json::Value> =
+            cur.into_iter().map(|v| (id_of(&v), v)).collect();
+        let prev_by: std::collections::BTreeMap<String, serde_json::Value> =
+            prev.into_iter().map(|v| (id_of(&v), v)).collect();
+        for (id, value) in &cur_by {
+            if id.is_empty() {
+                continue;
+            }
+            if prev_by.get(id) != Some(value) {
+                ops.push((
+                    id.clone(),
+                    LedgerOp::Upsert {
+                        entity: entity.to_string(),
+                        id: id.clone(),
+                        value: value.clone(),
+                    },
+                ));
+            }
+        }
+        for id in prev_by.keys() {
+            if !id.is_empty() && !cur_by.contains_key(id) {
+                ops.push((
+                    id.clone(),
+                    LedgerOp::Remove {
+                        entity: entity.to_string(),
+                        id: id.clone(),
+                    },
+                ));
+            }
+        }
+    }
+    if before.get("esc_seq") != now.get("esc_seq")
+        || before.get("msg_seq") != now.get("msg_seq")
+    {
+        ops.push((
+            "ORCH".to_string(),
+            LedgerOp::SetSeq {
+                esc_seq: state.esc_seq,
+                msg_seq: state.msg_seq,
+            },
+        ));
+    }
+
+    let state_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if let Ok(mut ledger) = ledger::Ledger::open(state_dir) {
+        for (target, op) in &ops {
+            // A failed ledger append is non-fatal: the checkpoint still holds
+            // the state and replay degrades to "checkpoint stands".
+            if ledger
+                .append(LedgerSource::System, None, None, target, op.clone(), ts)
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+    lock(persisted()).insert(state_path.to_path_buf(), current);
+}
+
+// ---------------------------------------------------------------------------
 // Load / recover.
 // ---------------------------------------------------------------------------
 
@@ -214,6 +340,15 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
             "state version 0 is not a valid checkpoint",
         ));
     }
+    // The append-only ledger is authoritative: replay it over the checkpoint
+    // BEFORE deriving registry high-water marks from the state.
+    match ledger::replay_over_checkpoint(&config.state_dir, clone_state(&state)) {
+        Ok(replayed) => {
+            warnings.extend(replayed.warnings.iter().cloned());
+            state = replayed.state;
+        }
+        Err(e) => warnings.push(format!("ledger replay failed: {e}; using checkpoint")),
+    }
     let registry = match Registry::load_or_error(&reg_path) {
         Ok(reg) => reg,
         Err(e) => {
@@ -238,7 +373,7 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
 /// Warnings still travel to `Inner.warnings` through `StateFile.warnings`.
 pub(crate) fn load_state(path: &Path) -> StateFile {
     let mut warnings = Vec::new();
-    match load_state_recovered(path, &mut warnings) {
+    let mut state = match load_state_recovered(path, &mut warnings) {
         Ok(mut state) => {
             state.warnings.extend(warnings);
             state
@@ -258,7 +393,20 @@ pub(crate) fn load_state(path: &Path) -> StateFile {
             // No live file and no backups: a genuine fresh start. No warning.
             state
         }
+    };
+    // Replay-over-checkpoint: the ledger is authoritative for the mutations
+    // it records. A missing ledger is a no-op; a stale checkpoint cannot win.
+    let state_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    match ledger::replay_over_checkpoint(state_dir, clone_state(&state)) {
+        Ok(replayed) => {
+            state = replayed.state;
+            state.warnings.extend(replayed.warnings);
+        }
+        Err(e) => state
+            .warnings
+            .push(format!("ledger replay failed: {e}; using checkpoint")),
     }
+    state
 }
 
 /// True when any field the daemon persists/acts on actually changed. A3 uses
@@ -328,14 +476,15 @@ impl Daemon {
         }
     }
 
-    fn serialize_state(&self, inner: &Inner) -> Vec<u8> {
-        serde_json::to_vec_pretty(&self.state_file(inner)).unwrap_or_else(|_| b"{}".to_vec())
-    }
-
     /// Mark the tree dirty; the single writer thread flushes at most 1 Hz.
     /// Serialization itself is also capped at 1 Hz so a 12,800-call burst does
     /// not rebuild the whole tree 12,800 times.
     pub(crate) fn save_state(&self, inner: &Inner) {
+        // Append the durable delta FIRST, on every mutation, even when the
+        // checkpoint enqueue below is rate-limited. A crash then loses at most
+        // the checkpoint refresh, never the mutation: replay reconstructs it.
+        let state = self.state_file(inner);
+        append_ledger_diff(&self.state_path(), &state, self.now());
         let writer = writer_for(&self.state_path());
         writer.dirty.store(true, Ordering::SeqCst);
         let mut last = lock(&writer.last_enqueue);
@@ -345,13 +494,21 @@ impl Daemon {
         *last = Instant::now();
         drop(last);
         writer.dirty.store(false, Ordering::SeqCst);
-        mark_dirty(&self.state_path(), self.serialize_state(inner));
+        mark_dirty(
+            &self.state_path(),
+            serde_json::to_vec_pretty(&state).unwrap_or_else(|_| b"{}".to_vec()),
+        );
     }
 
     /// Synchronous flush for spawn / kill / escalate / shutdown.
     #[allow(dead_code)] // contract API: wired by spawn/kill/escalate/shutdown call sites
     pub(crate) fn save_now(&self, inner: &Inner) {
-        write_now(&self.state_path(), &self.serialize_state(inner));
+        let state = self.state_file(inner);
+        append_ledger_diff(&self.state_path(), &state, self.now());
+        write_now(
+            &self.state_path(),
+            &serde_json::to_vec_pretty(&state).unwrap_or_else(|_| b"{}".to_vec()),
+        );
     }
 
     /// Flush the final snapshot and stop this daemon's writer thread.
