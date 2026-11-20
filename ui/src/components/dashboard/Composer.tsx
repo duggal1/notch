@@ -131,7 +131,6 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
         </div>
       )}
       <div className="composer-box">
-        <span className="composer-prompt" aria-hidden="true">›</span>
         <textarea
           ref={taRef}
           className="composer-input"

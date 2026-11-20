@@ -218,7 +218,7 @@ export function Dashboard() {
             <button className="killswitch ripple" disabled={active === 0}
               onClick={killSwitch} aria-pressed={armed && active > 0}
               title="Close all managed panes and stop running sessions">
-              <PixelIcon name="power" size={24} />
+              <PixelIcon name="power" size={12} />
               {armed && active > 0 ? 'Confirm kill' : 'Kill switch'}
             </button>
           </header>

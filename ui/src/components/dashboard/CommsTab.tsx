@@ -1,65 +1,93 @@
+// CommsTab.tsx — the wire. One vertical timeline, one card per real bus message.
+// Type gets a bare pixel glyph; route gets a labelled chip; nothing is invented.
 import { useMemo, useState } from 'react';
-import type { Snapshot } from '../../lib/bridge';
-import { PixelIcon } from '../PixelIcon';
+import type { BusMessage, Snapshot } from '../../lib/bridge';
+import { PixelIcon, type PixelIconName } from '../PixelIcon';
 
 type RouteFilter = 'same' | 'cross';
+
+const ICON: Record<BusMessage['type'], PixelIconName> = {
+  task: 'plus',
+  result: 'check',
+  question: 'bubble',
+  handoff: 'chevron',
+  escalate: 'alert',
+};
 
 export function CommsTab({ snapshot, onJumpToTree }: {
   snapshot: Snapshot | null;
   onJumpToTree: (sessionId: string) => void;
 }) {
-  const [filter, setFilter] = useState('');
+  const [query, setQuery] = useState('');
   const [route, setRoute] = useState<RouteFilter | null>(null);
-  const supervisors = useMemo(() => new Map([
-    ...(snapshot?.supervisors ?? []).map(({ id }): [string, string] => [id, id]),
-    ...(snapshot?.sessions ?? []).map(({ id, sup }): [string, string] => [id, sup]),
+  const owner = useMemo(() => new Map<string, string>([
+    ...(snapshot?.supervisors ?? []).map((s): [string, string] => [s.id, s.id]),
+    ...(snapshot?.sessions ?? []).map((s): [string, string] => [s.id, s.sup]),
   ]), [snapshot]);
-  const messages = snapshot?.busMessages ?? [];
-  const scope = (from: string, to: string) => {
-    const sender = supervisors.get(from);
-    const receiver = supervisors.get(to);
-    return sender && receiver ? (sender === receiver ? 'same' : 'cross') : null;
+  const scope = (m: BusMessage) => {
+    const a = owner.get(m.from), b = owner.get(m.to);
+    return a && b ? (a === b ? 'same' : 'cross') : null;
   };
-  const query = filter.trim().toLowerCase();
-  const filtered = messages.filter((message) =>
-    (!route || scope(message.from, message.to) === route)
-    && [message.from, message.to, message.type, message.preview].some((value) => value.toLowerCase().includes(query)));
+  const messages = snapshot?.busMessages ?? [];
+  const q = query.trim().toLowerCase();
+  const visible = messages.filter((m) =>
+    (!route || scope(m) === route)
+    && [m.from, m.to, m.type, m.preview].some((v) => v.toLowerCase().includes(q)));
 
   return (
-    <section className="comms">
+    <section className="wire-root">
       {messages.length > 0 && (
-        <div className="comms-bar">
-          <label className="comms-filter">
+        <header className="wire-head">
+          <label className="wire-filter">
             <PixelIcon name="search" size={12} />
-            <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter messages" aria-label="Filter messages" spellCheck={false} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter messages" aria-label="Filter messages" spellCheck={false} />
           </label>
-          <button className="route-chip" aria-pressed={route === 'same'} onClick={() => setRoute(route === 'same' ? null : 'same')}>Same supervisor</button>
-          <button className="route-chip" aria-pressed={route === 'cross'} onClick={() => setRoute(route === 'cross' ? null : 'cross')}>Cross supervisor</button>
-        </div>
+          <button className={`wire-chip${route === 'same' ? ' is-active' : ''}`} aria-pressed={route === 'same'}
+            onClick={() => setRoute(route === 'same' ? null : 'same')}>
+            <PixelIcon name="check" size={12} />Same supervisor
+          </button>
+          <button className={`wire-chip${route === 'cross' ? ' is-active' : ''}`} aria-pressed={route === 'cross'}
+            onClick={() => setRoute(route === 'cross' ? null : 'cross')}>
+            <PixelIcon name="chevron" size={12} />Cross supervisor
+          </button>
+        </header>
       )}
-      <div className="comms-list">
-        <div className="timeline">
-          {filtered.length === 0 ? (
-            <div className="timeline-entry">
-              <span className="comms-time">{messages.length === 0 ? 'Waiting' : 'Filtered'}</span>
-              <div className="timeline-empty">
-                <h2 className="title">{messages.length === 0 ? 'The bus is silent' : 'No matching messages'}</h2>
-                <p className="empty-line">{messages.length === 0 ? 'Messages between sessions appear here.' : 'Clear the filters to see all messages.'}</p>
-                {messages.length > 0 && <button className="route-chip" onClick={() => { setFilter(''); setRoute(null); }}>Clear filters</button>}
+
+      <div className="wire-scroll">
+        <div className="wire-track">
+          {visible.length === 0 ? (
+            <div className="wire-entry">
+              <time className="wire-time">{messages.length === 0 ? 'Waiting' : 'Filtered'}</time>
+              <span className="wire-node" aria-hidden="true" />
+              <div className="wire-card wire-card--quiet">
+                <span className="wire-title">{messages.length === 0 ? 'The bus is silent' : 'No matching messages'}</span>
+                <span className="wire-text">{messages.length === 0
+                  ? 'Messages between sessions appear here.'
+                  : 'Clear the filters to see all messages.'}</span>
+                {messages.length > 0 && <button className="wire-chip" onClick={() => { setQuery(''); setRoute(null); }}>Clear filters</button>}
               </div>
             </div>
-          ) : filtered.map((message) => (
-            <div key={message.id} className={`timeline-entry${scope(message.from, message.to) === 'cross' ? ' timeline-entry--cross' : ''}`}>
-              <time className="comms-time" dateTime={new Date(message.at).toISOString()}>{new Date(message.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>
-              <button className="comms-row" onClick={() => onJumpToTree(message.from)}>
-                <span className="comms-line">
-                  <span className="comms-pair mono">{message.from} → {message.to}</span>
-                  <span className="type-chip">{message.type.replaceAll('_', ' ')}</span>
-                </span>
-                <span className="comms-preview">{message.preview}</span>
-              </button>
-            </div>
-          ))}
+          ) : visible.map((m) => {
+            const cross = scope(m) === 'cross';
+            return (
+              <div key={m.id} className="wire-entry">
+                <time className="wire-time" dateTime={new Date(m.at).toISOString()}>
+                  {new Date(m.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
+                </time>
+                <span className={`wire-node${cross ? ' wire-node--cross' : ''}`} aria-hidden="true" />
+                <button className="wire-card" onClick={() => onJumpToTree(m.from)}
+                  aria-label={`${m.from} to ${m.to}: ${m.preview}`}>
+                  <span className="wire-line">
+                    <PixelIcon name={ICON[m.type]} size={12} className="wire-icon" />
+                    <span className="wire-route">{m.from} → {m.to}</span>
+                    <span className="wire-type">{m.type.replaceAll('_', ' ')}</span>
+                  </span>
+                  <span className="wire-text">{m.preview}</span>
+                </button>
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>
