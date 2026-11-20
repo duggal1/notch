@@ -34,12 +34,18 @@ pub struct Obs {
     pub quiet_for_ms: u64,
 }
 
+/// A single large poll gap is a scheduler/VM stall; a *repeating* large gap
+/// is a permanently slow poll loop (e.g. a bounded subprocess that always
+/// consumes most of the tick). Only the first few gaps get grace.
+pub const MAX_GRACE_STREAK: u32 = 3;
+
 pub struct Watchdog {
     stuck_after_ms: u64,
     /// Kill verified-Stuck sessions by default (product promise); an operator
     /// may opt out via `Daemon::set_kill_on_stuck(false)`.
     kill_on_stuck: bool,
     last_poll_mono_ms: Option<u64>,
+    grace_streak: u32,
     suspect_taken: HashSet<String>,
     stuck_taken: HashSet<String>,
 }
@@ -50,6 +56,7 @@ impl Watchdog {
             stuck_after_ms: stuck_after_secs.saturating_mul(1000),
             kill_on_stuck: true,
             last_poll_mono_ms: None,
+            grace_streak: 0,
             suspect_taken: HashSet::new(),
             stuck_taken: HashSet::new(),
         }
@@ -94,6 +101,25 @@ impl Watchdog {
         gap
     }
 
+    /// Spend one grace grant for a large poll gap. Returns false once the
+    /// streak is exhausted: from then on the gap is classified normally, so
+    /// a slow-but-progressing poll loop cannot disable the watchdog forever.
+    pub fn grant_stall_grace(&mut self) -> bool {
+        if self.grace_streak >= MAX_GRACE_STREAK {
+            return false;
+        }
+        self.grace_streak += 1;
+        true
+    }
+
+    pub fn clear_stall_grace_streak(&mut self) {
+        self.grace_streak = 0;
+    }
+
+    pub fn grace_streak(&self) -> u32 {
+        self.grace_streak
+    }
+
     /// Take the nudge action once per silence episode. A revision change
     /// re-arms it via [`Self::mark_revision_change`].
     pub fn take_suspect_action(&mut self, id: &str, _mono_ms: u64) -> bool {
@@ -105,9 +131,17 @@ impl Watchdog {
         self.stuck_taken.insert(id.to_string())
     }
 
-    pub fn mark_revision_change(&mut self, id: &str, _mono_ms: u64) {
+    /// Re-arm the per-episode verdicts without touching the grace streak.
+    pub fn rearm_episode(&mut self, id: &str) {
         self.suspect_taken.remove(id);
         self.stuck_taken.remove(id);
+    }
+
+    pub fn mark_revision_change(&mut self, id: &str, _mono_ms: u64) {
+        self.rearm_episode(id);
+        // Real progress after a stall means the next large gap is a fresh
+        // one-off stall, not evidence of a permanently slow loop.
+        self.grace_streak = 0;
     }
 
     pub fn classify(&self, o: Obs) -> Liveness {

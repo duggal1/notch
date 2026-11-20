@@ -43,9 +43,26 @@ impl Daemon {
     pub fn poll_once(&self) {
         let mono = self.mono();
         let gap = lock(&self.watchdog).note_poll(mono);
-        let stalled = gap
-            .map(|g| Watchdog::is_stall_gap(g, self.config.poll_interval_ms))
-            .unwrap_or(false);
+        let stall_gap = gap.filter(|g| Watchdog::is_stall_gap(*g, self.config.poll_interval_ms));
+        let stalled = match stall_gap {
+            Some(g) => {
+                let granted = lock(&self.watchdog).grant_stall_grace();
+                if !granted {
+                    let detail = format!(
+                        "watchdog stall: {g}ms gap; grace streak exhausted, classifying normally"
+                    );
+                    let mut inner = lock(&self.inner);
+                    push_warning(&mut inner, detail.clone());
+                    let _ = self.event_log.append(None, "watchdog", &detail);
+                    drop(inner);
+                }
+                granted
+            }
+            None => {
+                lock(&self.watchdog).clear_stall_grace_streak();
+                false
+            }
+        };
         if stalled {
             // The daemon (not the session) went quiet: a long GC pause, a VM
             // pause, a suspended process. Reset every grace period and skip
@@ -59,7 +76,7 @@ impl Daemon {
                 for s in inner.sessions.iter_mut() {
                     if !s.status.is_terminal() {
                         s.revision_changed_at_ms = mono;
-                        wd.mark_revision_change(&s.id, mono);
+                        wd.rearm_episode(&s.id);
                     }
                 }
             }
