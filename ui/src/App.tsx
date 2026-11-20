@@ -6,12 +6,11 @@ import { Panel } from './components/Panel';
 import { LogsPanel } from './components/LogsPanel';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { send, logs as fetchLogs, isTauri } from './lib/bridge';
+import { send, logs as fetchLogs, isTauri, invokePayload } from './lib/bridge';
 import type { Session, LogsPayload } from './lib/bridge';
 import { topStatus, workingCount, normalizeEps } from './lib/format';
 import { useSnapshot } from './lib/use-snapshot';
-import { useRipple } from './lib/use-ripple';
-import { frameFor, type Mode } from './lib/shell-geometry';
+import type { Mode } from './lib/shell-geometry';
 import type { Status } from './lib/tokens';
 
 export default function App() {
@@ -62,10 +61,12 @@ export default function App() {
     intentTimer.current = window.setTimeout(() => {
       modeRef.current = m;
       setMode(m);
-      send({ cmd: 'set_frame', mode: m, contentH });
       if (m === 'open') send({ cmd: 'haptic', kind: 'alignment' });
     }, ms);
-  }, [contentH]);
+  }, []);
+
+  useEffect(() => { send({ cmd: 'set_frame', mode, contentH }); }, [mode, contentH]);
+
   const onEnter = useCallback(() => { if (modeRef.current === 'rest') go('peek', 60); }, [go]);
   const onLeave = useCallback(() => { if (modeRef.current !== 'open') go('rest', 240); }, [go]);
   const onTap = useCallback(() => { if (modeRef.current !== 'open') go('open', 0); }, [go]);
@@ -107,8 +108,12 @@ export default function App() {
   }, []);
   const reprompt = useCallback((s: Session) => send({ cmd: 'reprompt', id: s.id, text: 'resume' }), []);
   const focus = useCallback((id: string) => send({ cmd: 'focus', id }), []);
-  const cleanup = useCallback(() => {
-    send({ cmd: 'cleanup' });
+  const cleanup = useCallback(async () => {
+    const removed = await invokePayload<number | null>({ cmd: 'cleanup' }, null);
+    if (removed === null) {
+      setToast('Could not sweep orphaned sessions');
+      return;
+    }
     setSweepSent(true);
     window.setTimeout(() => setSweepSent(false), 1200);
   }, []);
@@ -124,11 +129,10 @@ export default function App() {
     }
   }, [go]);
   const openDashboardTarget = useCallback((kind: 'supervisor' | 'session', id: string) => {
-    try { localStorage.setItem('notch.target', JSON.stringify({ kind, id })); } catch { /* storage may be unavailable */ }
+    try { localStorage.setItem('notch.handoff', JSON.stringify({ kind, id, at: Date.now() })); } catch { /* storage may be unavailable */ }
     void invokeOpenDashboard();
   }, [invokeOpenDashboard]);
   const openDashboard = useCallback(() => {
-    try { localStorage.setItem('notch.target', JSON.stringify({ kind: 'none' })); } catch { /* storage may be unavailable */ }
     void invokeOpenDashboard();
   }, [invokeOpenDashboard]);
 
@@ -141,19 +145,21 @@ export default function App() {
     for (const s of sessions) if (s.sup === supId) send({ cmd: 'kill', id: s.id });
   }, [sessions]);
 
-  useRipple(shellRef);
 
   const open = mode === 'open';
-  const rest = frameFor('rest');
 
   return (
     <Shell mode={mode} contentH={contentH} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
-      {!open && (
-        <div className="rest-indicators" style={{ width: rest.w }} aria-hidden="true">
-          <span className="rest-brand"><span className="brand-logo" /><i className={`live-dot live-dot--${top}`} /></span>
-        </div>
-      )}
-
+      {!open ? (
+        <span className="rest-indicators">
+          <span className="rest-brand">
+            <span className="brand-logo" aria-hidden="true" />
+            <i className={`live-dot live-dot--${top}`} aria-hidden="true" />
+            {booted && sessions.length > 0 && <span className="rest-count" title={`${wcount} agents running`}>{wcount}</span>}
+          </span>
+        </span>
+      ) : (
+        <>
       <Panel
           open={open}
           top={top}
@@ -182,6 +188,8 @@ export default function App() {
 
       <LogsPanel open={logsOpen} payload={logsPayload} onClose={() => setLogsOpen(false)} />
       {toast && <div className="toast" role="status">{toast}</div>}
+        </>
+      )}
     </Shell>
   );
 }
