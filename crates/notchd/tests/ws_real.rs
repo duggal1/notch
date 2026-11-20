@@ -37,6 +37,7 @@ struct Srv {
     port: u16,
     token: String,
     root: PathBuf,
+    daemon: Arc<Daemon>,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -52,24 +53,25 @@ impl Srv {
             opencode_decider: false,
         };
         let token = ws::load_or_create_token(&config.state_dir).unwrap();
-        let daemon = Arc::new(
-            Daemon::open(config, Herdr::from_env(), Arc::new(SystemClock)).unwrap(),
-        );
+        let daemon =
+            Arc::new(Daemon::open(config, Herdr::from_env(), Arc::new(SystemClock)).unwrap());
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let shutdown = Arc::new(AtomicBool::new(false));
         let d = Arc::clone(&daemon);
         let s = Arc::clone(&shutdown);
         let handle = thread::spawn(move || {
-            let _ = ws::serve_with_mode(
-                listener,
-                d,
-                s,
-                Arc::new(AtomicUsize::new(0)),
-                browser_mode,
-            );
+            let _ =
+                ws::serve_with_mode(listener, d, s, Arc::new(AtomicUsize::new(0)), browser_mode);
         });
-        Self { port, token, root, shutdown, handle: Some(handle) }
+        Self {
+            port,
+            token,
+            root,
+            daemon,
+            shutdown,
+            handle: Some(handle),
+        }
     }
 }
 
@@ -146,10 +148,16 @@ fn browser_mode_requires_query_token_and_exact_host() {
         &host,
         &["Origin: https://ui.local"],
     );
-    assert!(good.contains("101"), "valid query token + Origin must upgrade: {good}");
+    assert!(
+        good.contains("101"),
+        "valid query token + Origin must upgrade: {good}"
+    );
 
     let no_token = handshake(srv.port, "/", &host, &["Origin: https://ui.local"]);
-    assert!(no_token.contains("401"), "missing query token must be 401: {no_token}");
+    assert!(
+        no_token.contains("401"),
+        "missing query token must be 401: {no_token}"
+    );
 
     let wrong = handshake(
         srv.port,
@@ -157,7 +165,10 @@ fn browser_mode_requires_query_token_and_exact_host() {
         &host,
         &[],
     );
-    assert!(wrong.contains("401"), "wrong query token must be 401: {wrong}");
+    assert!(
+        wrong.contains("401"),
+        "wrong query token must be 401: {wrong}"
+    );
 
     let bad_host = handshake(
         srv.port,
@@ -165,7 +176,26 @@ fn browser_mode_requires_query_token_and_exact_host() {
         "evil.example:7407",
         &[],
     );
-    assert!(bad_host.contains("401"), "bad Host must be 401 even with token: {bad_host}");
+    assert!(
+        bad_host.contains("401"),
+        "bad Host must be 401 even with token: {bad_host}"
+    );
+}
+
+#[test]
+fn ws_fleet_frame_uses_single_rust_derivation() {
+    let srv = Srv::start("fleet", false);
+    let snap = serde_json::to_value(srv.daemon.snapshot()).unwrap();
+    let frame = ws::fleet_frame(&srv.daemon, &snap).expect("ledger must be readable");
+    let ledger = notchd::ledger::Ledger::open(&srv.daemon.config.state_dir).unwrap();
+    let expected =
+        notchd::snapshot::fleet_view(&snap, ledger.last_seq(), ledger.current_epoch("ORCH"));
+    assert_eq!(frame["event"], "fleet");
+    assert_eq!(
+        frame["fleet"], expected,
+        "WS frame must be A4's fleet_view verbatim"
+    );
+    assert_eq!(frame["fleet"]["ledger"]["seq"], ledger.last_seq());
 }
 
 #[test]
@@ -176,7 +206,11 @@ fn token_file_is_0600_in_0700_dir() {
     assert_eq!(token.len(), 64);
     assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
     let dmode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
-    let fmode = fs::metadata(dir.join("ws.token")).unwrap().permissions().mode() & 0o777;
+    let fmode = fs::metadata(dir.join("ws.token"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(dmode, 0o700, "state dir must be 0700");
     assert_eq!(fmode, 0o600, "token file must be 0600");
     let _ = fs::remove_dir_all(&r);
@@ -187,17 +221,32 @@ fn outbox_is_bounded_and_drops_snapshots_first() {
     let mut q: VecDeque<OutFrame> = VecDeque::new();
     let mut lag = 0u64;
     for i in 0..8 {
-        ws::enqueue_bounded(&mut q, 8, OutFrame::Snapshot(serde_json::json!({"i": i})), &mut lag);
+        ws::enqueue_bounded(
+            &mut q,
+            8,
+            OutFrame::Snapshot(serde_json::json!({"i": i})),
+            &mut lag,
+        );
     }
     // 9th push overflows: the OLDEST SNAPSHOT (i=0) must be the victim.
-    ws::enqueue_bounded(&mut q, 8, OutFrame::Event(serde_json::json!({"i": 99})), &mut lag);
+    ws::enqueue_bounded(
+        &mut q,
+        8,
+        OutFrame::Event(serde_json::json!({"i": 99})),
+        &mut lag,
+    );
     assert_eq!(lag, 1, "one drop counted");
     match &q[0] {
         OutFrame::Snapshot(v) => assert_eq!(v["i"], 1, "oldest snapshot dropped, not the event"),
         OutFrame::Event(_) => panic!("an event must not be dropped while a snapshot is queued"),
     }
     for i in 8..1_000 {
-        ws::enqueue_bounded(&mut q, 8, OutFrame::Event(serde_json::json!({"i": i})), &mut lag);
+        ws::enqueue_bounded(
+            &mut q,
+            8,
+            OutFrame::Event(serde_json::json!({"i": i})),
+            &mut lag,
+        );
         assert!(q.len() <= 8, "queue must never exceed cap: {}", q.len());
     }
     assert_eq!(q.len(), 8);
@@ -209,7 +258,8 @@ fn oversized_frame_is_closed_without_affecting_new_clients() {
     let srv = Srv::start("frame", false);
     let host = format!("127.0.0.1:{}", srv.port);
     let mut s = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+    s.set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
     let req = format!(
         "GET / HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\
@@ -236,9 +286,20 @@ fn oversized_frame_is_closed_without_affecting_new_clients() {
     s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let mut reply = [0u8; 8];
     let got = s.read(&mut reply).unwrap_or(0);
-    assert!(got > 0 && reply[0] == 0x88, "oversized frame must get a WS close, got {reply:?}");
+    assert!(
+        got > 0 && reply[0] == 0x88,
+        "oversized frame must get a WS close, got {reply:?}"
+    );
 
     let host = format!("127.0.0.1:{}", srv.port);
-    let fresh = handshake(srv.port, "/", &host, &[&format!("Authorization: Bearer {}", srv.token)]);
-    assert!(fresh.contains("101"), "a new client must still connect: {fresh}");
+    let fresh = handshake(
+        srv.port,
+        "/",
+        &host,
+        &[&format!("Authorization: Bearer {}", srv.token)],
+    );
+    assert!(
+        fresh.contains("101"),
+        "a new client must still connect: {fresh}"
+    );
 }
