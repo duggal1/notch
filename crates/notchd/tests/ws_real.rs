@@ -102,9 +102,23 @@ fn handshake(port: u16, path: &str, host: &str, extra: &[&str]) -> String {
     }
     req.push_str("\r\n");
     s.write_all(req.as_bytes()).unwrap();
+    // Bounded read: wait for a complete HTTP status line, never a fixed sleep.
     let mut buf = [0u8; 1024];
-    let n = s.read(&mut buf).unwrap_or(0);
-    String::from_utf8_lossy(&buf[..n])
+    let mut used = 0usize;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        match s.read(&mut buf[used..]) {
+            Ok(0) => break,
+            Ok(n) => used += n,
+            Err(_) => continue,
+        }
+        if let Ok(text) = std::str::from_utf8(&buf[..used]) {
+            if text.starts_with("HTTP/") && text.contains('\n') {
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(&buf[..used])
         .lines()
         .next()
         .unwrap_or("")
@@ -258,7 +272,7 @@ fn oversized_frame_is_closed_without_affecting_new_clients() {
     let srv = Srv::start("frame", false);
     let host = format!("127.0.0.1:{}", srv.port);
     let mut s = TcpStream::connect(("127.0.0.1", srv.port)).unwrap();
-    s.set_read_timeout(Some(Duration::from_millis(300)))
+    s.set_read_timeout(Some(Duration::from_millis(1_000)))
         .unwrap();
     let req = format!(
         "GET / HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
