@@ -7,6 +7,7 @@ use crate::model::{
 };
 use crate::status::Status;
 use serde::Serialize;
+use serde_json::{json, Value};
 
 #[derive(Serialize)]
 pub struct Snapshot {
@@ -142,4 +143,152 @@ pub fn rollup(statuses: impl Iterator<Item = Status>) -> Status {
     } else {
         Status::Idle
     }
+}
+
+/// One honest line each fleet unit gets. Derived only from the four legal
+/// statuses plus the escalation/failure reason — never a fifth status value.
+fn unit_line(status: &str, reason: &str, kind: &str) -> (&'static str, String) {
+    match status {
+        "working" => ("Working", "An agent is on this session right now.".to_string()),
+        "failed" if kind == "blocked" || reason == "blocked_waiting" => (
+            "Stopped",
+            "The agent stopped on a request only you can answer. Nothing moves until it is answered.".to_string(),
+        ),
+        "failed" if kind == "stuck" || reason == "stuck" => (
+            "Stopped",
+            "The watchdog stopped this session and kept its work. Send it a fresh prompt to continue.".to_string(),
+        ),
+        "failed" => ("Stopped", "This session failed. Its last action is kept on the row.".to_string()),
+        "done" => ("Done", "The session finished and its work was verified.".to_string()),
+        _ => ("Idle", "No agent is on this session, and none is waiting to start.".to_string()),
+    }
+}
+
+fn fleet_str<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn fleet_u64(v: &Value, key: &str) -> u64 {
+    v.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// The snapshot vocabulary is exactly the four §1.1 statuses (unlike herdr's
+/// raw `blocked`/`unknown`), so parse it directly into `Status`.
+fn fleet_status(s: &str) -> Status {
+    match s {
+        "working" => Status::Working,
+        "failed" => Status::Failed,
+        "done" => Status::Done,
+        _ => Status::Idle,
+    }
+}
+
+/// The ONE fleet projection (C3). Pure over a §1.3 snapshot plus the REAL
+/// ledger seq/epoch supplied by the caller from the C2 accessors. `topStatus`
+/// comes from [`rollup`] — the same truth the daemon uses for
+/// `orchestrator.status` — so the Tauri event and the WS frame never disagree.
+/// Every consumer (Tauri command, Tauri fleet event, WS fleet frame) renders
+/// this object; no caller re-derives the fleet.
+pub fn fleet_view(snap: &Value, seq: u64, epoch: u64) -> Value {
+    let at = snap.get("generatedAt").cloned().unwrap_or(Value::Null);
+    let sessions = snap
+        .get("sessions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let supervisors = snap
+        .get("supervisors")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let escalations = snap
+        .get("escalations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let decisions = snap
+        .get("decisions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let bus = snap
+        .get("busMessages")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    let top = rollup(
+        sessions
+            .iter()
+            .map(|s| fleet_status(fleet_str(s, "status"))),
+    )
+    .as_str();
+
+    let mut units: Vec<Value> = Vec::with_capacity(sessions.len() + supervisors.len() + 1);
+    units.push(json!({
+        "id": "ORCH", "kind": "orchestrator", "status": top, "topStatus": top,
+        "paneId": "", "workspace": "", "lastAction": "", "revision": 0u64,
+    }));
+
+    for sup in supervisors {
+        units.push(json!({
+            "id": fleet_str(sup, "id"), "kind": "supervisor", "status": fleet_str(sup, "status"),
+            "topStatus": top, "title": fleet_str(sup, "title"),
+            "paused": sup.get("paused").cloned().unwrap_or(Value::Null),
+            "paneId": "", "workspace": "", "lastAction": fleet_str(sup, "title"), "revision": 0u64,
+        }));
+    }
+
+    let mut working = 0usize;
+    let mut idle = 0usize;
+    let mut stopped = 0usize;
+    let mut done = 0usize;
+    for s in sessions {
+        let id = fleet_str(s, "id");
+        let status = fleet_str(s, "status");
+        let reason = fleet_str(s, "failureReason");
+        let kind = escalations
+            .iter()
+            .find(|e| fleet_str(e, "session") == id)
+            .map(|e| fleet_str(e, "kind"))
+            .unwrap_or("");
+        let (word, detail) = unit_line(status, reason, kind);
+        match status {
+            "working" => working += 1,
+            "failed" => stopped += 1,
+            "done" => done += 1,
+            _ => idle += 1,
+        }
+        units.push(json!({
+            "id": id, "kind": "session", "sup": fleet_str(s, "sup"), "status": status,
+            "topStatus": top, "word": word, "detail": detail, "title": fleet_str(s, "title"),
+            "paneId": fleet_str(s, "paneId"), "workspace": fleet_str(s, "cwd"),
+            "lastAction": fleet_str(s, "lastAction"), "revision": fleet_u64(s, "lastRevision"),
+            "escalation": kind,
+        }));
+    }
+
+    let holds = supervisors
+        .iter()
+        .filter(|s| s.get("paused").and_then(Value::as_bool).unwrap_or(false))
+        .count();
+    json!({
+        "source": "snapshot",
+        "generatedAt": at,
+        "topStatus": top,
+        "units": units,
+        "groups": { "working": working, "idle": idle, "stopped": stopped, "done": done },
+        "storm": {
+            "holds": holds,
+            "guard": if holds > 0 { "holding" } else { "open" },
+            "starts": decisions.iter().filter(|d| fleet_str(d, "action") == "reprompt").count(),
+        },
+        "ledger": {
+            "seq": seq,
+            "fence": format!("{epoch:016x}{seq:016x}"),
+            "epoch": epoch,
+            "decisions": decisions.len(),
+            "messages": bus.len(),
+        },
+    })
 }
