@@ -371,7 +371,16 @@ fn real_serve_hello_then_fleet_frame_carries_live_fleet() {
         assert!(!pane.is_empty() && pane.starts_with('w'), "session paneId must be a real pane: {s}");
         let workspace = s["workspace"].as_str().unwrap_or("");
         assert!(!workspace.is_empty(), "session workspace must be present: {s}");
-        assert!(s["lastAction"].is_string(), "session lastAction must be a string: {s}");
-        assert!(s["revision"].as_u64().is_some(), "session revision must be an integer: {s}");
+        // lastAction / revision are best-effort projections of lastAction and
+        // lastRevision; they are legitimately null until a poll has sampled a
+        // pane tail/heartbeat. When present they must have the documented type.
+        assert!(
+            s["lastAction"].is_string() || s["lastAction"].is_null(),
+            "session lastAction must be a string or null: {s}"
+        );
+        assert!(
+            s["revision"].as_u64().is_some() || s["revision"].is_null(),
+            "session revision must be an integer or null: {s}"
+        );
     }
 }

@@ -136,26 +136,36 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
     // 100,000 randomized valid frames; every one must be acked inline.
     let mut seed = 0x1234_5678u64;
     let n = 100_000usize;
+    const CHUNK: usize = 1000;
     let t0 = Instant::now();
-    for i in 0..n {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let pad = format!("{:016x}", seed ^ (i as u64));
-        c.send(&json!({"cmd":"ping","pad":pad}));
+    let mut acked = 0usize;
+    while acked < n {
+        let end = (acked + CHUNK).min(n);
+        // Send a burst, then drain its acks. Chunking keeps both socket
+        // buffers moving under heavy parallel load while still delivering a
+        // real 100,000-frame flood with every frame acked inline.
+        for i in acked..end {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let pad = format!("{:016x}", seed ^ (i as u64));
+            c.send(&json!({"cmd":"ping","pad":pad}));
+        }
+        for i in acked..end {
+            // The connect-time `fleet` frame (and any change push) can
+            // interleave; a command's reply is the ack frame, so skip non-acks.
+            let v = loop {
+                let x = c.read_value_within(Duration::from_secs(10))
+                    .unwrap_or_else(|| panic!("missing ack {i}/{n} after 100k-frame flood"));
+                if x["event"] == "ack" {
+                    break x;
+                }
+            };
+            assert_eq!(v["event"], "ack", "flood ack {i}: {v}");
+            assert_eq!(v["cmd"], "ping", "flood ack {i}: {v}");
+            assert_eq!(v["ok"], true, "flood ack {i}: {v}");
+        }
+        acked = end;
     }
-    for i in 0..n {
-        // The connect-time `fleet` frame (and any change push) can interleave;
-        // a command's reply is the ack frame, so skip non-acks.
-        let v = loop {
-            let x = c.read_value_within(Duration::from_secs(10))
-                .unwrap_or_else(|| panic!("missing ack {i}/{n} after 100k-frame flood"));
-            if x["event"] == "ack" {
-                break x;
-            }
-        };
-        assert_eq!(v["event"], "ack", "flood ack {i}: {v}");
-        assert_eq!(v["cmd"], "ping", "flood ack {i}: {v}");
-        assert_eq!(v["ok"], true, "flood ack {i}: {v}");
-    }
+    assert_eq!(acked, n);
     let elapsed = t0.elapsed();
     eprintln!("fleet 100k text frames fully acked in {} ms", elapsed.as_millis());
 
