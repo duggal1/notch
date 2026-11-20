@@ -146,3 +146,11 @@ Cross-review ring A1→A2→A3→A4→A5→A1 landed with adversarial tests; A2'
 - T4 real-Mac sleep — `SleepDisabled 1`; monotonic-jump + stall simulations green.
 - Native window pixels — Screen Recording permission not granted; headless Chromium screenshots verified UI instead.
 - Tauri popover steals focus (cannot be an NSPanel) — known platform limitation.
+
+---
+
+# 6. Delivery (final)
+- Bundle rebuilt from the integrated tree: `app/src-tauri/target/debug/bundle/macos/Notch.app` (40.12 MiB).
+- Hidden launch `open -g -j`: process alive (pid 4508), no focus stolen; then `open` for the user: process alive (pid 4527) on screen.
+- Git: divergent agent history merged into main without force push (`1f98334`), final gate + report committed (`4905d3c`, `c50a9d1`), pushed fast-forward `d309ee4..c50a9d1` to `origin/main`. No secrets in the published range.
+- The requirements ledger (`.proof/requirements.md`) was clobbered mid-round by an outside agent and restored with all 35 numbered requirements.
