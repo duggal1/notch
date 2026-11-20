@@ -16,7 +16,6 @@ import { EscalationsTab } from './dashboard/EscalationsTab';
 import { AlertIcon, BubbleIcon, GridIcon, OrchestratorMark, TrashIcon } from './Icons';
 import { Sym } from './Symbol';
 import { useWhiteHot } from '../lib/hot';
-import { PixelWordmark } from './pixel/PixelWordmark';
 import { PixelMeter } from './pixel/PixelMeter';
 import { DitherField } from './pixel/DitherField';
 
@@ -137,7 +136,10 @@ export function Dashboard() {
       <div className="dash" ref={dashRef}>
         {/* ---------- rail ---------- */}
         <nav className="rail" aria-label="Dashboard">
-          <div className="rail-mark"><PixelWordmark scale={2} /></div>
+          <div className="rail-mark" title="notch">
+            <DitherField mode="radial" cell={2} floor={0.26} ceil={0.9} />
+            <img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" />
+          </div>
           <div className="rail-nav" role="tablist" aria-label="Dashboard tabs" aria-orientation="vertical">
             {TABS.map((t) => {
               const isActive = tab === t.id;
@@ -148,7 +150,7 @@ export function Dashboard() {
                   role="tab"
                   aria-selected={isActive}
                   tabIndex={isActive ? 0 : -1}
-                  className={`rail-item${isActive ? ' is-active' : ''}`}
+                  className={`rail-item ripple${isActive ? ' is-active' : ''}`}
                   onClick={() => switchTab(t.id)}
                   title={t.label}
                   onKeyDown={(e) => {
@@ -178,7 +180,6 @@ export function Dashboard() {
             <div className="topbar-titles">
               <div className="topbar-title">
                 <h1>{view.title}</h1>
-                <span className="label">{view.label}</span>
               </div>
               <div className="topbar-sub">{sub}</div>
             </div>
@@ -218,7 +219,7 @@ export function Dashboard() {
               overlay={
                 <button
                   ref={setKillBtn}
-                  className="killswitch"
+                  className="killswitch ripple"
                   data-armed={armed ? '' : undefined}
                   onClick={killSwitch}
                   title="Close every managed pane, mark all sessions failed, clean up"

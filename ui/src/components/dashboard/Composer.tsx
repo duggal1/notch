@@ -16,7 +16,13 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   prefill: { text: string; at: number } | null;
   focusSignal: number;
 }) {
-  const [task, setTask] = useState('');
+  const [task, setTask] = useState(() => {
+    try {
+      const draft = localStorage.getItem('notch.draft');
+      if (draft) { localStorage.removeItem('notch.draft'); return draft; }
+    } catch { /* storage may be unavailable */ }
+    return '';
+  });
   const [dod, setDod] = useState('');
   const [dodOpen, setDodOpen] = useState(false);
   const [cwd, setCwd] = useState(() => { try { return localStorage.getItem('notch.cwd') ?? '/Users/harshitduggal'; } catch { return '/Users/harshitduggal'; } });
@@ -82,6 +88,9 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 5 * 22)}px`;
   };
+
+  // a staged draft from the popover opens at full height
+  useEffect(() => { if (task) autosize(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = async () => {
     const text = task.trim();
@@ -191,7 +200,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
               </ul>
             )}
           </div>
-          <button ref={setAssignBtn} className="assign-btn" onClick={send} disabled={state === 'sending' || !task.trim()}>
+          <button ref={setAssignBtn} className="assign-btn ripple" onClick={send} disabled={state === 'sending' || !task.trim()}>
             {state === 'sending' ? 'Assigning…' : 'Assign'}
           </button>
         </div>

@@ -9,7 +9,6 @@ import { TreeList } from './TreeList';
 import { EmptyState } from './EmptyState';
 import { FocusIcon, TrashIcon } from './Icons';
 import { Sym } from './Symbol';
-import { PixelWordmark } from './pixel/PixelWordmark';
 import { PixelMeter } from './pixel/PixelMeter';
 import { PixelSphere } from './pixel/PixelSphere';
 import { DitherField } from './pixel/DitherField';
@@ -62,7 +61,10 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
     <div className="panel">
       <header className="p-head">
         <span className="p-brand">
-          <PixelWordmark scale={1.5} />
+          <span className="p-mark" aria-hidden="true">
+            <DitherField mode="radial" cell={2} floor={0.26} ceil={0.9} />
+            <img className="brand-logo" src="/logo.svg" alt="" />
+          </span>
           <span className="p-status">
             <i className={`live-dot live-dot--${top}`} />
             <span>{cap(top)}</span>
@@ -155,10 +157,10 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
       <Drift sessions={sessions} />
 
       <footer className="p-foot">
-        <button className="text-btn" onClick={openDashboard}>
+        <button className="text-btn ripple" onClick={openDashboard}>
           <Sym name="macwindow" pt={15} fallback={FocusIcon} />Open dashboard
         </button>
-        <button className="text-btn" onClick={onCleanup}>
+        <button className="text-btn ripple" onClick={onCleanup}>
           <Sym name="trash" pt={14} fallback={TrashIcon} />{sweepSent ? 'Sweep sent' : 'Sweep orphans'}
         </button>
       </footer>

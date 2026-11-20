@@ -1,4 +1,4 @@
-import '@fontsource-variable/instrument-sans';
+import '@fontsource-variable/inter';
 import './styles/tokens.css';
 import './styles/base.css';
 import './styles/panel.css';

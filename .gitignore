@@ -7,3 +7,6 @@ dist/
 target/
 build/
 __pycache__/
+DESIGN.md
+git.yaml
+rules.yaml
