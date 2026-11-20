@@ -16,7 +16,13 @@ use crate::proc::{
     self, ProcError, Spec, TIMEOUT_HERDR_LIST, TIMEOUT_HERDR_MUTATE, TIMEOUT_HERDR_READ,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
 use std::fmt;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -339,4 +345,140 @@ fn parse_read_output(out: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+// ---------- private event socket (herdr protocol v22) ----------
+//
+// Facts are from `herdr api schema --json` (protocol 22, schema_version 1):
+// `events.subscribe` takes `params.subscriptions[]`; a
+// `pane.agent_status_changed` subscription REQUIRES `pane_id`; the pushed
+// envelope is `{"event":"pane.agent_status_changed","data":{pane_id,
+// workspace_id, agent_status, ...}}`. Each request uses a NEW connection —
+// a second write on the same socket is not a request. No SOCKET_API.md exists
+// on this host, so the bundled schema is the authoritative source.
+
+static SUB_SEQ: AtomicU64 = AtomicU64::new(1);
+const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Path of herdr's private JSON-line socket. `NOTCH_HERDR_SOCKET` overrides
+/// the default (`$XDG_CONFIG_HOME/herdr/herdr.sock` or `$HOME/.config/...`).
+pub fn herdr_socket_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("NOTCH_HERDR_SOCKET") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.trim().is_empty() {
+            return PathBuf::from(xdg).join("herdr/herdr.sock");
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".config/herdr/herdr.sock")
+}
+
+/// One pushed `pane.agent_status_changed` event (schema required fields).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentStatusEvent {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub agent_status: String,
+}
+
+/// Parse one JSON line of herdr's subscription-event stream. Lines that are
+/// not a status-change envelope are ignored — never a fatal error.
+pub fn parse_subscription_event(line: &str) -> Option<AgentStatusEvent> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v.get("event").and_then(Value::as_str) != Some("pane.agent_status_changed") {
+        return None;
+    }
+    let data = v.get("data")?;
+    Some(AgentStatusEvent {
+        pane_id: data.get("pane_id")?.as_str()?.to_string(),
+        workspace_id: data
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        agent_status: data.get("agent_status")?.as_str()?.to_string(),
+    })
+}
+
+/// Subscribe to agent-status changes for ONE pane. A fresh connection is
+/// opened for this request, the `subscription_started` ack is verified, and a
+/// reader thread forwards parsed events to the returned receiver until the
+/// socket closes or `shutdown` is set. Only `pane_id` from our own state is
+/// ever subscribed — no wildcard, no pane we do not manage.
+pub fn subscribe_agent_status_at(
+    socket: &Path,
+    pane_id: &str,
+    shutdown: &Arc<AtomicBool>,
+) -> Result<Receiver<AgentStatusEvent>, HerdrError> {
+    let stream = UnixStream::connect(socket)
+        .map_err(|e| HerdrError::Io(format!("herdr socket {}: {e}", socket.display())))?;
+    stream
+        .set_read_timeout(Some(SOCKET_READ_TIMEOUT))
+        .map_err(|e| HerdrError::Io(format!("herdr socket timeout: {e}")))?;
+    let id = format!("notch-{}", SUB_SEQ.fetch_add(1, Ordering::SeqCst));
+    let request = json!({
+        "id": id,
+        "method": "events.subscribe",
+        "params": {"subscriptions": [
+            {"type": "pane.agent_status_changed", "pane_id": pane_id}
+        ]}
+    });
+    let mut reader = BufReader::new(stream);
+    writeln!(reader.get_mut(), "{request}")
+        .map_err(|e| HerdrError::Io(format!("herdr subscribe write: {e}")))?;
+    reader
+        .get_mut()
+        .flush()
+        .map_err(|e| HerdrError::Io(format!("herdr subscribe flush: {e}")))?;
+    let mut ack = String::new();
+    let n = reader
+        .read_line(&mut ack)
+        .map_err(|e| HerdrError::Io(format!("herdr subscribe ack: {e}")))?;
+    if n == 0 {
+        return Err(HerdrError::Parse("herdr subscribe closed before ack".into()));
+    }
+    let ack_value: Value = serde_json::from_str(ack.trim())
+        .map_err(|e| HerdrError::Parse(format!("herdr subscribe ack JSON: {e}")))?;
+    if ack_value
+        .get("result")
+        .and_then(|r| r.get("type"))
+        .and_then(Value::as_str)
+        != Some("subscription_started")
+    {
+        return Err(HerdrError::Parse(format!(
+            "herdr subscribe rejected: {}",
+            ack.trim()
+        )));
+    }
+    let (tx, rx) = mpsc::channel();
+    let shutdown = Arc::clone(shutdown);
+    std::thread::spawn(move || {
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Some(event) = parse_subscription_event(&line) {
+                        if tx.send(event).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(rx)
 }

@@ -21,6 +21,7 @@
 //!
 //! ```jsonc
 //! {"event":"snapshot","snapshot":{ /* §1.3 */ },"lag":0}
+//! {"event":"fleet","fleet":{"generatedAt":1763520000000,"topStatus":"working","units":[ /* all managed units */ ]}}
 //! {"event":"bus_message","busMessage":{"id":"msg_1","from":"S1-OC01","to":"S1-OC02","type":"handoff","preview":"…","at":1763520000000}}
 //! {"event":"decision","decision":{"at":1763520000000,"supervisor":"SV-1","session":"S1-OC01","action":"reprompt","reason":"…"}}
 //! {"event":"escalation","escalation":{"id":"esc_1","session":"S1-OC01","supervisor":"SV-1","kind":"stuck","reason":"…","at":1763520000000}}
@@ -33,6 +34,15 @@
 //! output tail the daemon publishes) changes — it is best-effort, not a raw
 //! pane stream. `lag` counts frames dropped for this client since its last
 //! successfully delivered snapshot; a normal client always sees `lag: 0`.
+//!
+//! `fleet` (additive) is a flat, ordered view of EVERY notch-managed unit —
+//! orchestrator, supervisors and sessions — derived from the very same
+//! snapshot, with `id`, `kind`, `status`, `topStatus` (the global rollup),
+//! `paneId`, `workspace`, `lastAction` and `revision`. It is pushed once right
+//! after `hello` on connect and again, immediately, whenever the derived view
+//! changes. It uses the same bounded outbox as every other frame, so lag and
+//! backpressure are unchanged. `hello` and `snapshot` frames are byte-identical
+//! to v1.
 //!
 //! Client → server (same command names and fields as bridge.md §2):
 //! `ping`, `snapshot`, `submit_task`, `message`, `kill`, `reprompt`, `focus`,
@@ -64,6 +74,21 @@
 //! required and compared in constant time, and `Host` must be the bound
 //! `127.0.0.1:<port>`. No external network, no TLS. The endpoint stays UNWIRED
 //! until `NOTCH_WS=1`; no `cli.rs` call site starts it.
+//!
+//! # Browser-compatible opt-in (`NOTCH_WS_BROWSER=1`)
+//!
+//! A real webview/browser always sends `Origin` and cannot set a custom
+//! `Authorization` header, so strict mode is unusable from `ui/`. With the
+//! explicit opt-in `NOTCH_WS_BROWSER=1` (and `NOTCH_WS=1`), a handshake carrying
+//! the SAME 64-hex token in the query string — `ws://127.0.0.1:<port>/?token=<64hex>`
+//! — is accepted even with an `Origin` header, provided `Host` is still exactly
+//! `127.0.0.1:<port>`. This is the deliberate tradeoff: the token is 32 bytes
+//! from `/dev/urandom` (unguessable, per-daemon), and the exact Host check still
+//! blocks DNS rebinding. No token / wrong token / wrong Host is rejected.
+//! Strict mode REMAINS THE DEFAULT and keeps rejecting every `Origin`; the
+//! legacy Bearer handshake is unchanged. The query token is additive — strict
+//! clients keep using the header. This is a v1.4 wire-contract change for
+//! `docs/bridge.md` (lead-owned).
 //! Each client has a bounded outbox (64 frames): when it fills, the oldest
 //! snapshot (else oldest event) is dropped and `lag` is incremented. Client
 //! commands are read and answered inline and are never queued or dropped, so a
@@ -171,16 +196,48 @@ pub fn load_or_create_token(state_dir: &Path) -> io::Result<String> {
     Ok(hex)
 }
 
-/// The full handshake policy. `Origin` is rejected unconditionally (drive-by
-/// browser connections), the Bearer token must match exactly, and `Host` must
-/// be the bound loopback address (DNS-rebinding defence).
-pub fn auth_headers_ok(
+/// Strict mode is the default. `NOTCH_WS_BROWSER=1` is the only opt-in to the
+/// query-token / Origin-tolerant handshake; any other value keeps strict mode.
+pub fn browser_ws_enabled() -> bool {
+    std::env::var("NOTCH_WS_BROWSER").map(|v| v == "1").unwrap_or(false)
+}
+
+/// Extract the `token` parameter from a URI query. Hex tokens need no URL
+/// decoding; any extra parameters are ignored, a missing one is rejected by
+/// the caller's constant-time comparison against the 64-hex daemon token.
+pub fn token_from_query(query: Option<&str>) -> Option<&str> {
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
+        .map(|v| v.split('#').next().unwrap_or(v))
+}
+
+/// The full handshake policy for both modes.
+///
+/// * strict (default): reject any `Origin`, require `Authorization: Bearer
+///   <token>`, require exact `Host`. This is the pre-v1.4 policy, unchanged.
+/// * browser opt-in: require `?token=<64hex>` and exact `Host`; an `Origin`
+///   header is allowed because browsers cannot hide it. The token is the same
+///   unguessable per-daemon value, so a hostile page cannot authenticate.
+pub fn handshake_auth_ok(
     origin: Option<&str>,
     authorization: Option<&str>,
     host: Option<&str>,
+    query: Option<&str>,
     expected_token: &str,
     expected_host: &str,
+    browser_mode: bool,
 ) -> bool {
+    let host_ok = host
+        .map(|h| constant_time_eq(h.as_bytes(), expected_host.as_bytes()))
+        .unwrap_or(false);
+    if !host_ok {
+        return false;
+    }
+    if browser_mode {
+        let provided = token_from_query(query).unwrap_or("");
+        return constant_time_eq(provided.as_bytes(), expected_token.as_bytes());
+    }
     if origin.is_some() {
         return false;
     }
@@ -190,11 +247,19 @@ pub fn auth_headers_ok(
     let Some(provided) = auth.strip_prefix("Bearer ") else {
         return false;
     };
-    let token_ok = constant_time_eq(provided.as_bytes(), expected_token.as_bytes());
-    let host_ok = host
-        .map(|h| constant_time_eq(h.as_bytes(), expected_host.as_bytes()))
-        .unwrap_or(false);
-    token_ok && host_ok
+    constant_time_eq(provided.as_bytes(), expected_token.as_bytes())
+}
+
+/// Pre-v1.4 strict policy, kept as a public seam so existing callers/tests do
+/// not change. Equivalent to `handshake_auth_ok(..., browser_mode = false)`.
+pub fn auth_headers_ok(
+    origin: Option<&str>,
+    authorization: Option<&str>,
+    host: Option<&str>,
+    expected_token: &str,
+    expected_host: &str,
+) -> bool {
+    handshake_auth_ok(origin, authorization, host, None, expected_token, expected_host, false)
 }
 
 fn auth_rejection() -> http::Response<Option<String>> {
@@ -229,19 +294,37 @@ pub fn serve_with_active(
     shutdown: Arc<AtomicBool>,
     active: Arc<AtomicUsize>,
 ) -> io::Result<()> {
+    serve_with_mode(listener, daemon, shutdown, active, browser_ws_enabled())
+}
+
+/// Same as [`serve_with_active`] with the handshake mode supplied explicitly.
+/// Production reads `NOTCH_WS_BROWSER`; tests pass the mode directly so the
+/// two policies can be exercised against real sockets without process-global
+/// environment races.
+pub fn serve_with_mode(
+    listener: TcpListener,
+    daemon: Arc<Daemon>,
+    shutdown: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+    browser_mode: bool,
+) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let expected_host = format!("127.0.0.1:{}", listener.local_addr()?.port());
     let token = load_or_create_token(&daemon.config.state_dir)?;
     let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Drive the daemon's existing debounced snapshot flush. This is the same
-    // call the NDJSON socket makes; pending_change makes double-flushes a no-op.
+    // WS is the real-time transport: flush pending changes as soon as they are
+    // marked instead of waiting out the NDJSON socket's 100 ms debounce. The
+    // guard makes this a no-op on a quiet daemon, and double-flushes from the
+    // socket's own flusher remain harmless (pending_change is cleared here).
     {
         let daemon = Arc::clone(&daemon);
         let shutdown = Arc::clone(&shutdown);
         std::thread::spawn(move || {
             while !shutdown.load(Ordering::SeqCst) {
-                daemon.flush_subscriber_snapshots();
+                if daemon.has_pending_change() {
+                    daemon.flush_subscribers_immediate();
+                }
                 std::thread::sleep(FLUSH_TICK);
             }
         });
@@ -276,7 +359,15 @@ pub fn serve_with_active(
                 let token = token.clone();
                 let expected_host = expected_host.clone();
                 std::thread::spawn(move || {
-                    handle_conn(stream, daemon, clients, shutdown, &token, &expected_host);
+                    handle_conn(
+                        stream,
+                        daemon,
+                        clients,
+                        shutdown,
+                        &token,
+                        &expected_host,
+                        browser_mode,
+                    );
                     active.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -416,7 +507,9 @@ fn event_pump(daemon: Arc<Daemon>, clients: Arc<Mutex<Vec<Client>>>, shutdown: A
     let (sub_id, rx) = daemon.register_subscriber();
     // Seed from the current state so nothing already in the snapshot is
     // replayed as a "delta" when the first change arrives.
-    let mut prev = serde_json::to_value(daemon.snapshot()).ok();
+    let seeded = serde_json::to_value(daemon.snapshot()).ok();
+    let mut prev = seeded.clone();
+    let mut last_fleet = seeded.as_ref().map(fleet_from_snapshot);
 
     while !shutdown.load(Ordering::SeqCst) {
         match rx.recv_timeout(DEBOUNCE_POLL) {
@@ -427,10 +520,19 @@ fn event_pump(daemon: Arc<Daemon>, clients: Arc<Mutex<Vec<Client>>>, shutdown: A
                 };
                 let current = v.get("snapshot").cloned().unwrap_or(Value::Null);
                 let deltas = snapshot_deltas(prev.as_ref(), &current);
-                prev = Some(current);
+                prev = Some(current.clone());
 
-                let mut frames = Vec::with_capacity(deltas.len() + 1);
+                // The fleet view is pure derivation from this snapshot, never
+                // a second source of truth. Equal views are not re-pushed.
+                let fleet = fleet_from_snapshot(&current);
+                let fleet_changed = last_fleet.as_ref() != Some(&fleet);
+                last_fleet = Some(fleet.clone());
+
+                let mut frames = Vec::with_capacity(deltas.len() + 2);
                 frames.push(OutFrame::Snapshot(v));
+                if fleet_changed {
+                    frames.push(OutFrame::Event(fleet));
+                }
                 frames.extend(deltas.into_iter().map(OutFrame::Event));
 
                 let guard = clients.lock().unwrap_or_else(|e| e.into_inner());
@@ -445,6 +547,66 @@ fn event_pump(daemon: Arc<Daemon>, clients: Arc<Mutex<Vec<Client>>>, shutdown: A
         }
     }
     daemon.unregister_subscriber(sub_id);
+}
+
+/// Derive the additive `fleet` frame from one §1.3 snapshot. Every field is
+/// projected from data that already exists in the snapshot; no extra daemon
+/// state, no extra herdr call, no second poll. The unit order is ORCH, then
+/// supervisors (already id-sorted), then sessions (already id-sorted).
+pub fn fleet_from_snapshot(snapshot: &Value) -> Value {
+    let top = snapshot
+        .get("orchestrator")
+        .and_then(|o| o.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("idle");
+    let at = snapshot.get("generatedAt").cloned().unwrap_or(Value::Null);
+    let mut units: Vec<Value> = Vec::new();
+
+    units.push(json!({
+        "id": "ORCH", "kind": "orchestrator", "status": top, "topStatus": top,
+        "paneId": Value::Null, "workspace": Value::Null,
+        "lastAction": Value::Null, "revision": Value::Null,
+    }));
+
+    if let Some(supervisors) = snapshot.get("supervisors").and_then(Value::as_array) {
+        for s in supervisors {
+            let status = s.get("status").and_then(Value::as_str).unwrap_or("idle");
+            units.push(json!({
+                "id": s.get("id").cloned().unwrap_or(Value::Null),
+                "kind": "supervisor",
+                "status": status,
+                "topStatus": top,
+                "title": s.get("title").cloned().unwrap_or(Value::Null),
+                "paused": s.get("paused").cloned().unwrap_or(Value::Null),
+                "paneId": Value::Null,
+                "workspace": Value::Null,
+                "lastAction": s.get("title").cloned().unwrap_or(Value::Null),
+                "revision": Value::Null,
+            }));
+        }
+    }
+
+    if let Some(sessions) = snapshot.get("sessions").and_then(Value::as_array) {
+        for s in sessions {
+            let status = s.get("status").and_then(Value::as_str).unwrap_or("idle");
+            units.push(json!({
+                "id": s.get("id").cloned().unwrap_or(Value::Null),
+                "kind": "session",
+                "status": status,
+                "topStatus": top,
+                "sup": s.get("sup").cloned().unwrap_or(Value::Null),
+                "paneId": s.get("paneId").cloned().unwrap_or(Value::Null),
+                "workspace": s.get("cwd").cloned().unwrap_or(Value::Null),
+                "lastAction": s.get("lastAction").cloned().unwrap_or(Value::Null),
+                "revision": s.get("lastRevision").cloned().unwrap_or(Value::Null),
+            }));
+        }
+    }
+
+    json!({
+        "event": "fleet",
+        "fleet": { "generatedAt": at, "topStatus": top, "units": units }
+    })
 }
 
 /// Pure delta extractor used by the event pump: given the previous snapshot
@@ -556,6 +718,7 @@ fn handle_conn(
     shutdown: Arc<AtomicBool>,
     token: &str,
     expected_host: &str,
+    browser_mode: bool,
 ) {
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME_BYTES))
@@ -571,7 +734,16 @@ fn handle_conn(
         let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
         let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok());
         let host = req.headers().get("host").and_then(|v| v.to_str().ok());
-        if auth_headers_ok(origin, authorization, host, &expected_token, &expected_host) {
+        let query = req.uri().query();
+        if handshake_auth_ok(
+            origin,
+            authorization,
+            host,
+            query,
+            &expected_token,
+            &expected_host,
+            browser_mode,
+        ) {
             Ok(response)
         } else {
             Err(auth_rejection())
@@ -586,17 +758,32 @@ fn handle_conn(
     let _ = ws.get_ref().set_read_timeout(Some(READ_TIMEOUT));
     let _ = ws.get_ref().set_write_timeout(Some(WRITE_TIMEOUT));
 
+    let snapshot_value = serde_json::to_value(daemon.snapshot()).unwrap_or(Value::Null);
     let hello = json!({
         "event": "hello",
         "version": 1,
         "pid": std::process::id(),
-        "snapshot": serde_json::to_value(daemon.snapshot()).unwrap_or(Value::Null),
+        "snapshot": snapshot_value.clone(),
     });
+    let outbox = Arc::new(Outbox::new());
+    // First fleet frame is queued behind hello on this connection only. An
+    // empty daemon sends hello alone, preserving the v1 frame sequence for
+    // clients that are not interested in an empty fleet. The hello bytes
+    // themselves are unchanged.
+    let has_units = ["supervisors", "sessions"].iter().any(|key| {
+        snapshot_value
+            .get(*key)
+            .and_then(Value::as_array)
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    });
+    if has_units {
+        outbox.push(OutFrame::Event(fleet_from_snapshot(&snapshot_value)));
+    }
     if send_text(&mut ws, hello).is_err() {
         return;
     }
 
-    let outbox = Arc::new(Outbox::new());
     let id = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
     clients
         .lock()
@@ -639,6 +826,13 @@ fn conn_loop(
             match ws.read() {
                 Ok(Message::Text(text)) => {
                     let replies = handle_command(daemon, text.as_str());
+                    // A mutating WS command has already called notify_change.
+                    // Push it to subscribers now instead of waiting out the
+                    // NDJSON socket's 100 ms debounce: this is the real-time
+                    // path, and fleet frames must land in the same tick.
+                    if daemon.has_pending_change() {
+                        daemon.flush_subscribers_immediate();
+                    }
                     for reply in replies {
                         if send_text(ws, reply).is_err() {
                             return;

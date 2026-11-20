@@ -19,7 +19,8 @@ use std::sync::Arc;
 const USAGE: &str = "notchd — OpenCode orchestration control plane
 
 USAGE:
-  notchd serve [--opencode-decider|--deterministic]   Run the daemon (socket at $NOTCH_SOCK)
+  notchd serve [--opencode-decider|--deterministic] [--event-source|--no-event-source]
+                                                     Run the daemon (event-driven agent activity by default)
   notchd status                                        Print daemon status JSON
   notchd snapshot                                      Print the snapshot JSON
   notchd run-plan <file>                               Spawn supervisors/sessions from a plan
@@ -377,10 +378,13 @@ fn bind_socket(path: &std::path::Path) -> std::io::Result<std::os::unix::net::Un
 fn cmd_serve(rest: &[String]) -> i32 {
     let mut config = Config::from_env();
     let mut opencode_decider = false;
+    let mut event_source = true;
     for flag in rest {
         match flag.as_str() {
             "--opencode-decider" => opencode_decider = true,
             "--deterministic" => {} // the default; accepted for symmetry
+            "--event-source" => event_source = true,
+            "--no-event-source" => event_source = false,
             other => {
                 eprintln!("unknown flag: {other}\n{USAGE}");
                 return 2;
@@ -427,13 +431,21 @@ fn cmd_serve(rest: &[String]) -> i32 {
         }
     };
 
-    let _poll = {
-        let daemon = Arc::clone(&daemon);
-        let shutdown = Arc::new(AtomicBool::new(false));
-        std::thread::spawn(move || daemon.run_poll_loop(shutdown))
-    };
-    let _ = std::io::Write::flush(&mut std::io::stdout());
     let shutdown = Arc::new(AtomicBool::new(false));
+    {
+        let daemon = Arc::clone(&daemon);
+        let stop = Arc::clone(&shutdown);
+        if event_source {
+            // herdr `events.subscribe` for managed panes is the primary
+            // activity signal; the CLI agent-list poll remains its fallback.
+            std::thread::spawn(move || {
+                let _ = crate::eventsource::run(daemon, stop);
+            });
+        } else {
+            std::thread::spawn(move || daemon.run_poll_loop(stop));
+        }
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
     if crate::ws::ws_enabled() {
         let port = crate::ws::port_from_env();
         match crate::ws::bind(port) {
