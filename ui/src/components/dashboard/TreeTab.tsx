@@ -147,10 +147,10 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
         </div>
         <div className="sidebar-actions">
           <button className="sidebar-btn ripple" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
-            <PixelIcon name="plus" size={12} /><span>New supervisor</span>
+            <PixelIcon name="plus" size={24} /><span>New supervisor</span>
           </button>
           <button className="sidebar-btn ripple" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
-            <PixelIcon name="plus" size={12} /><span>New session</span>
+            <PixelIcon name="plus" size={24} /><span>New session</span>
           </button>
         </div>
       </aside>
@@ -191,7 +191,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
                     {meta && <p className="center-meta">{meta}</p>}
                   </div>
                   <span className={`center-status center-status--${status}`}>
-                    <i className={`dot dot--${status}`} aria-hidden="true" />{status[0]?.toUpperCase()}{status.slice(1)}
+                    <i className={`dot dot--${status}`} aria-hidden="true" /><span className={status === 'working' ? 'diether-shimmer' : undefined}>{status[0]?.toUpperCase()}{status.slice(1)}</span>
                   </span>
                   {load > 0 && status === 'working' && (
                     <div className="center-dither"><PixelMeter value={load} cells={32} tone="hot" label="Event rate" /></div>

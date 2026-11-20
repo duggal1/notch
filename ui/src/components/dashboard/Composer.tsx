@@ -24,10 +24,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     } catch { /* storage may be unavailable */ }
     return '';
   });
-  const [dod, setDod] = useState('');
-  const [dodOpen, setDodOpen] = useState(false);
-  const [cwd, setCwd] = useState(() => { try { return localStorage.getItem('notch.cwd') ?? '/Users/harshitduggal'; } catch { return '/Users/harshitduggal'; } });
-  const [cwdHint, setCwdHint] = useState(false);
+  const [cwd] = useState(() => { try { return localStorage.getItem('notch.cwd') ?? '/Users/harshitduggal'; } catch { return '/Users/harshitduggal'; } });
   const [model, setModel] = useState(() => { try { return localStorage.getItem('notch.model') ?? 'auto'; } catch { return 'auto'; } });
   const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
   const [modelOpen, setModelOpen] = useState(false);
@@ -92,20 +89,18 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     const text = task.trim();
     if (!text || state === 'sending') return;
     const cwdClean = cwd.trim();
-    if (cwdClean && !cwdClean.startsWith('/')) { setCwdHint(true); return; }
     const t0 = performance.now();
     setState('sending');
-    try { localStorage.setItem('notch.cwd', cwdClean); localStorage.setItem('notch.model', model); } catch { /* storage may be unavailable */ }
+    try { localStorage.setItem('notch.model', model); } catch { /* storage may be unavailable */ }
     const res = await submitTask({
       task: text,
       cwd: cwdClean || undefined,
-      definitionOfDone: dod.trim() || undefined,
       model: model || undefined,
       supervisorId: targetSupervisorId,
     });
     const ms = Math.round(performance.now() - t0);
     if (res.ok) {
-      setTask(''); setDod(''); setCwdHint(false);
+      setTask('');
       setState({ ok: true, id: res.sessionId, ms });
       window.setTimeout(autosize, 0);
       window.setTimeout(() => setState('idle'), 2400);
@@ -148,23 +143,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
           aria-label="Assign work to a session"
         />
       </div>
-      <div className="composer-dod">
-        <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
-          <PixelIcon name="chevron" size={12} className={dodOpen ? 'rotate-180' : ''} />
-          Done when…
-        </button>
-        {dodOpen && (
-          <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
-            placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
-        )}
-      </div>
       <div className="composer-row">
-        <label className="cwd-field">
-          <PixelIcon name="folder" size={12} />
-          <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
-            onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
-            spellCheck={false} aria-label="Working directory" />
-        </label>
         <div ref={menuRef} className="model-picker">
           <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
             <span className="tabular-nums">{model}</span>
@@ -187,7 +166,6 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
           {state === 'sending' ? 'Assigning…' : 'Assign'}
         </button>
       </div>
-      {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
       {error && <div className="composer-error" role="alert"><PixelIcon name="alert" size={12} />{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
       {done && state.id && <div className="composer-ok"><PixelIcon name="check" size={12} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
     </div>

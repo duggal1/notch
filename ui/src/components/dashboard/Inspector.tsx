@@ -62,14 +62,14 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
           </div>
           <div className="control-row">
             <button className="ctl ripple" onClick={() => msgRef.current?.focus()} title="Message this supervisor">
-              <PixelIcon name="bubble" size={12} /><span>Message</span>
+              <PixelIcon name="bubble" size={24} /><span>Message</span>
             </button>
             <button className="ctl ripple" onClick={() => onTogglePause(supervisor)} title={supervisor.paused ? 'Resume supervisor' : 'Pause supervisor'}>
-              {supervisor.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
+              {supervisor.paused ? <PixelIcon name="play" size={24} /> : <PixelIcon name="pause" size={24} />}
               <span>{supervisor.paused ? 'Resume' : 'Pause'}</span>
             </button>
             <button className="ctl ctl--kill ripple" onClick={() => onKill(supervisor.id)} title="Kill every session under this supervisor">
-              <PixelIcon name="kill" size={12} /><span>Kill all</span>
+              <PixelIcon name="kill" size={24} /><span>Kill all</span>
             </button>
           </div>
           <form className="inspector-message" onSubmit={async (e) => {
@@ -83,7 +83,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
             <input ref={msgRef} value={draft} onChange={(e) => { setDraft(e.target.value); setSendState('idle'); }}
               placeholder={`Message ${supervisor.id}`} aria-label={`Message ${supervisor.id}`} spellCheck={false} />
             <button type="submit" className="ctl ripple" disabled={!draft.trim()} aria-label="Send message">
-              <PixelIcon name="send" size={12} />
+              <PixelIcon name="send" size={24} />
             </button>
           </form>
           {sendState !== 'idle' && (
@@ -119,7 +119,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
   const statusBlock = (st: string) => (
     <div className="inspector-status">
       <i className={`dot dot--${st}`} />
-      <span>{st}</span>
+      <span className={st === 'working' ? 'diether-shimmer' : undefined}>{st}</span>
     </div>
   );
 
@@ -182,17 +182,17 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
 
         <div className="control-row">
           <button className="ctl ripple" onClick={() => onReprompt(s.id)} title="Re-prompt this session">
-            <PixelIcon name="reprompt" size={12} /><span>Re-prompt</span>
+            <PixelIcon name="reprompt" size={24} /><span>Re-prompt</span>
           </button>
           <button className="ctl ripple" onClick={() => onTogglePause(ownSup!)} disabled={!ownSup} title={ownSup?.paused ? 'Resume supervisor' : 'Pause supervisor'}>
-            {ownSup?.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
+            {ownSup?.paused ? <PixelIcon name="play" size={24} /> : <PixelIcon name="pause" size={24} />}
             <span>{ownSup?.paused ? 'Resume' : 'Pause'}</span>
           </button>
           <button className="ctl ctl--kill ripple" onClick={() => onKill(s.id)} title="Kill session">
-            <PixelIcon name="kill" size={12} /><span>Kill</span>
+            <PixelIcon name="kill" size={24} /><span>Kill</span>
           </button>
           <button className="ctl ripple" onClick={() => onOpenHerdr(s.id)} title="Open this session in herdr">
-            <PixelIcon name="focus" size={12} /><span>Herdr</span>
+            <PixelIcon name="focus" size={24} /><span>Herdr</span>
           </button>
         </div>
       </div>
