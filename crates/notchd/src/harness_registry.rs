@@ -196,20 +196,8 @@ pub fn opencode_definition() -> HarnessDefinition {
 /// definitions — no call-site hardcoding. herdr is admitted and spawn-capable;
 /// opencode is registered for legacy resolution only (Status + Models) and
 /// cannot create a managed pane.
-pub fn harness_listing() -> Vec<(String, String, Vec<(&'static str, bool)>)> {
-    [herdr_definition(), opencode_definition()]
-        .iter()
-        .map(|def| {
-            (
-                def.id.clone(),
-                def.label.clone(),
-                HarnessOperation::ALL
-                    .iter()
-                    .map(|op| (op.as_str(), def.supports(*op)))
-                    .collect(),
-            )
-        })
-        .collect()
+pub fn harness_listing() -> Vec<HarnessDefinition> {
+    vec![herdr_definition(), opencode_definition()]
 }
 
 /// Typed failures at the registry boundary. `Display` is wire-safe: no wrapper

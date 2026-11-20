@@ -326,9 +326,6 @@ const PROJECTION: &str = "snapshot-projection";
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
-fn u64_at(v: &Value, key: &str) -> u64 {
-    v.get(key).and_then(Value::as_u64).unwrap_or(0)
-}
 fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key)
         .and_then(Value::as_array)
@@ -340,18 +337,22 @@ fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
 /// the sole admitted/spawn-capable engine; opencode declares Status + Models
 /// only and cannot make a managed pane.
 fn declare_harnesses() -> Vec<HarnessOut> {
+    use notchd::harness_registry::HarnessOperation;
     notchd::harness_registry::harness_listing()
         .into_iter()
-        .map(|(id, label, capabilities)| HarnessOut {
-            id,
-            label,
-            capabilities: capabilities
-                .into_iter()
-                .map(|(name, supported)| HarnessCapabilityOut {
-                    name: name.to_string(),
-                    supported,
+        .map(|def| {
+            let capabilities: Vec<HarnessCapabilityOut> = HarnessOperation::ALL
+                .iter()
+                .map(|op| HarnessCapabilityOut {
+                    name: op.as_str().to_string(),
+                    supported: def.supports(*op),
                 })
-                .collect(),
+                .collect();
+            HarnessOut {
+                id: def.id,
+                label: def.label,
+                capabilities,
+            }
         })
         .collect()
 }
