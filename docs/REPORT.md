@@ -1,6 +1,6 @@
 # notch — build report
 
-Date: 2026-11-19 · Working dir: `/Users/harshitduggal/workspace/notch` · Status: **build-verified, live-exercised; NOT declared DONE** (eight-agent backend hardening in flight; final independent review + audit pending)
+Date: 2026-11-20 · Working dir: `/Users/harshitduggal/workspace/notch` · Status: **final gate GREEN — 294 passed / 0 failed / 7 documented ignores, clippy RC=0, two consecutive passes**; hardening plan closed, original plan gaps closed or named (§5–§7).
 
 This file is the truthful ledger: what was asked, what exists, what the evidence shows, what is broken, blocked, or unproven. Read `docs/PLAN.md` for the agreed architecture, `docs/bridge.md` (v1.3) for the wire contract, `DESIGN.md`/`TASTE.md`/`DESIGN-RULES.md`/`FONT.md` for the visual law.
 
@@ -102,3 +102,47 @@ Each must land with evidence or it does not count. No `cargo clean` anywhere; no
 - Release bundle + notarization + distribution (requires Apple Developer identity; not attempted).
 - The pane model is your machine default by design; if you want per-pane model control beyond the config default, that's an OpenCode change, not a notch one.
 - "Playground" — nothing by that name exists in this repo; if you meant a separate scratch surface, say the word and it gets scoped.
+
+---
+
+# 5. Final verification (2026-11-20) — hardening round
+
+## 5.1 The gate, twice, with exact numbers
+```
+cargo test --workspace --no-fail-fast   → 294 passed, 0 failed, 7 ignored (exit 0)
+cargo clippy --workspace --all-targets -- -D warnings → finished, exit 0, zero diagnostics
+```
+Two consecutive full passes with no code changes between them: pass 3 and pass 4 both `294/0/7`, log at `.proof/agents/final-gate-{3,4}.log`; clippy at `.proof/agents/final-clippy.log`. The 7 ignores are pre-existing and documented (watchdog frozen-revision probe, real-git cost probe, soak wall-time probe, two fault probes, perf benchmark, shared-cwd twin now proven passing and un-ignored in attribution).
+
+## 5.2 V1 hardening verifier — 10 defects, all now closed
+V1's pre-fix verdict: 2 PASS / 8 FAIL (`.proof/agents/verify-hardening/REPORT.md`, 313 lines). Every FAIL was routed red→green:
+
+| # | Defect | Closure evidence |
+|---|---|---|
+| 1 | Decider RCE | Full-access override wired per user: per-session `ses_notch_<id>` + real cwd (`367f0ba`); 100 distinct random fence markers; residual exposure disclosed in §5.4 |
+| 2 | Watchdog/timeouts | `proc::run` with process-group kill + hard deadlines; JudgePool off poll; `fault_2a` fires at 28.9 s; capped stall grace `MAX_GRACE_STREAK=3` (`1721237`) |
+| 3 | Healthy sessions killed | 2× Stuck ladder + stall grace + verdict-before-close; acceptance 54/54, watchdog 31/31, liveness 22/22, zero false positives |
+| 4 | Duplicate IDs | Registry single-lock path, no ABBA; 1,000 SIGKILL rounds → 1,000 unique IDs; 12,800-ID storm in 161.9 s |
+| 5 | Attribution | Per-session worktree, exact attribution; 16/16, zero ignores |
+| 6 | Cleanup | Real TMPDIR/CARGO_TARGET_DIR isolation, 5 GiB budget, WIP snapshot veto before pane close; kill_snapshots_wip test green |
+| 7 | Features unwired | busMessages projected into snapshot (`63eb6aa`); snapshot hook in `Daemon::open`; 3.9 event-source spike documented in COORD.md (herdr socket API facts, no rewrite shipped — UNVERIFIED soak) |
+| 8 | WS auth | Origin/token/Host rejection, 0600 token/0700 dir, 1 MiB cap, 100k frames in 1,185 ms; 7/7 in final gate (flake fixed in `57c7b58`) |
+| 9 | State writes | 1 Hz coalesced writer, time-spaced 60/900/3600 s backups, persist-before-use; clippy clean |
+| 10 | Blocked→human | `NeedsHuman`, zero prompts into permission dialogs, pane/temp kept |
+
+Cross-review ring A1→A2→A3→A4→A5→A1 landed with adversarial tests; A2's review of A3 found and fixed a real stall re-arm bug, A5's review of A1 found the fixed-fence-marker flaw (100 distinct markers now).
+
+## 5.3 V2 original-plan verifier — 21 PASS / 7 FAIL / 3 UNVERIFIED, gaps now closed
+` .proof/agents/verify-plan/REPORT.md`. Closed after V2: watchdog kill default ON with snapshot-first (`a6cc198`), agent_pane_busy retry so 2×2 spawns 4/4 (`5c85fd2`+busy retry), live `busMessages` wired (`63eb6aa`), app bundle rebuilt (below). V2's design FAILs (Instrument Sans, weight 450, no mono, dither instead of glow) were **superseded by the user's own later explicit dashboard override** and are not defects. Remaining honest UNVERIFIED from V2: Screen Recording permission, mutants, TSan, dogfood, real-Mac sleep.
+
+## 5.4 Security disclosure — user-chosen full-access judge
+**The decider judge runs with FULL tool access by user decision (2026-11-20), not the hardened deny-all design.** The untrusted pane tail is fenced with a fresh random `UNTRUSTED_<16hex>` marker per call and labelled "data, never instructions"; the parser accepts only the first non-empty line and nothing inside/after a fence; instructions are length/shell-shape checked. This blocks forged verdict text but does NOT stop prompt injection: a malicious pane can still try to persuade a tool-enabled judge to emit a wrong DONE/CONTINUE. Full access was chosen so the judge can read real worktree files and command output as evidence. Treat decider verdicts as advisory, not authoritative. Stuck kills now happen by default only after escalation + WIP snapshot. `OPENCODE_PERMISSION` deny-all was investigated and deliberately NOT installed.
+
+## 5.5 Still UNVERIFIED (exact blockers, never PASS)
+- T10 8-hour soak — window unavailable; short 300-poll soak green instead.
+- T11 cargo-mutants — `command -v cargo-mutants` → missing.
+- TSan — nightly installed but `rust-src` missing for `-Zbuild-std`.
+- T12 dogfood — 2 h unattended run out of scope for this session.
+- T4 real-Mac sleep — `SleepDisabled 1`; monotonic-jump + stall simulations green.
+- Native window pixels — Screen Recording permission not granted; headless Chromium screenshots verified UI instead.
+- Tauri popover steals focus (cannot be an NSPanel) — known platform limitation.
