@@ -644,35 +644,43 @@ impl Daemon {
             }
             // Verdict recorded first; now snapshot WIP and close. A failed
             // snapshot vetoes the close so uncommitted work is never lost.
+            // B1: git/herdr IO must not hold `inner` — a hung git would wedge
+            // every command and snapshot. Collect the IO results with the lock
+            // dropped, then re-lock once to apply them.
+            drop(inner);
+            let mut kill_warnings: Vec<String> = Vec::new();
+            let mut killed: Vec<String> = Vec::new();
             for (id, pane_id, cwd) in pending_kills {
                 match crate::supervisor::snapshot_worktree(Path::new(&cwd), &id, "stuck") {
                     Ok(sha) => {
-                        push_warning(&mut inner, format!("{id} stuck; WIP snapshot {sha:?}"));
+                        kill_warnings.push(format!("{id} stuck; WIP snapshot {sha:?}"));
                         match self.herdr.pane_close(&pane_id) {
                             Ok(()) => {
-                                push_warning(
-                                    &mut inner,
-                                    format!(
-                                        "{id} stuck (no revision change); pane {pane_id} closed"
-                                    ),
-                                );
-                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
-                                    s.status = Status::Failed;
-                                    s.failure_reason = Some("stuck".to_string());
-                                }
-                                cleaned.push(id);
+                                kill_warnings.push(format!(
+                                    "{id} stuck (no revision change); pane {pane_id} closed"
+                                ));
+                                killed.push(id);
                             }
-                            Err(e) => push_warning(
-                                &mut inner,
-                                format!("{id} stuck (no revision change); pane close failed: {e}"),
-                            ),
+                            Err(e) => kill_warnings.push(format!(
+                                "{id} stuck (no revision change); pane close failed: {e}"
+                            )),
                         }
                     }
-                    Err(e) => push_warning(
-                        &mut inner,
-                        format!("{id} stuck; WIP snapshot failed ({e}); pane close skipped"),
-                    ),
+                    Err(e) => kill_warnings.push(format!(
+                        "{id} stuck; WIP snapshot failed ({e}); pane close skipped"
+                    )),
                 }
+            }
+            inner = lock(&self.inner);
+            for w in kill_warnings {
+                push_warning(&mut inner, w);
+            }
+            for id in killed {
+                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
+                    s.status = Status::Failed;
+                    s.failure_reason = Some("stuck".to_string());
+                }
+                cleaned.push(id);
             }
             for id in &cleaned {
                 let _ = cleanup::cleanup_session(&self.config.tmp_dir, id);
