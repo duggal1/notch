@@ -22,6 +22,7 @@ pub mod error;
 pub mod events;
 pub mod eventsource;
 pub mod harness_registry;
+pub mod harness_registry;
 pub mod herdr;
 pub mod ledger;
 pub mod mcp_bridge;

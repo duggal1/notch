@@ -80,6 +80,22 @@ impl Daemon {
         gate
     }
 
+    /// Admission for a model re-prompt. Unlike `admit_start` this does NOT
+    /// count toward the dead-start storm detector — a re-prompt is not a new
+    /// process. An existing per-session preemption is still honoured.
+    pub fn admit_reprompt(&self, id: &str, mono: u64, supervisor: &str) -> StartGate {
+        let gate = {
+            let guard = fleet_guard_for(&self.config.state_dir);
+            let mut g = guard.lock().unwrap_or_else(|e| e.into_inner());
+            g.note_reprompt(id, mono)
+        };
+        if let Some(reason) = gate.reason() {
+            let mut inner = lock(&self.inner);
+            self.log_decision(&mut inner, supervisor, id, "re-prompt gate", reason);
+        }
+        gate
+    }
+
     /// One watchdog + supervision pass. `run_poll_loop` drives it every
     /// `poll_interval_ms`; tests drive it manually with a fake clock.
     pub fn poll_once(&self) {
@@ -316,7 +332,7 @@ impl Daemon {
                             // a held/preempted start leaves session state and
                             // every watchdog timestamp exactly as they were.
                             if !matches!(
-                                self.admit_start(&seed.id, mono, &seed.sup),
+                                self.admit_reprompt(&seed.id, mono, &seed.sup),
                                 StartGate::Admit
                             ) {
                                 continue;

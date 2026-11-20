@@ -146,9 +146,17 @@ pub fn run() -> Result<(), String> {
                     .resizable(false)
                     .shadow(false)
                     .visible(true)
+                    // P0: without accept-first-mouse macOS consumes the first click to
+                    // activate this borderless window, so the click never reaches the UI.
+                    .accept_first_mouse(true)
+                    .focused(true)
                     .initialization_script(&init_script)
                     .build()
                     .map_err(|e| format!("create popover window: {e}"))?;
+            // P0: be explicit — the notch must never ignore cursor events.
+            if let Err(e) = window.set_ignore_cursor_events(false) {
+                eprintln!("[notch] set_ignore_cursor_events(false) failed: {e}");
+            }
 
             if let Ok(ptr) = window.ns_window() {
                 macos::apply_window_chrome(ptr);

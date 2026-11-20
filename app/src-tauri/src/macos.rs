@@ -170,6 +170,33 @@ pub fn focus_existing_instance() -> bool {
     }
 }
 
+/// Activate our own process from the main thread. `open_dashboard` runs off the
+/// main thread, so the caller dispatches this with `app.run_on_main_thread`.
+/// AppKit activation is what actually lets the dashboard take focus from Ghostty.
+pub fn activate_foreground() {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    use objc2_foundation::NSString;
+
+    if MainThreadMarker::new().is_none() {
+        eprintln!("[notch] activate_foreground called off the main thread; skipped");
+        return;
+    }
+    let pid = std::process::id() as i32;
+    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(
+        "com.notch.app",
+    ));
+    for i in 0..apps.count() {
+        let app = apps.objectAtIndex(i);
+        if app.processIdentifier() == pid {
+            let activated =
+                app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+            eprintln!("[notch] activate_foreground pid={pid} activated={activated}");
+            return;
+        }
+    }
+    eprintln!("[notch] activate_foreground could not find our own NSRunningApplication");
+}
+
 /// One haptic tick (DESIGN.md §5.1: alignment on open, levelChange on
 /// failure). Best effort — never an error, never a no-op crash.
 pub fn perform_haptic(kind: &str) {

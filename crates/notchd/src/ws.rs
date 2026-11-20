@@ -101,11 +101,15 @@
 //! the shutdown flag. To make it always-on in `notchd serve`, bind and spawn
 //! next to the NDJSON socket:
 //!
-//! ```ignore
-//! let ws_listener = notchd::ws::bind(notchd::ws::port_from_env())?;
-//! let ws_daemon = Arc::clone(&daemon);
-//! let ws_shutdown = Arc::clone(&shutdown);
-//! std::thread::spawn(move || { let _ = notchd::ws::serve(ws_listener, ws_daemon, ws_shutdown); });
+//! ```no_run
+//! use std::{io, sync::{Arc, atomic::AtomicBool}};
+//! use notchd::Daemon;
+//!
+//! fn start_websocket(daemon: Arc<Daemon>, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+//!     let listener = notchd::ws::bind(notchd::ws::port_from_env())?;
+//!     std::thread::spawn(move || { let _ = notchd::ws::serve(listener, daemon, shutdown); });
+//!     Ok(())
+//! }
 //! ```
 
 use crate::daemon::Daemon;

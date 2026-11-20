@@ -6,9 +6,9 @@
 //! function so the geometry is unit-testable without a screen.
 //!
 //! Content geometry mirrors `frameFor` in ui (shell-geometry.ts / DESIGN.md §5.2):
-//!   rest: w = notch.w + 2*wing, h = notch.h          (wing = 60)
-//!   peek: w = notch.w + 2*wing + 120, h = notch.h+44
-//!   open: w = 560, h = 640                            (contentH default 640)
+//!   rest: w = notch.w + 2*wing, h = max(notch.h, 44)   (wing = 60; >= 44px hit target)
+//!   peek: w = notch.w + 2*wing + 120, h = max(notch.h+44, 72)
+//!   open: w = 560, h = contentH                        (640 default, 420 when idle)
 //! x is centered on the main screen; y is always 0 (the shell hangs from the bar).
 
 pub const REST_WING: f64 = 60.0;
@@ -16,6 +16,10 @@ pub const PEEK_EXTRA: f64 = 120.0;
 pub const PEEK_HEIGHT_EXTRA: f64 = 44.0;
 pub const OPEN_WIDTH: f64 = 560.0;
 pub const OPEN_HEIGHT: f64 = 640.0;
+/// Concise idle open height (P1). Clamped by `set_frame`.
+pub const OPEN_HEIGHT_IDLE: f64 = 420.0;
+/// The whole rest/peek pill is one real button; never smaller than 44px tall.
+pub const MIN_PILL_HEIGHT: f64 = 44.0;
 
 /// Dashboard (bridge.md §7): the standard macOS window. 1120×760 default,
 /// min 880×600 enforced by the window server; centered on the main screen.
@@ -148,14 +152,25 @@ pub fn dashboard_frame(screen_width: f64, screen_height: f64) -> FrameRect {
 /// Compute the window rect for a mode. `notch: None` means "no usable notch
 /// measurement for this screen" — the fallback frame is used.
 pub fn frame_for_mode(mode: Mode, screen_width: f64, notch: Option<NotchSize>) -> FrameRect {
+    frame_for_mode_content(mode, screen_width, notch, OPEN_HEIGHT)
+}
+
+/// Same math with an explicit open content height. The UI passes 420 when idle.
+pub fn frame_for_mode_content(
+    mode: Mode,
+    screen_width: f64,
+    notch: Option<NotchSize>,
+    content_height: f64,
+) -> FrameRect {
     let n = notch_or_fallback(notch);
+    let h = content_height.clamp(OPEN_HEIGHT_IDLE, OPEN_HEIGHT);
     let (width, height) = match mode {
-        Mode::Rest => (n.width + REST_WING * 2.0, n.height),
+        Mode::Rest => (n.width + REST_WING * 2.0, n.height.max(MIN_PILL_HEIGHT)),
         Mode::Peek => (
             n.width + REST_WING * 2.0 + PEEK_EXTRA,
-            n.height + PEEK_HEIGHT_EXTRA,
+            (n.height + PEEK_HEIGHT_EXTRA).max(MIN_PILL_HEIGHT + PEEK_HEIGHT_EXTRA - 16.0),
         ),
-        Mode::Open => (OPEN_WIDTH, OPEN_HEIGHT),
+        Mode::Open => (OPEN_WIDTH, h),
     };
     let x = ((screen_width - width) / 2.0).max(0.0);
     FrameRect {

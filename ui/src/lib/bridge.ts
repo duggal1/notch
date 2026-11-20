@@ -89,7 +89,7 @@ export const isTauri = (): boolean =>
   typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export type UiAction =
-  | { cmd: 'set_frame'; mode: 'rest' | 'peek' | 'open' }
+  | { cmd: 'set_frame'; mode: 'rest' | 'peek' | 'open'; contentH?: number }
   | { cmd: 'open_dashboard' }
   | { cmd: 'kill'; id: string }
   | { cmd: 'reprompt'; id: string; text: string }

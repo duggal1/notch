@@ -21,7 +21,7 @@ use notchd::daemon::{KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, Submi
 use notchd::snapshot::fleet_view;
 use notchd::Daemon;
 
-use crate::frame::{frame_for_mode, Mode};
+use crate::frame::{frame_for_mode, frame_for_mode_content, Mode, OPEN_HEIGHT};
 use crate::macos;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -191,12 +191,26 @@ pub async fn list_models(daemon: State<'_, Arc<Daemon>>) -> Result<ModelsAck, St
 /// this command shows + unminimizes + focuses it.
 /// Shared by the command and the tray's "Open dashboard" item.
 pub(crate) fn show_dashboard(app: &AppHandle) -> Result<serde_json::Value, String> {
+    eprintln!("[notch] show_dashboard: enter");
     if let Some(window) = app.get_webview_window("dashboard") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        if let Err(e) = window.show() {
+            eprintln!("[notch] show_dashboard show failed: {e}");
+        }
+        if let Err(e) = window.unminimize() {
+            eprintln!("[notch] show_dashboard unminimize failed: {e}");
+        }
+        if let Err(e) = window.set_focus() {
+            eprintln!("[notch] show_dashboard set_focus failed: {e}");
+        }
+        // A borderless always-on-top popover can own focus; AppKit activation is what
+        // actually pulls the dashboard in front of the app the user was in (Ghostty).
+        if let Err(e) = app.run_on_main_thread(|| macos::activate_foreground()) {
+            eprintln!("[notch] show_dashboard activation dispatch failed: {e}");
+        }
+        eprintln!("[notch] show_dashboard: shown + focused");
         return Ok(serde_json::json!({ "ok": true, "focused": true }));
     }
+    eprintln!("[notch] show_dashboard: dashboard window missing; recreating");
 
     // The window is destroyed on close — recreate it.
     use tauri::webview::WebviewWindowBuilder;
@@ -230,6 +244,7 @@ pub(crate) fn show_dashboard(app: &AppHandle) -> Result<serde_json::Value, Strin
 
 #[tauri::command]
 pub fn open_dashboard(app: AppHandle) -> Result<serde_json::Value, String> {
+    eprintln!("[notch] open_dashboard invoked");
     show_dashboard(&app)
 }
 
@@ -242,11 +257,27 @@ pub fn open_dashboard(app: AppHandle) -> Result<serde_json::Value, String> {
 /// intent system. The transient oversized click target is ≤ 460 ms and by
 /// design (`peek` grows downward from the bar, never over neighbours' work).
 #[tauri::command]
-pub fn set_frame(mode: String, app: AppHandle) -> Result<FrameRectOut, String> {
+pub fn set_frame(
+    mode: String,
+    content_h: Option<f64>,
+    app: AppHandle,
+) -> Result<FrameRectOut, String> {
     let mode = Mode::parse(&mode)
         .ok_or_else(|| format!("unknown mode {mode:?} (expected rest|peek|open)"))?;
     let m = macos::cached_measurements();
-    let rect = frame_for_mode(mode, m.screen_width, m.notch);
+    let rect = match content_h {
+        Some(h) if h.is_finite() => frame_for_mode_content(mode, m.screen_width, m.notch, h),
+        _ => frame_for_mode(mode, m.screen_width, m.notch),
+    };
+    eprintln!(
+        "[notch] set_frame mode={} content_h={:?} -> {}x{} at ({},{})",
+        mode.as_str(),
+        content_h.unwrap_or(OPEN_HEIGHT),
+        rect.width,
+        rect.height,
+        rect.x,
+        rect.y
+    );
 
     let window = app
         .get_webview_window("main")
@@ -276,17 +307,6 @@ pub fn haptic(kind: String) -> Result<(), String> {
 }
 
 // ===========================================================================
-// Wave 2 capability surface (W2-5 wiring).
-//
-// These handlers are the app-side contract for the four wave-2 engine
-// capabilities: harness registry (W2-1), ledger/fencing (W2-2), approvals +
-// A2A bridge (W2-3) and supervisor storm controls (W2-4). The engine modules
-// are owned by those agents and land in parallel, so every handler has ONE
-// marked seam: today it projects the answer from the frozen §1.3 snapshot
-// and reports `source: "snapshot-projection"`; when the engine exposes its
-// method, replace only that seam. No wire shape changes for the webview.
-// ===========================================================================
-
 /// Declared capability of a harness. `supported: false` is a DECLINE, not a
 /// missing method: optional reads refuse before any side effect (stolen from
 /// agentbox `main/harnesses.mts`, structure only).
@@ -320,8 +340,6 @@ pub struct ApprovalOut {
     pub digest: String,
     pub signed: bool,
 }
-
-const PROJECTION: &str = "snapshot-projection";
 
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -476,17 +494,17 @@ pub async fn fleet_control(
         "hold" | "pause" => {
             let id = id.ok_or_else(|| "hold requires a supervisor id".to_string())?;
             daemon.pause_supervisor(&id)?;
-            Ok(json!({ "ok": true, "action": "hold", "id": id, "source": PROJECTION }))
+            Ok(json!({ "ok": true, "action": "hold", "id": id, "source": "engine" }))
         }
         "release" | "resume" => {
             let id = id.ok_or_else(|| "release requires a supervisor id".to_string())?;
             daemon.resume_supervisor(&id)?;
-            Ok(json!({ "ok": true, "action": "release", "id": id, "source": PROJECTION }))
+            Ok(json!({ "ok": true, "action": "release", "id": id, "source": "engine" }))
         }
         "kill_all" => {
             let ack = kill_switch_impl(&daemon);
             Ok(
-                json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": PROJECTION }),
+                json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": "engine" }),
             )
         }
         other => Err(format!(

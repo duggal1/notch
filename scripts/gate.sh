@@ -51,6 +51,7 @@ grep -q '^\[workspace\]' app/src-tauri/Cargo.toml && APP_SEPARATE=1
 # before clippy/test touch the app manifest.
 run_step "tsc"        "cd '$REPO/ui' && npx tsc --noEmit"
 run_step "vite-build" "cd '$REPO/ui' && npm run build"
+run_step "test-ui"    "cd '$REPO/ui' && npm test"
 
 run_step "fmt-workspace"    "cargo fmt --all -- --check"
 run_step "fmt-app"          "cargo fmt --manifest-path app/src-tauri/Cargo.toml -- --check"
