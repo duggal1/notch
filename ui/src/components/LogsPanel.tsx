@@ -20,7 +20,7 @@ export function LogsPanel({ open, payload, onClose }: { open: boolean; payload: 
             <span className="label" style={{ color: 'var(--t2)' }}>{payload?.id ?? '—'} · Logs</span>
             <button className="text-btn" onClick={onClose} aria-label="Close logs">
               <span className="dim">esc</span>
-              <PixelIcon name="close" size={14} />
+              <PixelIcon name="close" size={12} />
             </button>
           </div>
           <pre className="logs-pre">{payload?.lines.join('\n') ?? 'Waiting for log lines…'}</pre>

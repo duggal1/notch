@@ -1,81 +1,67 @@
-// CommsTab.tsx — the wire. Newest first, filter by from/to/type/body.
-// Each message is one soft card: route on top, payload underneath. Same-supervisor traffic
-// carries a dark fuchsia spine; cross-supervisor carries the hot one. Click jumps to the sender.
 import { useMemo, useState } from 'react';
 import type { Snapshot } from '../../lib/bridge';
 import { PixelIcon } from '../PixelIcon';
-import { TYPE_COLOR } from '../../lib/bus';
+
+type RouteFilter = 'same' | 'cross';
 
 export function CommsTab({ snapshot, onJumpToTree }: {
   snapshot: Snapshot | null;
   onJumpToTree: (sessionId: string) => void;
 }) {
   const [filter, setFilter] = useState('');
-  const sessions = snapshot?.sessions ?? [];
-  const supOf = useMemo(() => new Map(sessions.map((s) => [s.id, s.sup])), [sessions]);
+  const [route, setRoute] = useState<RouteFilter | null>(null);
+  const supervisors = useMemo(() => new Map([
+    ...(snapshot?.supervisors ?? []).map(({ id }): [string, string] => [id, id]),
+    ...(snapshot?.sessions ?? []).map(({ id, sup }): [string, string] => [id, sup]),
+  ]), [snapshot]);
   const messages = snapshot?.busMessages ?? [];
-
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return messages;
-    return messages.filter((m) =>
-      m.from.toLowerCase().includes(q) || m.to.toLowerCase().includes(q)
-      || m.type.includes(q) || m.preview.toLowerCase().includes(q));
-  }, [filter, messages]);
+  const scope = (from: string, to: string) => {
+    const sender = supervisors.get(from);
+    const receiver = supervisors.get(to);
+    return sender && receiver ? (sender === receiver ? 'same' : 'cross') : null;
+  };
+  const query = filter.trim().toLowerCase();
+  const filtered = messages.filter((message) =>
+    (!route || scope(message.from, message.to) === route)
+    && [message.from, message.to, message.type, message.preview].some((value) => value.toLowerCase().includes(query)));
 
   return (
-    <div className="comms">
-      <div className="comms-bar">
-        <span className="label">The wire</span>
-        <span className="view-head-count">{String(messages.length).padStart(2, '0')}</span>
-        <div className="comms-legend">
-          <span>Same sup <i className="marker marker--dim" /></span>
-          <span>Cross sup <i className="marker marker--lilac" /></span>
+    <section className="comms">
+      {messages.length > 0 && (
+        <div className="comms-bar">
+          <label className="comms-filter">
+            <PixelIcon name="search" size={12} />
+            <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter messages" aria-label="Filter messages" spellCheck={false} />
+          </label>
+          <button className="route-chip" aria-pressed={route === 'same'} onClick={() => setRoute(route === 'same' ? null : 'same')}>Same supervisor</button>
+          <button className="route-chip" aria-pressed={route === 'cross'} onClick={() => setRoute(route === 'cross' ? null : 'cross')}>Cross supervisor</button>
         </div>
-        <label className="comms-filter">
-          <PixelIcon name="search" size={12} />
-          <input value={filter} onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter from, to, type, body" aria-label="Filter messages" spellCheck={false} />
-        </label>
-        <span className="comms-legend-note">Newest first · the bus is the only channel</span>
-      </div>
-
+      )}
       <div className="comms-list">
-        {filtered.length === 0 ? (
-          <div className="empty-state">
-            <span className="display">{messages.length === 0 ? 'The bus is silent.' : 'No match.'}</span>
-            <p className="empty-line">
-              {messages.length === 0
-                ? 'Nothing has been said yet. Every cross-supervisor message lands here, newest first.'
-                : `Nothing matches “${filter.trim()}”. Clear the filter to see all ${messages.length} messages.`}
-            </p>
-            {messages.length > 0 && (
-              <button className="esc-btn esc-btn--primary ripple" onClick={() => setFilter('')}>Clear filter</button>
-            )}
-          </div>
-        ) : filtered.map((m, i) => {
-          const cross = supOf.get(m.from) !== supOf.get(m.to);
-          return (
-            <button
-              key={m.id}
-              style={{ animationDelay: `${Math.min(i, 10) * 26}ms` }}
-              className={`comms-row${cross ? ' comms-row--cross' : ''}`}
-              onClick={() => onJumpToTree(m.from)}
-            >
-              <span className="comms-line">
-                <span className="comms-time">{new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                <span className="comms-pair">{m.from} <span className="comms-arrow">→</span> {m.to}</span>
-                <span className="type-chip" style={{ color: TYPE_COLOR[m.type] }}>
-                  <i className="type-dot" style={{ background: TYPE_COLOR[m.type] }} />
-                  {m.type}
+        <div className="timeline">
+          {filtered.length === 0 ? (
+            <div className="timeline-entry">
+              <span className="comms-time">{messages.length === 0 ? 'Waiting' : 'Filtered'}</span>
+              <div className="timeline-empty">
+                <h2 className="title">{messages.length === 0 ? 'The bus is silent' : 'No matching messages'}</h2>
+                <p className="empty-line">{messages.length === 0 ? 'Messages between sessions appear here.' : 'Clear the filters to see all messages.'}</p>
+                {messages.length > 0 && <button className="route-chip" onClick={() => { setFilter(''); setRoute(null); }}>Clear filters</button>}
+              </div>
+            </div>
+          ) : filtered.map((message) => (
+            <div key={message.id} className={`timeline-entry${scope(message.from, message.to) === 'cross' ? ' timeline-entry--cross' : ''}`}>
+              <time className="comms-time" dateTime={new Date(message.at).toISOString()}>{new Date(message.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</time>
+              <button className="comms-row" disabled={!supervisors.has(message.from)} onClick={() => onJumpToTree(message.from)}>
+                <span className="comms-line">
+                  <span className="comms-pair mono">{message.from} → {message.to}</span>
+                  <span className="type-chip">{message.type.replaceAll('_', ' ')}</span>
                 </span>
-              </span>
-              <span className="comms-preview">{m.preview}</span>
-            </button>
-          );
-        })}
-        {filtered.length > 0 && <div className="wire-end"><span>end of wire</span></div>}
+                <span className="comms-preview">{message.preview}</span>
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }

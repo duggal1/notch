@@ -39,17 +39,17 @@ export const SessionRow = memo(function SessionRow({ session, now, killing, onLo
         </div>
         <div className="row-actions" data-actions>
           <button className="act" aria-label="Logs" title="Logs" onClick={(e) => { e.stopPropagation(); onLogs(session); }}>
-            <PixelIcon name="logs" size={16} />
+            <PixelIcon name="logs" size={12} />
           </button>
           <button className="act act--reprompt" aria-label="Re-prompt" title="Re-prompt" data-emphasis={failed ? '' : undefined}
             onClick={(e) => { e.stopPropagation(); onReprompt(session); }}>
-            <PixelIcon name="reprompt" size={16} />
+            <PixelIcon name="reprompt" size={12} />
           </button>
           <button className="act" aria-label="Focus pane" title="Focus pane" onClick={(e) => { e.stopPropagation(); onFocus(session.id); }}>
-            <PixelIcon name="focus" size={16} />
+            <PixelIcon name="focus" size={12} />
           </button>
           <button className="act" aria-label="Kill session" title="Kill" onClick={(e) => { e.stopPropagation(); onKill(session.id); }}>
-            <PixelIcon name="kill" size={16} />
+            <PixelIcon name="kill" size={12} />
           </button>
         </div>
       </div>

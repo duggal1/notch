@@ -8,6 +8,7 @@ This file sits next to `DESIGN.md` (and `DESIGN_RULES.md` if the repo has it).
 
 - `DESIGN.md` = the **skin**: tokens, type, color, radii, shadows, bans. It wins any conflict on those.
 - `taste.md` = everything **above the skin**: what to say, show, include, order, space, animate, and **delete**.
+- Notch uses the motion in `DESIGN.md` for changing numbers, keyboard focus, and the notch silhouette. The general recipes below illustrate other products.
 
 A model that follows DESIGN.md and ignores this file produces UI that is on-brand, consistent, and forgettable. DESIGN.md can make slop prettier. Only judgment makes it not slop.
 

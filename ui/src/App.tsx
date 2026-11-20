@@ -4,15 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Shell } from './components/Shell';
 import { Panel } from './components/Panel';
 import { LogsPanel } from './components/LogsPanel';
-import type { DistortionWaveHandle } from './vendor/distortion-waves/src';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { send, logs as fetchLogs, isTauri } from './lib/bridge';
 import type { Session, LogsPayload } from './lib/bridge';
-import { topStatus, workingCount, normalizeEps, pad2, fmtEps } from './lib/format';
+import { topStatus, workingCount, normalizeEps } from './lib/format';
 import { useSnapshot } from './lib/use-snapshot';
-import { useWhiteHot } from './lib/hot';
-import { reduced } from './lib/motion';
+import { useRipple } from './lib/use-ripple';
 import { frameFor, type Mode } from './lib/shell-geometry';
 import type { Status } from './lib/tokens';
 
@@ -26,7 +24,6 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
 
   const shellRef = useRef<HTMLDivElement>(null);
-  const waveRef = useRef<DistortionWaveHandle>(null);
   const epsRef = useRef(0);
   const modeRef = useRef<Mode>('rest');
   const intentTimer = useRef(0);
@@ -36,7 +33,7 @@ export default function App() {
   const supervisors = useMemo(() => snapshot?.supervisors ?? [], [snapshot]);
   // idle drives both the concise layout and the shorter open silhouette (<= 420px)
   const idle = sessions.length === 0;
-  const contentH = idle ? 420 : 640;
+  const contentH = idle ? 320 : 640;
   const eps = snapshot?.eps ?? 0;
   useEffect(() => {
     epsRef.current = eps;
@@ -57,7 +54,6 @@ export default function App() {
     prevTopRef.current = top;
     if (prev === null) return;
     send({ cmd: 'haptic', kind: top === 'failed' ? 'levelChange' : 'alignment' });
-    if (!reduced && top !== 'idle') waveRef.current?.play();
   }, [top, snapshot]);
 
   // ---------- intent machine ----------
@@ -145,38 +141,18 @@ export default function App() {
     for (const s of sessions) if (s.sup === supId) send({ cmd: 'kill', id: s.id });
   }, [sessions]);
 
-  useWhiteHot(shellRef);
+  useRipple(shellRef);
 
   const open = mode === 'open';
   const rest = frameFor('rest');
-  const peek = frameFor('peek');
 
   return (
     <Shell mode={mode} contentH={contentH} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
-      {/* rest / peek: idle is only the logo and a calm dot — zeros are noise */}
-      {idle ? (
-        <div className="rest-idle" aria-hidden={open}>
-          <span className="brand-logo" />
-          <i className="live-dot live-dot--idle" />
+      {!open && (
+        <div className="rest-indicators" style={{ width: rest.w }} aria-hidden="true">
+          <span className="rest-brand"><span className="brand-logo" /><i className={`live-dot live-dot--${top}`} /></span>
         </div>
-      ) : (
-        <>
-          <div className="wings pointer-events-none absolute top-0 flex items-center justify-between"
-            style={{ left: '50%', transform: 'translateX(-50%)', width: rest.w, height: rest.h }} aria-hidden={open}>
-            <div className="wing"><span className="wing-num">{pad2(wcount)}</span></div>
-            <div className="wing"><span className="wing-num">{fmtEps(Math.min(eps, 99.9))}</span></div>
-          </div>
-          <div className="peek-center" aria-hidden="true"
-            style={{ left: '50%', transform: 'translateX(-50%)', width: peek.w, top: peek.h - 44 }}>
-            <span className="peek-num num">{pad2(wcount)}</span>
-            <span className="label">In flight</span>
-          </div>
-        </>
       )}
-
-      {/* No dither behind the popover text: the only fields here are the sphere, the
-          logo and the idle hero. The radial backdrop was removed — it sat behind
-          "Sessions", the rows and the footer buttons (DESIGN §5 keep-out). */}
 
       <Panel
           open={open}
@@ -192,7 +168,6 @@ export default function App() {
           killingIds={killingIds}
           sweepSent={sweepSent}
           epsRef={epsRef}
-          waveRef={waveRef}
           logs={logs}
           reprompt={reprompt}
           focus={focus}

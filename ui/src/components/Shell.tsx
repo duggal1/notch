@@ -24,7 +24,7 @@ export function Shell({ mode, contentH = 640, shellRef, children, onEnter, onLea
     const el = shellRef.current;
     if (!el) return;
     // the fixed shell box is wider than the silhouette — centre the silhouette inside it
-    const x0 = (560 - width) / 2;
+    const x0 = (el.clientWidth - width) / 2;
     el.style.clipPath = `path('${notchPath(width, height, Math.max(0, Math.min(radius, height - e.current)), e.current, x0)}')`;
   };
 
@@ -58,13 +58,13 @@ export function Shell({ mode, contentH = 640, shellRef, children, onEnter, onLea
       ref={shellRef}
       className="shell"
       data-mode={mode}
-      role="button"
-      tabIndex={0}
+      role={mode === 'open' ? undefined : 'button'}
+      tabIndex={mode === 'open' ? undefined : 0}
       aria-label={mode === 'open' ? 'Notch control plane — expanded' : 'Notch control plane — hover to peek, click to open'}
       onPointerEnter={onEnter}
       onPointerLeave={onLeave}
       onClick={onTap}
-      onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onTap(); } }}
+      onKeyDown={(ev) => { if (mode !== 'open' && ev.target === ev.currentTarget && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); onTap(); } }}
     >
       {/* macOS passes fully transparent pixels through; keep a near-zero-alpha hit layer. */}
       <span className="hit" aria-hidden="true" />

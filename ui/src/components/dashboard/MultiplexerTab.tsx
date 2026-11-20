@@ -18,6 +18,7 @@ export function MultiplexerTab({ snapshot, onJumpToTree, onAssign }: {
   const escalations = snapshot?.escalations ?? [];
   const escalatedIds = useMemo(() => new Set(escalations.map((e) => e.session)), [escalations]);
   const working = sessions.filter((s) => s.status === 'working').length;
+  const done = sessions.filter((s) => s.status === 'done').length;
   const failed = sessions.filter((s) => s.status === 'failed').length;
 
   const badge = (s: typeof sessions[number]) =>
@@ -28,40 +29,43 @@ export function MultiplexerTab({ snapshot, onJumpToTree, onAssign }: {
 
   return (
     <div className="mux">
-      <div className="mux-bar">
-        <span className="label">Session array</span>
-        <span className="view-head-count">{String(sessions.length).padStart(2, '0')}</span>
-        <span className="mux-bar-rule" />
-        <span className="label">{working} working</span>
-        <span className="label">{failed} failed</span>
+      {sessions.length > 0 && <div className="mux-bar">
+        <div className="mux-totals" aria-label="Session totals">
+          <span className="num-l">{sessions.length}</span>
+          <div className="mux-distribution">
+            {[[working, 'working'], [done, 'done'], [failed, 'failed']].filter(([count]) => Number(count) > 0).map(([count, status]) => (
+              <span className="label" key={status}><i className={`dot dot--${status}`} />{count} {status}</span>
+            ))}
+          </div>
+        </div>
         <div className="layout-toggle" role="group" aria-label="Layout">
           <button className={layout === 'grid' ? 'toggle-btn is-active' : 'toggle-btn'} onClick={() => setLayout('grid')} aria-pressed={layout === 'grid'} aria-label="Grid layout">
-            <PixelIcon name="grid" size={13} />
+            <PixelIcon name="grid" size={12} />
           </button>
           <button className={layout === 'list' ? 'toggle-btn is-active' : 'toggle-btn'} onClick={() => setLayout('list')} aria-pressed={layout === 'list'} aria-label="List layout">
-            <PixelIcon name="list" size={13} />
+            <PixelIcon name="list" size={12} />
           </button>
         </div>
-      </div>
+      </div>}
 
       {sessions.length === 0 ? (
         <div className="empty-state">
-          <span className="display">The array is empty.</span>
+          <span className="title">Nothing assigned</span>
           <p className="empty-line">
-            Assign work and every session appears here as a live tile with its own iteration budget.
+            Assigned sessions appear here with their latest output.
           </p>
-          <button className="esc-btn esc-btn--primary ripple" onClick={onAssign}>Assign the first task</button>
+          <button className="esc-btn esc-btn--primary ripple" onClick={onAssign}>Open Tree</button>
         </div>
       ) : (
         <div className={layout === 'grid' ? 'session-grid' : 'session-list'}>
           {sessions.map((s, i) => {
             const b = badge(s);
             const it = s.iterations ?? 0, max = s.maxIterations ?? 8;
-            const tail = logs[s.id]?.lines?.slice(-6) ?? [];
+            const tail = logs[s.id]?.lines?.slice(-3) ?? [];
             const sub = s.goal && s.goal !== s.title ? s.goal : null;
             const card = (
               <>
-                <div className="mux-crown"><DitherField mode="linear" angle={0} cell={2} floor={0.22} /></div>
+                <div className="mux-crown"><DitherField mode="linear" angle={0} cell={2} floor={s.status === 'failed' ? 0.72 : s.status === 'working' ? 0.42 : 0.12} /></div>
                 <div className="mux-card-body">
                   <div className="mux-head">
                     <i className={`dot dot--${s.status}`} />
@@ -70,7 +74,7 @@ export function MultiplexerTab({ snapshot, onJumpToTree, onAssign }: {
                   </div>
                   <div className="mux-title">{s.title}</div>
                   {sub && <div className="mux-goal">{sub}</div>}
-                  <PixelMeter value={it / max} cells={12} tone={s.status === 'failed' ? 'pale' : 'hot'} label={`Iteration ${it} of ${max}`} />
+                  <PixelMeter value={s.status === 'done' ? 1 : it / max} cells={12} tone={s.status === 'failed' ? 'pale' : 'hot'} label={`Iteration ${it} of ${max}`} />
                   <div className="mux-foot">
                     <span className="label">Iter {it}/{max}</span>
                     {s.lastSupervisorAction && <span className="mux-action">{s.lastSupervisorAction}</span>}
@@ -87,6 +91,7 @@ export function MultiplexerTab({ snapshot, onJumpToTree, onAssign }: {
               <div
                 key={s.id}
                 role="button"
+                data-ripple
                 tabIndex={0}
                 style={{ animationDelay: `${Math.min(i, 8) * 32}ms` }}
                 className={layout === 'grid' ? 'mux-card' : 'mux-row'}

@@ -6,3 +6,5 @@ export { computeFloatingIds, type FidInput, type FidPlacement } from './lib/floa
 export { topStatus, workingCount, normalizeEps, fmtElapsed, drift, failureLabel, pad2, fmtAge, middleTruncate, capitalizeSentence, decisionVerb } from './lib/format';
 export { validateSnapshot, BUS_TYPES, TYPE_COLOR } from './lib/bus';
 export type { Session, Snapshot } from './lib/bridge';
+
+export { PIXEL_ICONS } from './components/PixelIcon';

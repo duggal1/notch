@@ -68,17 +68,17 @@ fn mode_frame_table_with_notch() {
         height: 32.0,
     });
     let rest = frame_for_mode(Mode::Rest, 1512.0, notch);
-    assert_eq!(rest.width, 206.0 + 120.0);
+    assert_eq!(rest.width, 206.0 + 88.0);
     // P0: the whole pill is one real button, never shorter than 44px.
     assert_eq!(rest.height, 44.0);
     assert_eq!(rest.y, 0.0);
-    assert!((rest.x - (1512.0 - 326.0) / 2.0).abs() < 0.001);
+    assert!((rest.x - (1512.0 - 294.0) / 2.0).abs() < 0.001);
 
     let peek = frame_for_mode(Mode::Peek, 1512.0, notch);
-    assert_eq!(peek.width, 206.0 + 120.0 + 120.0);
-    assert_eq!(peek.height, 32.0 + 44.0);
+    assert_eq!(peek.width, 206.0 + 88.0 + 8.0);
+    assert_eq!(peek.height, 44.0);
     assert_eq!(peek.y, 0.0);
-    assert!((peek.x - (1512.0 - 446.0) / 2.0).abs() < 0.001);
+    assert!((peek.x - (1512.0 - 302.0) / 2.0).abs() < 0.001);
 
     let open = frame_for_mode(Mode::Open, 1512.0, notch);
     assert_eq!((open.width, open.height), (OPEN_WIDTH, OPEN_HEIGHT));
@@ -88,12 +88,12 @@ fn mode_frame_table_with_notch() {
 #[test]
 fn mode_frame_table_fallback_notchless() {
     let rest = frame_for_mode(Mode::Rest, 1920.0, None);
-    assert_eq!((rest.width, rest.height), (320.0, 44.0));
+    assert_eq!((rest.width, rest.height), (288.0, 44.0));
     assert_eq!(rest.y, 0.0);
-    assert!((rest.x - (1920.0 - 320.0) / 2.0).abs() < 0.001);
+    assert!((rest.x - (1920.0 - 288.0) / 2.0).abs() < 0.001);
 
     let peek = frame_for_mode(Mode::Peek, 1920.0, None);
-    assert_eq!((peek.width, peek.height), (440.0, 76.0));
+    assert_eq!((peek.width, peek.height), (296.0, 44.0));
 
     // Open is the same everywhere — the shell hangs from the bar at its size.
     let open = frame_for_mode(Mode::Open, 1920.0, None);

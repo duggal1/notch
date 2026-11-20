@@ -66,12 +66,19 @@ const wire = () => ({
 // 3. frameFor modes
 {
   const n = { w: 200, h: 32 };
-  assert.deepEqual(t.frameFor('rest', 640, n), { w: 320, h: 44, r: 12, e: 10 });
-  assert.deepEqual(t.frameFor('peek', 640, n), { w: 440, h: 76, r: 20, e: 10 });
+  assert.deepEqual(t.frameFor('rest', 640, n), { w: 288, h: 44, r: 12, e: 10 });
+  assert.deepEqual(t.frameFor('peek', 640, n), { w: 296, h: 44, r: 16, e: 10 });
   assert.deepEqual(t.frameFor('open', 640, n), { w: 560, h: 640, r: 28, e: 12 });
-  assert.deepEqual(t.frameFor('open', 420, n), { w: 560, h: 420, r: 28, e: 12 });
+  assert.deepEqual(t.frameFor('open', 320, n), { w: 560, h: 320, r: 28, e: 12 });
   ok('frameFor rest/peek/open and idle open');
 }
+
+// Pixel artwork stays on the same integer grid at all rendered sizes.
+for (const [name, rows] of Object.entries(t.PIXEL_ICONS)) {
+  assert.equal(rows.length, 12, name);
+  for (const row of rows) assert.match(row, /^[.#]{12}$/, name);
+}
+ok('pixel icons are hand-authored 12×12 grids');
 
 // 4. floating ids determinism + bounds
 {
@@ -205,4 +212,4 @@ const wire = () => ({
   ok('decision actions match the wire enum');
 }
 
-console.log(`\n${n}/15 checks passed`);
+console.log(`\n${n} checks passed`);

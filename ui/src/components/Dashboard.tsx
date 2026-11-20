@@ -1,30 +1,23 @@
-// Dashboard.tsx — the macOS window. Rail (navigation) · top strip (live instruments) · view.
-// The dither is the brand: a 3px ordered-dither rule under the strip, dithered card crowns,
-// one halftone sphere in the empty states. Nothing is rounded, nothing glows.
-// Cmd+1..4 tabs · Up/Down on the rail · Cmd+K composer · two-step kill switch.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
-import { DistortionWave, type PaletteName } from '../vendor/distortion-waves/src';
 import { useSnapshot } from '../lib/use-snapshot';
 import { send, submitTask } from '../lib/bridge';
 import type { Supervisor } from '../lib/bridge';
-import { topStatus, normalizeEps, workingCount } from '../lib/format';
+import { topStatus, workingCount } from '../lib/format';
 import { TreeTab, type Selection } from './dashboard/TreeTab';
 import { MultiplexerTab } from './dashboard/MultiplexerTab';
 import { CommsTab } from './dashboard/CommsTab';
 import { EscalationsTab } from './dashboard/EscalationsTab';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
-import { useWhiteHot } from '../lib/hot';
-import { PixelMeter } from './pixel/PixelMeter';
-import { DitherField } from './pixel/DitherField';
+import { useRipple } from '../lib/use-ripple';
 import { FleetDeck } from './fleet/FleetDeck';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
 
 const TABS: { id: Tab; label: string; title: string; icon: PixelIconName }[] = [
-  { id: 'tree', label: 'Tree', title: 'Control plane', icon: 'orchestrator' },
-  { id: 'multiplexer', label: 'Mux', title: 'Session array', icon: 'grid' },
-  { id: 'comms', label: 'Comms', title: 'The wire', icon: 'bubble' },
+  { id: 'tree', label: 'Tree', title: 'Tree', icon: 'tree' },
+  { id: 'multiplexer', label: 'Mux', title: 'Mux', icon: 'grid' },
+  { id: 'comms', label: 'Comms', title: 'Comms', icon: 'bubble' },
   { id: 'escalations', label: 'Alarms', title: 'Alarms', icon: 'alert' },
 ];
 
@@ -43,23 +36,22 @@ export function Dashboard() {
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
-  const [fired, setFired] = useState(false);
-  const [killBtn, setKillBtn] = useState<HTMLButtonElement | null>(null);
   // W2-5: opt-in fleet surface. Default is absent from the DOM, so every
   // existing tab renders the exact same pixels as before this change.
   const [fleetOpen, setFleetOpen] = useState(() =>
     new URLSearchParams(window.location.search).get('fleet') === '1');
   const armTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(armTimer.current), []);
   const initialPicked = useRef(false);
   const dashRef = useRef<HTMLDivElement>(null);
-  useWhiteHot(dashRef);
+  useRipple(dashRef);
 
   const sessions = snapshot?.sessions ?? [];
   const supervisors = snapshot?.supervisors ?? [];
   const escalations = snapshot?.escalations ?? [];
   const top = topStatus(sessions);
   const active = workingCount(sessions);
-  const load = normalizeEps(snapshot?.eps ?? 0);
+
 
   // target handoff from the popover: consume once
   useEffect(() => {
@@ -91,6 +83,7 @@ export function Dashboard() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        switchTab('tree');
         setComposerFocusSignal((n) => n + 1);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === '5') {
@@ -112,6 +105,7 @@ export function Dashboard() {
 
   // kill switch: first click arms (2.6 s), second click fires the one-shot wave
   const killSwitch = useCallback(() => {
+    if (active === 0) return;
     if (!armed) {
       setArmed(true);
       armTimer.current = window.setTimeout(() => setArmed(false), 2600);
@@ -119,9 +113,8 @@ export function Dashboard() {
     }
     window.clearTimeout(armTimer.current);
     setArmed(false);
-    setFired(true);
     send({ cmd: 'kill_switch' });
-  }, [armed]);
+  }, [active, armed]);
 
   const jumpToSession = useCallback((sessionId: string, flash?: string) => {
     switchTab('tree');
@@ -135,9 +128,13 @@ export function Dashboard() {
   }, []);
 
   const view = TABS.find((t) => t.id === tab) ?? TABS[0]!;
-  const sub = snapshot
-    ? `${supervisors.length} supervisor${supervisors.length === 1 ? '' : 's'} · ${sessions.length} session${sessions.length === 1 ? '' : 's'} · ${snapshot.eps.toFixed(1)} ev/s`
-    : 'Connecting to notchd…';
+  const rate = snapshot?.eps ?? 0;
+  const readouts = [
+    { value: active, unit: 'in flight' },
+    { value: rate, unit: 'ev/s', precision: 1 },
+    { value: supervisors.length, unit: supervisors.length === 1 ? 'supervisor' : 'supervisors' },
+  ].filter(({ value }) => value > 0);
+  const railIndex = TABS.findIndex((item) => item.id === tab);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -145,11 +142,11 @@ export function Dashboard() {
         {/* ---------- rail ---------- */}
         <nav className="rail" aria-label="Dashboard">
           <div className="rail-mark" title="notch">
-            <DitherField mode="linear" angle={135} cell={2} floor={0.08} ceil={0.62} />
             <span className="brand-logo" aria-hidden="true" />
           </div>
           <div className="rail-nav" role="tablist" aria-label="Dashboard tabs" aria-orientation="vertical">
-            {TABS.map((t) => {
+            <span className="rail-indicator" style={{ transform: `translateY(${railIndex * 64}px)` }} aria-hidden="true" />
+            {TABS.map((t, index) => {
               const isActive = tab === t.id;
               const isEsc = t.id === 'escalations' && escalations.length > 0;
               return (
@@ -160,89 +157,52 @@ export function Dashboard() {
                   tabIndex={isActive ? 0 : -1}
                   className={`rail-item ripple${isActive ? ' is-active' : ''}`}
                   onClick={() => switchTab(t.id)}
-                  title={t.label}
-                  onKeyDown={(e) => {
-                    const order = TABS.map((x) => x.id);
-                    const i = order.indexOf(tab);
-                    if (e.key === 'ArrowDown') { e.preventDefault(); switchTab(order[(i + 1) % order.length]!); }
-                    if (e.key === 'ArrowUp') { e.preventDefault(); switchTab(order[(i - 1 + order.length) % order.length]!); }
+                  title={`${t.label} · ⌘${index + 1} · ⌘K compose`}
+                  data-ripple
+                  onKeyDown={(event) => {
+                    const delta = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+                    if (!delta) return;
+                    const next = (index + delta + TABS.length) % TABS.length;
+                    const item = TABS[next];
+                    if (!item) return;
+                    event.preventDefault();
+                    switchTab(item.id);
+                    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
                   }}
                 >
-                  <span className="rail-glyph"><PixelIcon name={t.icon} size={17} /></span>
-                  <span>{t.label}</span>
+                  <span className="rail-glyph"><PixelIcon name={t.icon} size={24} /></span>
+                  <span className="rail-label">{t.label}</span>
                   {isEsc && <span className="rail-badge" aria-label={`${escalations.length} unresolved escalations`}>{escalations.length}</span>}
                 </button>
               );
             })}
           </div>
           <div className="rail-foot">
-            <span className="rail-live"><i className={`dot dot--${top}`} aria-hidden="true" />{top}</span>
-            <span className="rail-rate">{snapshot?.eps.toFixed(1) ?? '0.0'}<em>ev/s</em></span>
+            <span className="rail-live"><i className={`dot dot--${top}`} aria-hidden="true" />{top[0]?.toUpperCase()}{top.slice(1)}</span>
           </div>
         </nav>
 
         {/* ---------- stage ---------- */}
         <div className="stage">
           <header className="topbar" data-tauri-drag-region>
-            <div className="topbar-titles">
-              <div className="topbar-title">
-                <h1>{view.title}</h1>
-              </div>
-              <div className="topbar-sub">{sub}</div>
-            </div>
+            <h1>{view.title}</h1>
             <div className="topbar-spacer" data-tauri-drag-region />
-
-            <div className="stats" aria-label="Live counters">
-              <div className="stat">
-                <span className="label">In flight</span>
-                <span className="stat-v">{String(active).padStart(2, '0')}</span>
+            {sessions.length > 0 && readouts.length > 0 && (
+              <div className="stats" aria-label="Live counters">
+                {readouts.map(({ value, unit, precision }) => (
+                  <span className="stat" key={unit}>
+                    <span className="stat-v" key={value}>{value.toFixed(precision ?? 0)}</span>
+                    <span className="label">{unit}</span>
+                  </span>
+                ))}
               </div>
-              <div className="stat stat--meter">
-                <span className="label">Events / sec</span>
-                <span className="stat-v">
-                  {snapshot?.eps.toFixed(1) ?? '0.0'}
-                  <PixelMeter value={load} cells={14} tone="hot" label="Event rate" />
-                </span>
-              </div>
-              <div className="stat stat--optional">
-                <span className="label">Supervisors</span>
-                <span className="stat-v">{supervisors.length}</span>
-              </div>
-              <div className="stat stat--optional">
-                <span className="label">Sessions</span>
-                <span className="stat-v">{sessions.length}</span>
-              </div>
-            </div>
-
-            <DistortionWave
-              className="kill-wave"
-              revealed={fired}
-              type="center"
-              palette={'sunset' as PaletteName}
-              scale="auto"
-              cornerRadius={0}
-              prewarm={false}
-              source={killBtn}
-              overlay={
-                <button
-                  ref={setKillBtn}
-                  className="killswitch ripple"
-                  data-armed={armed ? '' : undefined}
-                  onClick={killSwitch}
-                  title="Close every managed pane, mark all sessions failed, clean up"
-                >
-                  <PixelIcon name="trash" size={13} />
-                  <span>{armed ? 'Confirm — kill all' : 'Kill switch'}</span>
-                </button>
-              }
-              revealedContent={<div className="kill-done" role="status">All sessions stopped</div>}
-            >
-              <span className="killswitch killswitch--ghost">
-                <PixelIcon name="trash" size={13} />
-                <span>Kill switch</span>
-              </span>
-            </DistortionWave>
-            <DitherField className="topbar-rule" mode="linear" angle={90} cell={2} floor={0.42} />
+            )}
+            <button className="killswitch" data-ripple disabled={active === 0}
+              onClick={killSwitch} aria-pressed={armed && active > 0}
+              title="Close all managed panes and stop running sessions">
+              <PixelIcon name="power" size={12} />
+              {armed && active > 0 ? 'Confirm kill' : 'Kill switch'}
+            </button>
           </header>
 
           <AnimatePresence mode="wait" initial={false}>
@@ -278,8 +238,12 @@ export function Dashboard() {
               {tab === 'multiplexer' && <MultiplexerTab snapshot={snapshot} onJumpToTree={(id) => jumpToSession(id)} onAssign={() => { switchTab('tree'); setComposerFocusSignal((n) => n + 1); }} />}
               {tab === 'comms' && (
                 <CommsTab snapshot={snapshot} onJumpToTree={(id) => {
-                  const toFlash = sessions.find((s) => s.id === id)?.sup;
-                  jumpToSession(id, toFlash ? id : undefined);
+                  if (sessions.some((session) => session.id === id)) {
+                    jumpToSession(id, id);
+                  } else if (supervisors.some((supervisor) => supervisor.id === id)) {
+                    switchTab('tree');
+                    select({ kind: 'supervisor', id });
+                  }
                 }} />
               )}
               {tab === 'escalations' && (
@@ -293,19 +257,13 @@ export function Dashboard() {
                   }}
                   onReassign={onReassign}
                   onKill={killSession}
+                  onOpenSession={jumpToSession}
                 />
               )}
             </motion.main>
           </AnimatePresence>
 
-          <footer className="statusline" aria-label="Status">
-            <span className="sl-item"><i className={`dot dot--${top}`} aria-hidden="true" />{top}</span>
-            <span className="sl-item">{active} in flight</span>
-            <span className="sl-item">{sessions.length} sessions</span>
-            <span className="sl-item">{supervisors.length} supervisors</span>
-            <span className="sl-dither"><DitherField mode="linear" angle={0} cell={2} floor={0.18} /></span>
-            <span className="sl-keys">⌘1–4 views · ⌘K compose</span>
-          </footer>
+
         </div>
 
         {/* W2-5: fleet management surface, composed around the four owned tabs. */}

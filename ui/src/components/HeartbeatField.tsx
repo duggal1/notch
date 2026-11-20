@@ -17,11 +17,13 @@ export function HeartbeatField({ epsRef, active }: { epsRef: React.MutableRefObj
   }, []);
 
   useEffect(() => {
-    if (!active || reduced) return; // rest/peek: no loop runs
+    if (!active) return;
+    beatRef.current?.push(normalizeEps(epsRef.current));
+    if (reduced) return;
     const id = window.setInterval(() => beatRef.current?.push(normalizeEps(epsRef.current)), 240);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  return <canvas ref={canvasRef} className="block w-full" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="heartbeat block w-full" aria-hidden="true" />;
 }

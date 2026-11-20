@@ -4,7 +4,7 @@ import type { Supervisor, Session, Decision } from '../lib/bridge';
 import { fmtAge, capitalizeSentence } from '../lib/format';
 import { PixelIcon } from './PixelIcon';
 
-export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisions, now, onMessage, onTogglePause, onKill, onSelect, variant }: {
+export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisions, now, onMessage, onTogglePause, onKill, onSelect, variant, selected }: {
   sup: Supervisor;
   sessions: Session[];
   decisions?: Decision[];
@@ -12,6 +12,7 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
   onMessage: (supId: string) => void;
   onTogglePause: (sup: Supervisor) => void;
   onKill: (supId: string) => void;
+  selected?: boolean;
   onSelect: (supId: string) => void;
   variant: 'popover' | 'dashboard';
 }) {
@@ -39,25 +40,26 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
   return (
     <div className={`item ${dash ? 'item--row-tall' : 'item--row'} sup-row`} role="row" tabIndex={0}
       data-sv={sup.id} aria-label={`${sup.id} — ${charter}`}
+      aria-pressed={selected}
       onClick={() => onSelect(sup.id)}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSelect(sup.id); } }}>
+      onKeyDown={(e) => { if (e.currentTarget === e.target && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); onSelect(sup.id); } }}>
       <div className="sup-line">
         <i className={`dot dot--${sup.status}`} aria-hidden="true" />
         <span className="sup-id">{sup.id}{sup.paused && <span className="dim sup-paused">Paused</span>}</span>
         <span className="sup-right" style={{ ['--rw' as string]: dash ? '84px' : '150px' }}>
-          <span className="sup-rest dim" data-rest>{dash ? age : summary}</span>
+          <span className="sup-rest dim" data-rest>{dash && last ? age : summary}</span>
           <span className="sup-actions" data-actions>
             <button className="act" aria-label={`Message ${sup.id}`} title="Message supervisor"
               onClick={(e) => { e.stopPropagation(); onMessage(sup.id); }}>
-              <PixelIcon name="bubble" size={15} />
+              <PixelIcon name="bubble" size={12} />
             </button>
             <button className="act" aria-label={sup.paused ? `Resume ${sup.id}` : `Pause ${sup.id}`} title={sup.paused ? 'Resume' : 'Pause'}
               onClick={(e) => { e.stopPropagation(); onTogglePause(sup); }}>
-              {sup.paused ? <PixelIcon name="play" size={14} /> : <PixelIcon name="pause" size={14} />}
+              {sup.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
             </button>
             <button className="act" aria-label={`Kill all sessions under ${sup.id}`} title={`Kill every session under ${sup.id}`}
               onClick={(e) => { e.stopPropagation(); onKill(sup.id); }}>
-              <PixelIcon name="kill" size={15} />
+              <PixelIcon name="kill" size={12} />
             </button>
           </span>
         </span>
@@ -66,7 +68,7 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
         <span>{charter}</span>
         {model && <span> · {model.split('/')[1] ?? model}</span>}
       </div>
-      {dash && <div className="label dim sup-counts">{`working ${sup.working} · idle ${sup.idle} · failed ${sup.failed}`}</div>}
+      {dash && <div className="label dim sup-counts">{summary}</div>}
     </div>
   );
 });

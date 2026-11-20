@@ -6,18 +6,18 @@
 //! function so the geometry is unit-testable without a screen.
 //!
 //! Content geometry mirrors `frameFor` in ui (shell-geometry.ts / DESIGN.md §5.2):
-//!   rest: w = notch.w + 2*wing, h = max(notch.h, 44)   (wing = 60; >= 44px hit target)
-//!   peek: w = notch.w + 2*wing + 120, h = max(notch.h+44, 72)
-//!   open: w = 560, h = contentH                        (640 default, 420 when idle)
+//!   rest: w = notch.w + 2*wing, h = max(notch.h, 44)   (wing = 44; >= 44px hit target)
+//!   peek: w = notch.w + 2*wing + 8, h = max(notch.h+8, 44)
+//!   open: w = 560, h = contentH                        (640 default, 320 when idle)
 //! x is centered on the main screen; y is always 0 (the shell hangs from the bar).
 
-pub const REST_WING: f64 = 60.0;
-pub const PEEK_EXTRA: f64 = 120.0;
-pub const PEEK_HEIGHT_EXTRA: f64 = 44.0;
+pub const REST_WING: f64 = 44.0;
+pub const PEEK_EXTRA: f64 = 8.0;
+pub const PEEK_HEIGHT_EXTRA: f64 = 8.0;
 pub const OPEN_WIDTH: f64 = 560.0;
 pub const OPEN_HEIGHT: f64 = 640.0;
 /// Concise idle open height (P1). Clamped by `set_frame`.
-pub const OPEN_HEIGHT_IDLE: f64 = 420.0;
+pub const OPEN_HEIGHT_IDLE: f64 = 320.0;
 /// The whole rest/peek pill is one real button; never smaller than 44px tall.
 pub const MIN_PILL_HEIGHT: f64 = 44.0;
 
@@ -155,7 +155,7 @@ pub fn frame_for_mode(mode: Mode, screen_width: f64, notch: Option<NotchSize>) -
     frame_for_mode_content(mode, screen_width, notch, OPEN_HEIGHT)
 }
 
-/// Same math with an explicit open content height. The UI passes 420 when idle.
+/// Same math with an explicit open content height. The UI passes 320 when idle.
 pub fn frame_for_mode_content(
     mode: Mode,
     screen_width: f64,
@@ -168,7 +168,7 @@ pub fn frame_for_mode_content(
         Mode::Rest => (n.width + REST_WING * 2.0, n.height.max(MIN_PILL_HEIGHT)),
         Mode::Peek => (
             n.width + REST_WING * 2.0 + PEEK_EXTRA,
-            (n.height + PEEK_HEIGHT_EXTRA).max(MIN_PILL_HEIGHT + PEEK_HEIGHT_EXTRA - 16.0),
+            (n.height + PEEK_HEIGHT_EXTRA).max(MIN_PILL_HEIGHT),
         ),
         Mode::Open => (OPEN_WIDTH, h),
     };

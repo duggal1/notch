@@ -36,11 +36,10 @@ export function Transcript({ session, logs, revisionChangedAt }: {
         <div className="transcript-inner">
           <div className="transcript-head">
             <span className="label">Live tail</span>
-            <span className="label">idle</span>
+
           </div>
           <p className="transcript-empty">
-            Pick a session on the left to follow its output. Nothing is invented here — an unselected
-            session has no tail.
+            Select a session to follow its output.
           </p>
         </div>
       </div>
@@ -52,14 +51,14 @@ export function Transcript({ session, logs, revisionChangedAt }: {
       <div className="transcript-inner">
         <div className="transcript-head">
           <span className="label">Transcript · {session.id}</span>
-          <span className="label">{lines.length} lines</span>
+          {lines.length > 0 && <span className="label">{lines.length} {lines.length === 1 ? 'line' : 'lines'}</span>}
         </div>
         {lines.length === 0 ? (
-          <p className="transcript-empty">No output yet — the session starts silent.</p>
+          <p className="transcript-empty">Waiting for output.</p>
         ) : (
           lines.map((line, i) => (
             <div key={i} className="transcript-line">
-              <span className="tl-n" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+              <span className="tl-n" aria-hidden="true">{i + 1}</span>
               <span className="tl-mark" aria-hidden="true">{TOOL_RE.test(line) ? '›' : ''}</span>
               <span className="tl-text">{line}</span>
             </div>

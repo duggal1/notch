@@ -6,10 +6,10 @@
 :root {
   /* grounds — §2 surfaces; internal names kept so call sites don't churn */
   --void: #000000;    /* --s0 */
-  --panel: #0A0310;   /* --s1 */
-  --panel-2: #12061A; /* --s2 */
-  --well: #08010D;
-  --s0: #000000; --s1: #0A0310; --s2: #12061A; --s3: #1B0A26;
+  --panel: #0F0618;   /* --s1 */
+  --panel-2: #1A0B28; /* --s2 */
+  --well: #0F0618;
+  --s0: #000000; --s1: #0F0618; --s2: #1A0B28; --s3: #271239;
 
   /* the ramp */
   --f1: #2A0A33;
@@ -25,9 +25,9 @@
 
   /* text */
   --t1: #FFFFFF;
-  --t2: rgba(255, 255, 255, .62);
-  --t3: rgba(255, 255, 255, .42);
-  --t4: rgba(255, 255, 255, .28);
+  --t2: rgba(255, 255, 255, .78);
+  --t3: rgba(255, 255, 255, .56);
+  --t4: var(--t3);
   --ink: #000000;
 
   /* legacy aliases — every call site resolves to the ramp */
@@ -47,7 +47,8 @@
   --r-pill: 999px;
 
   /* motion — eased or spring, never linear */
-  --ease: cubic-bezier(.16, 1, .3, 1);
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --ease-expo: cubic-bezier(.16, 1, .3, 1);
   --ease-in-out: cubic-bezier(.65, 0, .35, 1);
   --snap: cubic-bezier(.2, .9, .1, 1);
   --release: cubic-bezier(.16, 1, .3, 1); /* no overshoot (§7) */
@@ -62,11 +63,10 @@
 
   /* glass — popover cards/panels only. Dither stays hard on top of it. */
   --glass-fill: linear-gradient(180deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, .05));
-  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  --glass-edge: inset 0 1px 3px rgba(255, 255, 255, .18);
 
   /* focus */
-  --ring: 0 0 0 2px var(--void), 0 0 0 4px #FFFFFF;
-  --ring-ink: 0 0 0 2px #FFFFFF;
+
 }
 
 /* smoothing on the document AND every window root, including the popover shell */
@@ -78,7 +78,7 @@ html, body, #root, .shell {
 }
 html, body { overflow: hidden; }
 body {
-  font: 450 13px/1.45 var(--font); letter-spacing: -.015em; color: var(--t1);
+  font: 450 15px/1.45 var(--font); letter-spacing: -.01em; color: var(--t1);
   cursor: default; -webkit-user-select: none; user-select: none;
 }
 button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
@@ -93,18 +93,18 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
    body = what you read · num = anything that ticks.
    Sizes: 88 / 40 / 20 / 13 / 10.5 mono. Tracking is tied to size. No caps anywhere. */
 .label {
-  font: 450 10.5px/1 var(--font); letter-spacing: -.015em;
+  font: 450 12px/1 var(--font); letter-spacing: 0;
   color: var(--t3); font-variant-numeric: tabular-nums;
 }
 .label--hot { color: var(--f4); }
 .label--pale { color: var(--f5); }
 .dim { color: var(--t3); }
 .num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1, 'zero' 1; }
-.num-xl { font: 500 88px/.84 var(--font); letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
-.num-l { font: 500 40px/1 var(--font); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
-.title { font: 500 20px/1.2 var(--font); letter-spacing: -.025em; }
+.num-xl { font: 500 88px/.84 var(--font); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.num-l { font: 500 40px/1 var(--font); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.title { font: 500 22px/1.2 var(--font); letter-spacing: -.02em; }
 .display { font: 500 40px/1.02 var(--font); letter-spacing: -.04em; }
-.body { font: 450 13px/1.45 var(--font); letter-spacing: -.015em; }
+.body { font: 450 15px/1.45 var(--font); letter-spacing: -.01em; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 
 /* ---------- texture primitives ---------- */
@@ -131,11 +131,10 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 .shell {
   position: absolute; top: 0; left: 50%; transform: translateX(-50%);
   width: 560px; height: var(--open-h); /* fixed frame; only the clip-path silhouette animates */
-  background: #000; overflow: hidden; cursor: pointer; outline: none;
+  background: #000; overflow: hidden; cursor: pointer;
   -webkit-user-select: none; user-select: none;
 }
 .shell[data-mode='open'] { cursor: default; }
-.shell:focus-visible { outline: none; box-shadow: var(--ring); }
 /* macOS passes fully transparent pixels through. This near-zero-alpha layer makes the
    whole pill a real hit target without changing what the eye sees. */
 .hit { position: absolute; inset: 0; background: rgba(0, 0, 0, .01); pointer-events: none; z-index: 0; }
@@ -145,32 +144,30 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
   background: var(--glass-fill);
   -webkit-backdrop-filter: blur(24px) saturate(1.6);
   backdrop-filter: blur(24px) saturate(1.6);
-  box-shadow: var(--glass-edge);
+
 }
 
 /* primary/secondary buttons: depth from inset shadows only. No outer shadow, no glow. */
 .btn-primary {
-  border: 0; border-radius: var(--r-pill); background: var(--f4); color: var(--ink);
-  font: 500 13px/1 var(--font); letter-spacing: -.015em;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 -2px 3px rgba(42, 10, 51, .38), inset 0 0 0 1px rgba(245, 208, 254, .20);
-  transition: transform 160ms var(--ease), filter 180ms var(--ease), box-shadow 180ms var(--ease);
+   border-radius: var(--r-pill); background: var(--f4); color: var(--ink);
+  font: 500 15px/1 var(--font); letter-spacing: -.01em;
+
+  transition: transform 160ms var(--ease);
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
 .btn-primary:active:not(:disabled) {
   transform: scale(.96);
-  box-shadow: inset 0 2px 5px rgba(42, 10, 51, .55), inset 0 0 0 1px rgba(245, 208, 254, .14);
+
 }
-.btn-primary:focus-visible { outline: none; box-shadow: var(--ring); }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; filter: none; transform: none; }
 .btn-secondary {
-  border: 0; border-radius: var(--r-pill); color: var(--t1);
+   border-radius: var(--r-pill); color: var(--t1);
   background: var(--glass-fill); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
-  box-shadow: var(--glass-edge);
-  transition: transform 160ms var(--ease), filter 180ms var(--ease), box-shadow 180ms var(--ease);
+
+  transition: transform 160ms var(--ease);
 }
 .btn-secondary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
 .btn-secondary:active:not(:disabled) { transform: scale(.96); }
-.btn-secondary:focus-visible { outline: none; box-shadow: var(--ring); }
 
 .list-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--f2) transparent; }
 .list-scroll::-webkit-scrollbar { width: 6px; }
@@ -183,13 +180,12 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 
 /* dev stage: browser preview only */
 body.dev-stage { background: #000; }
-body.dev-stage::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 28px; background: #000; border-bottom: 1px solid var(--line); }
+body.dev-stage::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 28px; background: #000;  }
 body.dev-stage[data-surface='dashboard']::before { display: none; }
 
 /* ---------- press law: every control dips to .96 and lets go on a spring ---------- */
 button, [role='button'], .item, .rail-item, .ctl, .esc-btn, .text-btn, .mux-card, .comms-row {
-  transition: transform 240ms var(--release), background-color 180ms var(--ease),
-    border-color 180ms var(--ease), color 180ms var(--ease);
+  transition: transform 240ms var(--release);
 }
 button:active:not(:disabled), [role='button']:active, .item:active {
   transform: scale(.96);
@@ -212,23 +208,22 @@ button:active:not(:disabled), [role='button']:active, .item:active {
 /* ---------- rows: a soft card that wipes to hot fuchsia from the pointer entry point ---------- */
 .item {
   position: relative; isolation: isolate; border-radius: var(--r-m); color: var(--t1);
-  background: var(--panel); border: 1px solid var(--line); --hx: 50%; --hy: 50%; outline: none; user-select: none;
+  background: var(--panel);  --hx: 50%; --hy: 50%;  user-select: none;
 }
 .item::before {
   content: ''; position: absolute; inset: 0; z-index: -1; background: var(--f4);
   border-radius: inherit; transform: scaleX(0); transform-origin: left center;
   transition: transform 220ms var(--ease);
 }
-.item:hover:not([data-hot]) { border-color: var(--line-3); background: var(--panel-2); }
-.item[data-hot] { color: var(--ink); border-color: var(--f4); background: transparent; }
+.item:hover:not([data-hot]) {  background: var(--panel-2); }
+.item[data-hot] { color: var(--ink);  background: transparent; }
 .item[data-hot]::before { transform: scaleX(1); }
 .item[data-hot] .label, .item[data-hot] .dim { color: rgba(0, 0, 0, .62); }
-.item:focus-visible { box-shadow: var(--ring); }
 .item--row { height: 46px; }
 .item--row-tall { height: 62px; }
 
 /* status squares — 8px, square, no glow. This is a pixel glyph, not chrome. */
-.dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 8px; transition: background-color 180ms var(--ease); }
+.dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 8px; transition: none; }
 .dot--working { background: var(--f4); }
 .dot--idle { background: var(--f2); }
 .dot--failed { background: var(--f5); animation: dot-failed 1.4s steps(2, end) infinite; }
@@ -240,20 +235,18 @@ button:active:not(:disabled), [role='button']:active, .item:active {
 
 .act {
   display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
-  border: 1px solid transparent; border-radius: var(--r-pill); background: none; color: inherit;
+   border-radius: var(--r-pill); background: none; color: inherit;
   opacity: 0; transform: translateX(4px); visibility: hidden;
-  transition: opacity 160ms var(--ease), transform 220ms var(--ease), background-color 160ms var(--ease), visibility 0s 220ms;
+  transition: opacity 160ms var(--ease), transform 220ms var(--ease);
 }
-.act:hover { background: rgba(0, 0, 0, .14); border-color: rgba(0, 0, 0, .3); }
-.act:focus-visible { box-shadow: var(--ring); }
+.act:hover { background: rgba(0, 0, 0, .14);  }
 .item[data-hot] .act { opacity: 1; transform: none; visibility: visible; transition-delay: 0ms; }
 .item[data-hot] .act:nth-child(2) { transition-delay: 24ms; }
 .item[data-hot] .act:nth-child(3) { transition-delay: 48ms; }
 .item[data-hot] .act:nth-child(4) { transition-delay: 72ms; }
 .item [data-elapsed], .item [data-rest] { transition: opacity 160ms var(--ease); }
 .item[data-hot] [data-rest], .item[data-hot] [data-elapsed] { opacity: 0 !important; }
-.act--reprompt[data-emphasis] { border-color: var(--f5); }
-.item[data-hot] .act--reprompt[data-emphasis] { border-color: rgba(0, 0, 0, .5); background: rgba(0, 0, 0, .1); }
+.item[data-hot] .act--reprompt[data-emphasis] {  background: rgba(0, 0, 0, .1); }
 
 /* ---------- entrance stagger: anything that arrives does so once, on an ease ---------- */
 .enter { animation: enter-rise 380ms var(--ease) both; }
@@ -269,3 +262,49 @@ button:active:not(:disabled), [role='button']:active, .item:active {
   }
   button:active:not(:disabled), [role='button']:active, .item:active { transform: none; }
 }
+
+/* Interaction layers share the control's shape and stay below its contents. */
+:where(.dash, .shell) :is(button, [role='button'], summary) {
+  position: relative; isolation: isolate; cursor: pointer;
+  transition: transform 260ms var(--ease-expo);
+}
+:where(.dash, .shell) :is(button, [role='button'], summary)::before {
+  content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit;
+  background: var(--t1); opacity: 0; pointer-events: none;
+  transition: opacity 180ms var(--ease);
+}
+:where(.dash, .shell) :is(button, [role='button'], summary):hover:not(:disabled, [aria-disabled='true']) {
+  transform: translateY(-1px);
+}
+:where(.dash, .shell) :is(button, [role='button'], summary):hover:not(:disabled, [aria-disabled='true'])::before { opacity: .06; }
+:where(.dash, .shell) :is(button, [role='button'], summary):active:not(:disabled, [aria-disabled='true']) {
+  transform: scale(.96); transition-duration: 90ms;
+}
+:where(.dash, .shell) :is(button, [role='button'], summary):focus-visible {
+  outline: none; box-shadow: 0 0 0 2px #FFFFFF;
+}
+:where(.dash, .shell) :is(button, input, textarea, select) { border: 0; outline: none; }
+:where(.dash, .shell) :is(input, textarea) { caret-color: var(--f4); }
+:where(.dash, .shell) :is(input, textarea)::placeholder { color: var(--t3); }
+:where(.dash, .shell) button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+.press-ripple {
+  position: absolute; aspect-ratio: 1; pointer-events: none; z-index: -1;
+  background: var(--f5); border-radius: var(--r-pill);
+  clip-path: inset(0 round var(--r-pill)); animation: press-ripple 420ms var(--ease) both;
+}
+@keyframes press-ripple {
+  from { opacity: .28; transform: translate(-50%, -50%) scale(0); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes view-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes value-fade { from { opacity: .35; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
+  :where(.dash, .shell) :is(button, [role='button'], summary):is(:hover, :active) { transform: none !important; }
+}
+
+.item:is(:hover, :focus-within) .act { opacity: 1; transform: none; visibility: visible; }
+.item:is(:hover, :focus-within) :is([data-rest], [data-elapsed]) { opacity: 0; }
