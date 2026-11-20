@@ -400,7 +400,10 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
             // A registry that never existed is a normal fresh start, not
             // corruption. Only a file (or backup) that existed but could not
             // be read is worth a warning.
-            if durable::read_candidates(&reg_path).iter().any(|p| p.exists()) {
+            if durable::read_candidates(&reg_path)
+                .iter()
+                .any(|p| p.exists())
+            {
                 warnings.push(format!("{e}; rebuilding registry from state"));
             }
             let rebuilt = Registry::rebuild_from_state(&state);
