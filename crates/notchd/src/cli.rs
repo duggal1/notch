@@ -434,6 +434,21 @@ fn cmd_serve(rest: &[String]) -> i32 {
     };
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let shutdown = Arc::new(AtomicBool::new(false));
+    if crate::ws::ws_enabled() {
+        let port = crate::ws::port_from_env();
+        match crate::ws::bind(port) {
+            Ok(ws_listener) => {
+                let bound = ws_listener.local_addr().map(|a| a.port()).unwrap_or(port);
+                let ws_daemon = Arc::clone(&daemon);
+                let ws_shutdown = Arc::clone(&shutdown);
+                println!("notchd WS listening on 127.0.0.1:{bound} (NOTCH_WS=1; token in state dir)");
+                std::thread::spawn(move || {
+                    let _ = crate::ws::serve(ws_listener, ws_daemon, ws_shutdown);
+                });
+            }
+            Err(e) => eprintln!("notchd: cannot bind WS 127.0.0.1:{port}: {e}"),
+        }
+    }
     match crate::socket::serve_with_shutdown(listener, daemon, shutdown) {
         Ok(()) => 0,
         Err(e) => {
