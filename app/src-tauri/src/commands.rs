@@ -1,14 +1,13 @@
 //! Tauri commands — thin wrappers over `notchd::Daemon`. Names are
 //! snake_case exactly as the wire contract (bridge.md §2) and the webview's
 //! `invoke(type, args)` expect (ui/src/lib/bridge.ts): `snapshot, kill,
-//! reprompt, logs, focus, cleanup, spawn, run_plan, set_frame, haptic`.
+//! reprompt, logs, focus, cleanup, set_frame, haptic`.
 //!
 //! All payload fields are camelCase on the wire (notchd's acks already are).
 //! Errors are `Result<T, String>`. Commands that shell out to herdr are
 //! `async` (never block the main thread); `set_frame` and `haptic` are sync
 //! (AppKit / main-thread friendly, no blocking IO).
 
-use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,14 +17,11 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
 use notchd::approvals::card_digest as engine_card_digest;
-use notchd::daemon::{
-    KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, RunPlanAck, SpawnAck, SubmitTaskAck,
-};
+use notchd::daemon::{KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, SubmitTaskAck};
 use notchd::Daemon;
 
 use crate::frame::{frame_for_mode, Mode};
 use crate::macos;
-use crate::symbols;
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -37,7 +33,7 @@ pub struct FrameRectOut {
     pub mode: String,
 }
 
-/// Payload for the `logs` EVENT (ui/src/lib/bridge.ts listens for it).
+/// Payload returned by the `logs` command (the UI polls it; no `logs` event).
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogsPayload {
@@ -77,15 +73,10 @@ pub async fn reprompt(
 pub async fn logs(
     id: String,
     tail: Option<u32>,
-    app: AppHandle,
     daemon: State<'_, Arc<Daemon>>,
 ) -> Result<LogsPayload, String> {
     let lines = daemon.logs(&id, tail.map(|t| t as usize))?;
-    let payload = LogsPayload { id, lines };
-    // The frontend consumes logs via the `logs` EVENT (bridge.ts: listen('logs')),
-    // so emit it here in addition to returning the value.
-    let _ = app.emit("logs", &payload);
-    Ok(payload)
+    Ok(LogsPayload { id, lines })
 }
 
 #[tauri::command]
@@ -98,42 +89,6 @@ pub async fn focus(id: String, daemon: State<'_, Arc<Daemon>>) -> Result<OkAck, 
 pub async fn cleanup(id: Option<String>, daemon: State<'_, Arc<Daemon>>) -> Result<u64, String> {
     let ack = daemon.cleanup(id.as_deref());
     Ok(ack.removed.unwrap_or(0))
-}
-
-#[tauri::command]
-pub async fn spawn(
-    supervisor: String,
-    prompt: String,
-    cwd: String,
-    title: String,
-    daemon: State<'_, Arc<Daemon>>,
-) -> Result<SpawnAck, String> {
-    if supervisor.trim().is_empty()
-        || prompt.trim().is_empty()
-        || cwd.trim().is_empty()
-        || title.trim().is_empty()
-    {
-        return Err("supervisor, prompt, cwd and title are required".into());
-    }
-    let ack = daemon.spawn(&supervisor, &prompt, &cwd, &title);
-    if ack.ok {
-        Ok(ack)
-    } else {
-        Err(ack.error.clone().unwrap_or_else(|| "spawn failed".into()))
-    }
-}
-
-#[tauri::command]
-pub async fn run_plan(path: String, daemon: State<'_, Arc<Daemon>>) -> Result<RunPlanAck, String> {
-    let ack = daemon.run_plan(Path::new(&path));
-    if ack.ok {
-        Ok(ack)
-    } else {
-        Err(ack
-            .error
-            .clone()
-            .unwrap_or_else(|| "run_plan failed".into()))
-    }
 }
 
 /// bridge.md §3 v1.3: allocate `SV-<n>` (title = provided title or task
@@ -227,17 +182,6 @@ pub async fn kill_switch(daemon: State<'_, Arc<Daemon>>) -> Result<KillSwitchAck
 #[tauri::command]
 pub async fn list_models(daemon: State<'_, Arc<Daemon>>) -> Result<ModelsAck, String> {
     Ok(daemon.list_models())
-}
-
-/// bridge.md v1.3: on-device SF Symbol rasterization → data URL. 2× raster,
-/// in-memory cached. Sync command — AppKit requires the main thread.
-#[tauri::command]
-pub fn symbol(name: String, pt: Option<f64>, weight: Option<String>) -> Result<String, String> {
-    symbols::rasterize_symbol(
-        &name,
-        pt.unwrap_or(16.0),
-        weight.as_deref().unwrap_or("semibold"),
-    )
 }
 
 /// bridge.md §7 v1.3: the second surface — the standard macOS dashboard
@@ -377,7 +321,6 @@ pub struct ApprovalOut {
 }
 
 const PROJECTION: &str = "snapshot-projection";
-const OPTIONAL_READS: &[&str] = &["signIn", "usage", "profiles", "remoteControl"];
 
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -411,32 +354,24 @@ fn unit_line(status: &str, reason: &str, kind: &str) -> (&'static str, String) {
     }
 }
 
-/// W2-1 seam. Declared registry shape: what the single harness can actually
-/// do, with optional reads declining. Replace with `notchd::harness_registry`.
+/// W2-1: the harness surface is the registry's real definitions — herdr is
+/// the sole admitted/spawn-capable engine; opencode declares Status + Models
+/// only and cannot make a managed pane.
 fn declare_harnesses() -> Vec<HarnessOut> {
-    let operations = [
-        "spawn",
-        "read",
-        "prompt",
-        "kill",
-        "focus",
-        "status",
-        "signIn",
-        "usage",
-        "profiles",
-        "remoteControl",
-    ];
-    vec![HarnessOut {
-        id: "opencode".into(),
-        label: "OpenCode".into(),
-        capabilities: operations
-            .iter()
-            .map(|name| HarnessCapabilityOut {
-                name: (*name).to_string(),
-                supported: !OPTIONAL_READS.contains(name),
-            })
-            .collect(),
-    }]
+    notchd::harness_registry::harness_listing()
+        .into_iter()
+        .map(|(id, label, capabilities)| HarnessOut {
+            id,
+            label,
+            capabilities: capabilities
+                .into_iter()
+                .map(|(name, supported)| HarnessCapabilityOut {
+                    name: name.to_string(),
+                    supported,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Approval cards from the engine's REAL pending inbox, oldest first. The
@@ -604,10 +539,11 @@ pub async fn fleet_state(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String
     Ok(fleet_from_snapshot(&value))
 }
 
-/// `list_harnesses` — declared capabilities, declines before side effects.
+/// `list_harnesses` — the registry's real capabilities (herdr spawns;
+/// opencode is Status + Models only).
 #[tauri::command]
 pub async fn list_harnesses() -> Result<Value, String> {
-    Ok(json!({ "source": PROJECTION, "harnesses": declare_harnesses() }))
+    Ok(json!({ "source": "registry", "harnesses": declare_harnesses() }))
 }
 
 /// `list_approvals` — one decision per real engine card, oldest first. The
