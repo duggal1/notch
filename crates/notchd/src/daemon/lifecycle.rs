@@ -36,8 +36,8 @@ struct SpawnChannel {
 static SPAWN_CHANNELS: OnceLock<Mutex<HashMap<PathBuf, SpawnChannel>>> = OnceLock::new();
 
 impl Daemon {
-    /// Open the daemon: load registry + state (missing/corrupt -> defaults),
-    /// register bus endpoints for known supervisors. NO herdr calls here —
+    /// Open the daemon: recover state and registry, or return an error.
+    /// Register bus endpoints for known supervisors. NO herdr calls here —
     /// herdr failure must never prevent startup.
     pub fn open(config: Config, herdr: Herdr, clock: Arc<dyn Clock>) -> io::Result<Daemon> {
         std::fs::create_dir_all(&config.state_dir)?;
@@ -199,6 +199,7 @@ impl Daemon {
         };
         let by_pane: std::collections::HashMap<&str, &crate::herdr::AgentEntry> =
             agents.iter().map(|a| (a.pane_id.as_str(), a)).collect();
+        let panes = self.herdr.pane_list();
         let now = self.now();
         let mut cleaned: Vec<String> = Vec::new();
         let mut marked_done = Vec::new();
@@ -209,7 +210,13 @@ impl Daemon {
                     continue;
                 }
                 let Some(entry) = by_pane.get(s.pane_id.as_str()) else {
-                    // Pane vanished -> done (never crash, never keep lying).
+                    if !s.pane_id.is_empty()
+                        && panes.as_ref().map_or(true, |list| {
+                            list.iter().any(|pane| pane.pane_id == s.pane_id)
+                        })
+                    {
+                        continue;
+                    }
                     s.status = Status::Done;
                     s.failure_reason = None;
                     cleaned.push(s.id.clone());

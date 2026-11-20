@@ -254,14 +254,29 @@ impl Daemon {
             baseline: Option<HashSet<String>>,
         }
         enum Effect {
-            Vanished { idx: usize },
+            Vanished {
+                idx: usize,
+                id: String,
+                pane_id: String,
+            },
             Update(Box<UpdateEffect>),
         }
         let mut effects: Vec<Effect> = Vec::new();
+        let mut panes = None;
         for seed in seeds {
             let Some(entry) = by_pane.get(&seed.pane_id) else {
-                if !seed.pane_id.is_empty() {
-                    effects.push(Effect::Vanished { idx: seed.idx });
+                // A split pane can exist before Herdr reports an agent in it.
+                if !seed.pane_id.is_empty()
+                    && panes
+                        .get_or_insert_with(|| self.herdr.pane_list())
+                        .as_ref()
+                        .is_ok_and(|list| !list.iter().any(|pane| pane.pane_id == seed.pane_id))
+                {
+                    effects.push(Effect::Vanished {
+                        idx: seed.idx,
+                        id: seed.id,
+                        pane_id: seed.pane_id,
+                    });
                 }
                 continue;
             };
@@ -474,9 +489,9 @@ impl Daemon {
             let mut inner = lock(&self.inner);
             for effect in effects {
                 match effect {
-                    Effect::Vanished { idx } => {
+                    Effect::Vanished { idx, id, pane_id } => {
                         if let Some(s) = inner.sessions.get_mut(idx) {
-                            if !s.status.is_terminal() {
+                            if s.id == id && s.pane_id == pane_id && !s.status.is_terminal() {
                                 s.status = Status::Done;
                                 s.failure_reason = None;
                                 let id = s.id.clone();
@@ -486,9 +501,9 @@ impl Daemon {
                                     "pane vanished; marked done (re-adoption)",
                                 );
                                 cleaned.push(id);
+                                changed = true;
                             }
                         }
-                        changed = true;
                     }
                     Effect::Update(effect) => {
                         let UpdateEffect {
@@ -511,6 +526,9 @@ impl Daemon {
                         let Some(s) = inner.sessions.get_mut(idx) else {
                             continue;
                         };
+                        if s.id != id || s.pane_id != pane_id || s.status.is_terminal() {
+                            continue;
+                        }
                         if let Some(b) = baseline {
                             s.attribution_baseline = Some(b);
                         }
