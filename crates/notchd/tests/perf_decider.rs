@@ -21,8 +21,8 @@ use notchd::status::Status;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 const T0: u64 = 1_763_520_000_000;
 static TMP_N: AtomicU64 = AtomicU64::new(0);
@@ -161,7 +161,15 @@ enum RunMode {
 
 struct FakeOpencode {
     calls: Mutex<Vec<Vec<String>>>,
+    /// Signalled on every recorded call so tests can wait on the actual
+    /// worker event (no sleep-as-synchronisation).
+    calls_cv: Condvar,
     mode: Mutex<RunMode>,
+    /// When set, `api GET /api/session` reports these ids as idle. This is the
+    /// production primary idle signal: a session that has already been judged
+    /// (status Working after a CONTINUE) stays eligible for another bounded
+    /// judgment on the next poll, exactly as a live, idle opencode session does.
+    api_idle_ids: Mutex<Option<Vec<String>>>,
     concurrent: AtomicUsize,
     max_concurrent: AtomicUsize,
 }
@@ -170,7 +178,9 @@ impl FakeOpencode {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
+            calls_cv: Condvar::new(),
             mode: Mutex::new(RunMode::Healthy),
+            api_idle_ids: Mutex::new(None),
             concurrent: AtomicUsize::new(0),
             max_concurrent: AtomicUsize::new(0),
         })
@@ -180,13 +190,34 @@ impl FakeOpencode {
         *self.mode.lock().unwrap() = mode;
     }
 
+    fn set_api_idle_sessions(&self, ids: Vec<String>) {
+        *self.api_idle_ids.lock().unwrap() = Some(ids);
+    }
+
     fn opencode(self: &Arc<Self>) -> Opencode {
         let fake = Arc::clone(self);
         Opencode::with_runner(move |args: &[String]| {
-            fake.calls.lock().unwrap().push(args.to_vec());
+            {
+                let mut calls = fake.calls.lock().unwrap();
+                calls.push(args.to_vec());
+                fake.calls_cv.notify_all();
+            }
             let joined = args[1..].join(" ");
             if joined == "api GET /api/session" {
-                return Ok(r#"{"cursor":null,"data":[]}"#.to_string());
+                let data = match fake.api_idle_ids.lock().unwrap().as_ref() {
+                    Some(ids) => ids
+                        .iter()
+                        .map(|id| {
+                            serde_json::json!({
+                                "id": id,
+                                "time": {"busy": 100, "idle": 200},
+                                "location": {"directory": "/tmp"},
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                    None => Vec::new(),
+                };
+                return Ok(serde_json::json!({"cursor": null, "data": data}).to_string());
             }
             if joined == "models" {
                 return Ok("opencode/hy4-flash-free".to_string());
@@ -224,6 +255,32 @@ impl FakeOpencode {
             .filter(|c| c.get(1).map(String::as_str) == Some("run"))
             .cloned()
             .collect()
+    }
+
+    /// Block until at least `target` `run --model` calls are recorded, or the
+    /// timeout elapses. Returns whether the target was reached. The wait is on
+    /// the condvar the runner signals on every call: it is event-driven
+    /// synchronisation, not a sleep standing in for a result.
+    fn wait_for_run_calls(&self, target: usize, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            let n = guard
+                .iter()
+                .filter(|c| c.get(1).map(String::as_str) == Some("run"))
+                .count();
+            if n >= target {
+                return true;
+            }
+            let (next, wait_res) = self
+                .calls_cv
+                .wait_timeout(guard, deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|e| e.into_inner());
+            guard = next;
+            if wait_res.timed_out() {
+                return false;
+            }
+        }
     }
 
     fn max_concurrent(&self) -> usize {
@@ -286,6 +343,41 @@ fn iterations(daemon: &Daemon, id: &str) -> u32 {
         .unwrap_or(0)
 }
 
+fn session_cwd(daemon: &Daemon, id: &str) -> String {
+    daemon
+        .snapshot()
+        .sessions
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+        .cwd
+}
+
+/// Drive the production loop the way `run_poll_loop` does: each `poll_once`
+/// drains finished JudgePool jobs (applying them), then submits the next
+/// eligible job. Between polls we block on the fake runner's condvar until a
+/// worker actually records its `run` call — no sleep-as-synchronisation.
+fn step_polls_until_calls(daemon: &Daemon, oc: &FakeOpencode, target: usize, max_polls: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    for _ in 0..max_polls {
+        daemon.poll_once();
+        if oc.wait_for_run_calls(target, Duration::from_millis(200)) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {target} run calls");
+    }
+    panic!("did not reach {target} run calls in {max_polls} polls");
+}
+
+/// Extract the `--session <id>` value from a recorded `run` argv (empty if the
+/// call took the cold path and carried no `--session`).
+fn session_id_of(call: &[String]) -> String {
+    call.windows(2)
+        .find(|w| w[0] == "--session")
+        .map(|w| w[1].clone())
+        .unwrap_or_default()
+}
+
 // -------------------------------- tests -----------------------------------
 
 /// A locally checkable DoD is decided with ZERO decider calls.
@@ -342,36 +434,45 @@ fn fast_path_missing_reprompts_with_specific_evidence_and_zero_calls() {
     assert!(last.contains("test_jsonify"), "concrete missing marker: {last}");
 }
 
-/// Every non-fast judgment reuses ONE decider session id, across polls.
+/// Every non-fast judgment of one notch session reuses that session's
+/// per-session decider id, across polls. The JudgePool submits one bounded
+/// async job per poll and applies it on a later drain tick, so the harness
+/// steps polls (and waits on the worker's real `run` event) instead of
+/// assuming all calls complete inside a single `poll_once`.
 #[test]
 fn persistent_path_reuses_same_session_id_across_calls() {
     let _guard = test_lock();
     let root = tmp_root("persist");
     let cwd = root.join("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let (herdr, oc, daemon, clock) = build(&root);
-    let _id = submit(&daemon, &cwd, "cargo test passes on main"); // not locally checkable
+    let (herdr, oc, daemon, _clock) = build(&root);
+    let id = submit(&daemon, &cwd, "cargo test passes on main"); // not locally checkable
 
-    for _ in 0..3 {
-        herdr.set_idle(true);
-        daemon.poll_once();
-        clock.advance_ms(2_000);
-    }
+    // Keep the session eligible after each CONTINUE flips it to Working: the
+    // primary opencode idle signal is how the production loop does this.
+    // FakeHerdr names the first pane `wT:p1` -> session_ref `ses_wT:p1`.
+    herdr.set_idle(true);
+    oc.set_api_idle_sessions(vec!["ses_wT:p1".to_string()]);
+
+    step_polls_until_calls(&daemon, &oc, 3, 20);
+    daemon.poll_once(); // drain the last finished job so its perf event is logged
 
     let calls = oc.run_calls();
-    assert_eq!(calls.len(), 3, "one judgment per poll: {calls:?}");
-    let sids: Vec<String> = calls
-        .iter()
-        .map(|c| {
-            c.windows(2)
-                .find(|w| w[0] == "--session")
-                .map(|w| w[1].clone())
-                .unwrap_or_default()
-        })
-        .collect();
+    assert_eq!(calls.len(), 3, "one judgment per poll/drain: {calls:?}");
+    let sids: Vec<String> = calls.iter().map(|c| session_id_of(c)).collect();
     assert!(sids.iter().all(|s| !s.is_empty()), "every call must carry --session: {calls:?}");
-    assert!(sids.iter().all(|s| s == &sids[0]), "ONE session id reused: {sids:?}");
-    assert!(sids[0].starts_with("ses"), "opencode-compatible id: {}", sids[0]);
+    assert!(sids.iter().all(|s| s == &sids[0]), "ONE session id reused across this session's calls: {sids:?}");
+    assert!(sids[0].starts_with("ses_notch_"), "per-notch-session opencode id: {}", sids[0]);
+    assert_eq!(
+        sids[0],
+        notchd::decider::decider_session_id_for(&id),
+        "judge id must be derived from the notch session id: {sids:?}"
+    );
+    // The judge reads this session's real cwd, never the daemon cwd or a scratch dir.
+    let actual_cwd = session_cwd(&daemon, &id);
+    let actual_canon = std::fs::canonicalize(&actual_cwd).unwrap_or_else(|_| PathBuf::from(&actual_cwd));
+    let expected_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+    assert_eq!(actual_canon, expected_canon, "judge must see the real cwd, got {actual_cwd}");
     let ev = events(&root);
     assert!(
         ev.iter().any(|e| e["kind"] == "perf"
@@ -381,6 +482,8 @@ fn persistent_path_reuses_same_session_id_across_calls() {
 }
 
 /// If session reuse fails, the cold path fires and the fallback is logged.
+/// Both attempts run inside one bounded worker job; the poll thread only
+/// submits it and later drains it, so the harness waits for the real calls.
 #[test]
 fn fallback_to_cold_run_is_logged() {
     let _guard = test_lock();
@@ -392,7 +495,8 @@ fn fallback_to_cold_run_is_logged() {
     let _id = submit(&daemon, &cwd, "cargo test passes on main");
     oc.set_mode(RunMode::PersistentFails);
 
-    daemon.poll_once();
+    step_polls_until_calls(&daemon, &oc, 2, 10);
+    daemon.poll_once(); // drain the job so the cold-fallback perf event is logged
 
     let calls = oc.run_calls();
     assert_eq!(calls.len(), 2, "persistent attempt + cold fallback: {calls:?}");
@@ -408,7 +512,11 @@ fn fallback_to_cold_run_is_logged() {
     assert!(report.contains("cold_fallback=1"), "cold sample recorded: {report}");
 }
 
-/// Judgments for several idle sessions fan out to <= 4 bounded threads.
+/// Judgments for several idle sessions fan out to <= 4 bounded threads, with
+/// at most one job in flight per session and a distinct `ses_notch_<id>` per
+/// notch session. Jobs are submitted non-blockingly and drained on later
+/// poll ticks, so the harness steps polls and waits on the workers' real
+/// `run` events.
 #[test]
 fn parallel_judgments_are_bounded_and_concurrent() {
     let _guard = test_lock();
@@ -421,8 +529,9 @@ fn parallel_judgments_are_bounded_and_concurrent() {
     }
     oc.set_mode(RunMode::Slow { ms: 120 });
 
-    let start = std::time::Instant::now();
-    daemon.poll_once();
+    let start = Instant::now();
+    step_polls_until_calls(&daemon, &oc, 6, 20);
+    daemon.poll_once(); // drain the finished jobs
     let elapsed = start.elapsed();
 
     let calls = oc.run_calls();
@@ -436,17 +545,16 @@ fn parallel_judgments_are_bounded_and_concurrent() {
         elapsed.as_millis()
     );
     assert!(elapsed < Duration::from_millis(650), "fan-out too slow: {elapsed:?}");
-    // All six reused the same session id.
-    let sids: std::collections::HashSet<String> = calls
-        .iter()
-        .map(|c| {
-            c.windows(2)
-                .find(|w| w[0] == "--session")
-                .map(|w| w[1].clone())
-                .unwrap_or_default()
-        })
-        .collect();
-    assert_eq!(sids.len(), 1, "one shared decider session: {sids:?}");
+    // One distinct per-notch-session decider id per job, and no session is
+    // judged twice (the <=1-job-in-flight invariant).
+    let sids: Vec<String> = calls.iter().map(|c| session_id_of(c)).collect();
+    assert!(sids.iter().all(|s| s.starts_with("ses_notch_")), "per-notch-session ids: {sids:?}");
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for s in &sids {
+        *counts.entry(s.as_str()).or_insert(0) += 1;
+    }
+    assert_eq!(counts.len(), 6, "6 distinct session ids (one per session): {sids:?}");
+    assert!(counts.values().all(|&n| n == 1), "one job per session in flight: {counts:?}");
 }
 
 /// Pause / budget / working-session rules still gate before any model call.
