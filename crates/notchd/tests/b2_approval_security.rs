@@ -13,7 +13,7 @@ use notchd::daemon::Daemon;
 use notchd::herdr::Herdr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 
 const T0: u64 = 1_763_520_000_000;
 static N: AtomicU64 = AtomicU64::new(0);
@@ -142,6 +142,34 @@ fn expired_card_is_rejected() {
         Ok(_) => panic!("expired card must be rejected"),
     }
     assert_eq!(d.pending_approvals().len(), 1, "expired card stays out of the grant path");
+}
+
+#[test]
+fn simultaneous_answers_consume_exactly_once() {
+    // A9 review hole: real N-thread race on the SAME card. Exactly one answer
+    // may sign + consume + create the grant; the other gets an honest error.
+    let d = Arc::new(daemon(&root("race"), Arc::new(FakeClock::new(T0))));
+    let (digest, _) = issue(&d, "esc_race");
+    let barrier = Arc::new(Barrier::new(2));
+    let spawn = |d: Arc<Daemon>, digest: String, barrier: Arc<Barrier>| {
+        std::thread::spawn(move || {
+            barrier.wait();
+            d.answer_approval("esc_race", true, None, T0, &digest, "bypass_permissions")
+        })
+    };
+    let t1 = spawn(Arc::clone(&d), digest.clone(), Arc::clone(&barrier));
+    let t2 = spawn(Arc::clone(&d), digest, barrier);
+    let (r1, r2) = (t1.join().unwrap(), t2.join().unwrap());
+    assert_eq!(
+        u8::from(r1.is_ok()) + u8::from(r2.is_ok()),
+        1,
+        "exactly one simultaneous answer wins: {r1:?} / {r2:?}"
+    );
+    assert!(
+        d.approval_grant("S1-OC01").is_some(),
+        "the single winner creates exactly one standing grant"
+    );
+    assert!(d.pending_approvals().is_empty(), "card consumed once");
 }
 
 #[test]
