@@ -92,7 +92,8 @@ fn recovered_session_snapshots_wip_before_stuck_close() {
             let sub2 = args.get(2).map(String::as_str).unwrap_or("");
             match (sub, sub2) {
                 ("agent", "list") => {
-                    let rev = if counter.fetch_add(1, Ordering::SeqCst) == 0 { 8 } else { 8 };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let rev = 8;
                     Ok(json!({"result":{"agents":[{
                         "agent":"opencode", "agent_status":"working",
                         "pane_id":"wR:p1", "revision":rev,

@@ -21,6 +21,7 @@
 //!     wallClockDeadline / lastSupervisorAction / model
 //!   - supervisors[].item: paused
 //!   - top: decisions / escalations / busMessages
+//!
 //! If this file and docs/bridge.md disagree, bridge.md wins — file a lead
 //! sign-off, do not edit this list to make a failure go away.
 
