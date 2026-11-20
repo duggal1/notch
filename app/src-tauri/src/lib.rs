@@ -199,7 +199,11 @@ pub fn run() -> Result<(), String> {
             let tray_handle = app.handle().clone();
             tray::build(&tray_handle)?;
             engine::spawn_emit_thread(app.handle().clone(), snapshot_rx);
-            commands::spawn_fleet_emit_thread(app.handle().clone(), fleet_rx);
+            commands::spawn_fleet_emit_thread(
+                app.handle().clone(),
+                fleet_rx,
+                Arc::clone(&daemon),
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

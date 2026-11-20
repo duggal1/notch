@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
 use notchd::approvals::card_digest as engine_card_digest;
 use notchd::daemon::{KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, SubmitTaskAck};
+use notchd::snapshot::fleet_view;
 use notchd::Daemon;
 
 use crate::frame::{frame_for_mode, Mode};
@@ -335,25 +336,6 @@ fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
         .unwrap_or(&[])
 }
 
-/// The one honest line each fleet unit gets. Derived only from the four legal
-/// statuses plus the escalation/failure reason — never a fifth status value.
-fn unit_line(status: &str, reason: &str, kind: &str) -> (&'static str, String) {
-    match status {
-        "working" => ("Working", "An agent is on this session right now.".to_string()),
-        "failed" if kind == "blocked" || reason == "blocked_waiting" => (
-            "Stopped",
-            "The agent stopped on a request only you can answer. Nothing moves until it is answered.".to_string(),
-        ),
-        "failed" if kind == "stuck" || reason == "stuck" => (
-            "Stopped",
-            "The watchdog stopped this session and kept its work. Send it a fresh prompt to continue.".to_string(),
-        ),
-        "failed" => ("Stopped", "This session failed. Its last action is kept on the row.".to_string()),
-        "done" => ("Done", "The session finished and its work was verified.".to_string()),
-        _ => ("Idle", "No agent is on this session, and none is waiting to start.".to_string()),
-    }
-}
-
 /// W2-1: the harness surface is the registry's real definitions — herdr is
 /// the sole admitted/spawn-capable engine; opencode declares Status + Models
 /// only and cannot make a managed pane.
@@ -433,110 +415,23 @@ pub fn answer_approval_payload(
     }))
 }
 
-/// W2-2/W2-4 seam: the fleet projection — one unit per session, honest words,
-/// a ledger sequence/fence and the storm guard reading. All from the snapshot.
-fn fleet_from_snapshot(snap: &Value) -> Value {
-    let sessions = array_at(snap, "sessions");
-    let supervisors = array_at(snap, "supervisors");
-    let escalations = array_at(snap, "escalations");
-    let decisions = array_at(snap, "decisions");
-    let bus = array_at(snap, "busMessages");
-
-    let escalated: Vec<&Value> = escalations
-        .iter()
-        .filter(|e| !str_at(e, "session").is_empty())
-        .collect();
-    let mut units = Vec::with_capacity(sessions.len());
-    let mut working = 0usize;
-    let mut idle = 0usize;
-    let mut stopped = 0usize;
-    let mut done = 0usize;
-    for s in sessions {
-        let id = str_at(s, "id");
-        if id.is_empty() {
-            continue;
-        }
-        let status = str_at(s, "status");
-        let reason = str_at(s, "failureReason");
-        let esc = escalated
-            .iter()
-            .find(|e| str_at(e, "session") == id)
-            .copied();
-        let kind = esc.map(|e| str_at(e, "kind")).unwrap_or("");
-        let (word, detail) = unit_line(status, reason, kind);
-        match status {
-            "working" => working += 1,
-            "failed" => stopped += 1,
-            "done" => done += 1,
-            _ => idle += 1,
-        }
-        units.push(json!({
-            "id": id,
-            "kind": "session",
-            "sup": str_at(s, "sup"),
-            "status": status,
-            "word": word,
-            "detail": detail,
-            "title": str_at(s, "title"),
-            "paneId": str_at(s, "paneId"),
-            "workspace": str_at(s, "cwd"),
-            "lastAction": str_at(s, "lastAction"),
-            "revision": u64_at(s, "lastRevision"),
-            "escalation": kind,
-        }));
-    }
-    let top = if stopped > 0 {
-        "failed"
-    } else if working > 0 {
-        "working"
-    } else if done > 0 && idle == 0 && done == sessions.len() {
-        "done"
-    } else {
-        "idle"
-    };
-    let holds = supervisors
-        .iter()
-        .filter(|s| s.get("paused").and_then(Value::as_bool).unwrap_or(false))
-        .count();
-    let seq = decisions.len() + bus.len();
-    let fence_src = format!(
-        "{}|{}|{}",
-        u64_at(snap, "generatedAt"),
-        decisions.len(),
-        bus.len()
-    );
-    let mut fh: u64 = 0xcbf29ce484222325;
-    for b in fence_src.bytes() {
-        fh ^= b as u64;
-        fh = fh.wrapping_mul(0x100000001b3);
-    }
-    json!({
-        "source": PROJECTION,
-        "generatedAt": u64_at(snap, "generatedAt"),
-        "topStatus": top,
-        "units": units,
-        "groups": { "working": working, "idle": idle, "stopped": stopped, "done": done },
-        "storm": {
-            "holds": holds,
-            "guard": if holds > 0 { "holding" } else { "open" },
-            "starts": decisions.iter().filter(|d| str_at(d, "action") == "reprompt").count(),
-        },
-        "ledger": {
-            "seq": seq,
-            "fence": format!("{fh:016x}"),
-            "epoch": u64_at(snap, "version"),
-            "decisions": decisions.len(),
-            "messages": bus.len(),
-        },
-    })
+/// Real ledger seq/epoch for the fleet view, from the daemon's state-dir
+/// ledger (the same source A2's C2 accessors read). Errors surface, never
+/// silently become fake zeroes.
+fn ledger_numbers(daemon: &Daemon) -> Result<(u64, u64), String> {
+    let ledger = notchd::ledger::Ledger::open(&daemon.config.state_dir)
+        .map_err(|e| format!("fleet ledger: {e}"))?;
+    Ok((ledger.last_seq(), ledger.current_epoch("ORCH")))
 }
 
-/// `fleet_state` — one call returns the whole derived fleet surface.
+/// `fleet_state` — the ONE backend-derived fleet view. The UI renders it
+/// verbatim; no TypeScript re-derivation.
 #[tauri::command]
 pub async fn fleet_state(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String> {
     let snap = daemon.snapshot();
     let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
-    Ok(fleet_from_snapshot(&value))
+    let (seq, epoch) = ledger_numbers(&daemon)?;
+    Ok(fleet_view(&value, seq, epoch))
 }
 
 /// `list_harnesses` — the registry's real capabilities (herdr spawns;
@@ -600,9 +495,9 @@ pub async fn fleet_control(
 }
 
 /// Second, additive event channel. The frozen `snapshot` event is unchanged;
-/// `fleet` carries the same §1.3 object plus the derived fleet projection.
+/// `fleet` carries the same §1.3 object plus the ONE backend-derived fleet view.
 /// It taps a second daemon subscriber — no second poll, no change to engine.rs.
-pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>) {
+pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>, daemon: Arc<Daemon>) {
     std::thread::Builder::new()
         .name("notch-fleet-emit".into())
         .spawn(move || {
@@ -625,9 +520,11 @@ pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>) {
                 }
                 if let Some(snap) = pending.take() {
                     if last.elapsed() >= Duration::from_millis(150) {
-                        let fleet = fleet_from_snapshot(&snap);
-                        let _ = app.emit("fleet", json!({ "snapshot": snap, "fleet": fleet }));
-                        last = Instant::now();
+                        if let Ok((seq, epoch)) = ledger_numbers(&daemon) {
+                            let fleet = fleet_view(&snap, seq, epoch);
+                            let _ = app.emit("fleet", json!({ "snapshot": snap, "fleet": fleet }));
+                            last = Instant::now();
+                        }
                     } else {
                         pending = Some(snap);
                     }
