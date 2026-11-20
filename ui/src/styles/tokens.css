@@ -1,11 +1,11 @@
 @import "tailwindcss";
 
-/* One family plus mono. v3: Inter for voice, system mono for machine text.
-   Radii are continuous and large; motion is eased or spring, never linear. */
+/* One family plus mono. Instrument Sans for voice, system mono for raw IDs / terminal only.
+   Tight tracking, grayscale smoothing, large continuous radii, eased motion. */
 @theme {
-  --font-sans: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
-  --font-serif: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-serif: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
 
   --color-void: #000000;
   --color-ground: #0B0210;

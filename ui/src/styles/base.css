@@ -53,23 +53,32 @@
   --release: cubic-bezier(.16, 1, .3, 1); /* no overshoot (§7) */
   --step: steps(4, end); /* dither wipe only */
 
-  /* type */
-  --font: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+  /* type — Instrument Sans, tight. Mono is for raw IDs / terminal text only. */
+  --font: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* the popover's open silhouette height. The box is fixed; only clip-path moves. */
+  --open-h: 640px;
+
+  /* glass — popover cards/panels only. Dither stays hard on top of it. */
+  --glass-fill: linear-gradient(180deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, .05));
+  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 0 0 1px rgba(255, 255, 255, .06);
 
   /* focus */
   --ring: 0 0 0 2px var(--void), 0 0 0 4px #FFFFFF;
   --ring-ink: 0 0 0 2px #FFFFFF;
 }
 
-html, body {
-  margin: 0; height: 100%; overflow: hidden; background: transparent;
+/* smoothing on the document AND every window root, including the popover shell */
+html, body, #root, .shell {
+  margin: 0; height: 100%; background: transparent;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility; font-synthesis: none; font-optical-sizing: auto;
-  font-feature-settings: 'tnum' 1, 'zero' 1;
+  font-feature-settings: 'tnum' 1, 'zero' 1; font-variant-numeric: tabular-nums;
 }
+html, body { overflow: hidden; }
 body {
-  font: 400 13px/1.45 var(--font); letter-spacing: -.01em; color: var(--t1);
+  font: 450 13px/1.45 var(--font); letter-spacing: -.015em; color: var(--t1);
   cursor: default; -webkit-user-select: none; user-select: none;
 }
 button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
@@ -84,19 +93,19 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
    body = what you read · num = anything that ticks.
    Sizes: 88 / 40 / 20 / 13 / 10.5 mono. Tracking is tied to size. No caps anywhere. */
 .label {
-  font: 500 10.5px/1 var(--mono); letter-spacing: .08em;
+  font: 450 10.5px/1 var(--font); letter-spacing: -.015em;
   color: var(--t3); font-variant-numeric: tabular-nums;
 }
 .label--hot { color: var(--f4); }
 .label--pale { color: var(--f5); }
 .dim { color: var(--t3); }
 .num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1, 'zero' 1; }
-.num-xl { font: 500 88px/.86 var(--font); letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
-.num-l { font: 500 40px/.92 var(--font); letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
-.title { font: 500 20px/1.15 var(--font); letter-spacing: -.02em; }
-.display { font: 500 40px/1.02 var(--font); letter-spacing: -.035em; }
-.body { font: 400 13px/1.45 var(--font); letter-spacing: -.01em; }
-.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+.num-xl { font: 500 88px/.84 var(--font); letter-spacing: -.05em; font-variant-numeric: tabular-nums; }
+.num-l { font: 500 40px/1 var(--font); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.title { font: 500 20px/1.2 var(--font); letter-spacing: -.025em; }
+.display { font: 500 40px/1.02 var(--font); letter-spacing: -.04em; }
+.body { font: 450 13px/1.45 var(--font); letter-spacing: -.015em; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 
 /* ---------- texture primitives ---------- */
 .dither-field { display: block; width: 100%; height: 100%; image-rendering: pixelated; pointer-events: none; }
@@ -121,11 +130,47 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 /* ---------- shell ---------- */
 .shell {
   position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-  width: 560px; height: 640px; /* fixed open frame; only the clip-path silhouette animates */
+  width: 560px; height: var(--open-h); /* fixed frame; only the clip-path silhouette animates */
   background: #000; overflow: hidden; cursor: pointer; outline: none;
+  -webkit-user-select: none; user-select: none;
 }
 .shell[data-mode='open'] { cursor: default; }
-.shell:focus-visible { outline: 2px solid #FFFFFF; outline-offset: -4px; }
+.shell:focus-visible { outline: none; box-shadow: var(--ring); }
+/* macOS passes fully transparent pixels through. This near-zero-alpha layer makes the
+   whole pill a real hit target without changing what the eye sees. */
+.hit { position: absolute; inset: 0; background: rgba(0, 0, 0, .01); pointer-events: none; z-index: 0; }
+
+/* glass — popover cards and panels only. Hard dither sits on top, never blurs. */
+.glass {
+  background: var(--glass-fill);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: var(--glass-edge);
+}
+
+/* primary/secondary buttons: depth from inset shadows only. No outer shadow, no glow. */
+.btn-primary {
+  border: 0; border-radius: var(--r-pill); background: var(--f4); color: var(--ink);
+  font: 500 13px/1 var(--font); letter-spacing: -.015em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 -2px 3px rgba(42, 10, 51, .38), inset 0 0 0 1px rgba(245, 208, 254, .20);
+  transition: transform 160ms var(--ease), filter 180ms var(--ease), box-shadow 180ms var(--ease);
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
+.btn-primary:active:not(:disabled) {
+  transform: scale(.96);
+  box-shadow: inset 0 2px 5px rgba(42, 10, 51, .55), inset 0 0 0 1px rgba(245, 208, 254, .14);
+}
+.btn-primary:focus-visible { outline: none; box-shadow: var(--ring); }
+.btn-primary:disabled { opacity: .4; cursor: not-allowed; filter: none; transform: none; }
+.btn-secondary {
+  border: 0; border-radius: var(--r-pill); color: var(--t1);
+  background: var(--glass-fill); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
+  box-shadow: var(--glass-edge);
+  transition: transform 160ms var(--ease), filter 180ms var(--ease), box-shadow 180ms var(--ease);
+}
+.btn-secondary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
+.btn-secondary:active:not(:disabled) { transform: scale(.96); }
+.btn-secondary:focus-visible { outline: none; box-shadow: var(--ring); }
 
 .list-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--f2) transparent; }
 .list-scroll::-webkit-scrollbar { width: 6px; }

@@ -9,9 +9,10 @@ export const notch: Notch =
 export function frameFor(mode: Mode, contentH = 640, n: Notch = notch) {
   const wing = 60; // one metric per wing
   switch (mode) {
-    case 'rest': return { w: n.w + wing * 2, h: n.h, r: 12, e: 10 };
-    case 'peek': return { w: n.w + wing * 2 + 120, h: n.h + 44, r: 20, e: 10 };
-    case 'open': return { w: 560, h: contentH, r: 36, e: 12 };
+    // the whole rest/peek pill is one real button — never smaller than 44px tall (P0)
+    case 'rest': return { w: n.w + wing * 2, h: Math.max(n.h, 44), r: 12, e: 10 };
+    case 'peek': return { w: n.w + wing * 2 + 120, h: Math.max(n.h + 44, 72), r: 20, e: 10 };
+    case 'open': return { w: 560, h: contentH, r: 28, e: 12 };
   }
 }
 

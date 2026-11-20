@@ -69,7 +69,8 @@ fn mode_frame_table_with_notch() {
     });
     let rest = frame_for_mode(Mode::Rest, 1512.0, notch);
     assert_eq!(rest.width, 206.0 + 120.0);
-    assert_eq!(rest.height, 32.0);
+    // P0: the whole pill is one real button, never shorter than 44px.
+    assert_eq!(rest.height, 44.0);
     assert_eq!(rest.y, 0.0);
     assert!((rest.x - (1512.0 - 326.0) / 2.0).abs() < 0.001);
 
@@ -87,7 +88,7 @@ fn mode_frame_table_with_notch() {
 #[test]
 fn mode_frame_table_fallback_notchless() {
     let rest = frame_for_mode(Mode::Rest, 1920.0, None);
-    assert_eq!((rest.width, rest.height), (320.0, 32.0));
+    assert_eq!((rest.width, rest.height), (320.0, 44.0));
     assert_eq!(rest.y, 0.0);
     assert!((rest.x - (1920.0 - 320.0) / 2.0).abs() < 0.001);
 
