@@ -144,6 +144,11 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
           </div>
           <div className="transcript fleet-activity">
             <div className="transcript-inner">
+              {warning && (
+                <p className="body esc-reason" role="alert">
+                  <PixelIcon name="alert" size={12} /> {warning}
+                </p>
+              )}
               {activity.length === 0 ? (
                 <p className="transcript-empty">Nothing has moved yet.</p>
               ) : activity.map((a) => (
@@ -164,11 +169,6 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
             <span className="view-head-count">{String(Math.max(0, cards.length)).padStart(2, '0')}</span>
           </div>
           <div className="inspector-body">
-            {warning && (
-              <p className="body esc-reason" role="alert">
-                <PixelIcon name="alert" size={12} /> {warning}
-              </p>
-            )}
             {!card ? (
               <p className="inspector-empty">Nothing needs an answer right now.</p>
             ) : (
