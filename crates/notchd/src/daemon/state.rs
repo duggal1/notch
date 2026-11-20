@@ -358,3 +358,42 @@ impl Daemon {
         writer.cv.notify_all();
     }
 }
+
+#[cfg(test)]
+mod a4_tests {
+    use super::*;
+
+    fn test_dir(tag: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir()
+            .join(format!("notch-state-load-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn fresh_state_dir_is_not_reported_as_corruption() {
+        let dir = test_dir("fresh");
+        let state = load_state(&dir.join("state.json"));
+        assert!(
+            state.warnings.is_empty(),
+            "a brand-new state dir must not warn about recovery: {:?}",
+            state.warnings
+        );
+    }
+
+    #[test]
+    fn corrupt_state_is_reported_as_a_warning() {
+        let dir = test_dir("corrupt");
+        let path = dir.join("state.json");
+        std::fs::write(&path, b"{not valid json").unwrap();
+        let state = load_state(&path);
+        assert!(
+            state.warnings.iter().any(|w| w.contains("parse failed")),
+            "a corrupt live file must surface a parse warning: {:?}",
+            state.warnings
+        );
+    }
+}
