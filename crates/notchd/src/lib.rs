@@ -24,6 +24,7 @@ pub mod config;
 pub mod daemon;
 pub mod events;
 pub mod herdr;
+pub mod harness_registry;
 pub mod ledger;
 pub mod model;
 pub mod paths;

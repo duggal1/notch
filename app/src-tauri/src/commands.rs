@@ -21,6 +21,10 @@ use notchd::daemon::{
     KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, RunPlanAck, SpawnAck, SubmitTaskAck,
 };
 use notchd::Daemon;
+use notchd::harness_registry::{
+    herdr_definition, DelegatingHarness, HarnessError, HarnessRegistry,
+};
+use notchd::approvals::card_digest as engine_card_digest;
 
 use crate::frame::{frame_for_mode, Mode};
 use crate::macos;
@@ -375,18 +379,6 @@ pub struct ApprovalOut {
 }
 
 const PROJECTION: &str = "snapshot-projection";
-const OPTIONAL_READS: &[&str] = &["signIn", "usage", "profiles", "remoteControl"];
-
-/// FNV-1a 64 over the answerable fields — a stable, in-process card digest.
-/// No crypto claim is made; the signed channel is the engine's job (W2-3).
-fn card_digest(id: &str, session: &str, kind: &str, reason: &str, at: u64) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in format!("{id}|{session}|{kind}|{reason}|{at}").bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{h:016x}")
-}
 
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -420,58 +412,57 @@ fn unit_line(status: &str, reason: &str, kind: &str) -> (&'static str, String) {
 /// W2-1 seam. Declared registry shape: what the single harness can actually
 /// do, with optional reads declining. Replace with `notchd::harness_registry`.
 fn declare_harnesses() -> Vec<HarnessOut> {
-    let operations = [
-        "spawn", "read", "prompt", "kill", "focus", "status",
-        "signIn", "usage", "profiles", "remoteControl",
-    ];
-    vec![HarnessOut {
-        id: "opencode".into(),
-        label: "OpenCode".into(),
-        capabilities: operations
-            .iter()
-            .map(|name| HarnessCapabilityOut {
-                name: (*name).to_string(),
-                supported: !OPTIONAL_READS.contains(name),
+    // Real registry: one declared adapter, optional reads decline before any
+    // side effect. The invoker is refused by the registry for undeclared ops.
+    let mut registry = HarnessRegistry::new();
+    let _ = registry.register(DelegatingHarness::new(
+        herdr_definition(),
+        Arc::new(|req| {
+            Err(HarnessError::Unsupported {
+                engine: "herdr".to_string(),
+                op: req.op.clone(),
             })
-            .collect(),
-    }]
+        }),
+    ));
+    registry
+        .definitions()
+        .into_iter()
+        .map(|def| HarnessOut {
+            id: def.id.clone(),
+            label: def.label.clone(),
+            capabilities: def
+                .capabilities
+                .iter()
+                .map(|op| HarnessCapabilityOut {
+                    name: op.to_string(),
+                    supported: def.supports(op.clone()),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// W2-2/W2-3 seam: approval cards from unresolved escalations + blocked
 /// sessions. Oldest first, bounded, one card per session.
-fn approvals_from_snapshot(snap: &Value) -> Vec<ApprovalOut> {
-    let sessions = array_at(snap, "sessions");
-    let mut out: Vec<ApprovalOut> = Vec::new();
-    for e in array_at(snap, "escalations") {
-        let session = str_at(e, "session").to_string();
-        let kind = str_at(e, "kind").to_string();
-        if session.is_empty() || (kind != "blocked" && kind != "stuck") {
-            continue;
-        }
-        let id = str_at(e, "id").to_string();
-        let reason = str_at(e, "reason").to_string();
-        let at = u64_at(e, "at");
-        let supervisor = str_at(e, "supervisor").to_string();
+fn approvals_from_engine(daemon: &Daemon) -> Vec<ApprovalOut> {
+    let snap = serde_json::to_value(daemon.snapshot()).unwrap_or_else(|_| json!({}));
+    let mut out = Vec::new();
+    for card in daemon.pending_approvals() {
+        let supervisor = snap
+            .get("sessions")
+            .and_then(Value::as_array)
+            .and_then(|ss| ss.iter().find(|v| str_at(v, "id") == card.session))
+            .map(|v| str_at(v, "sup").to_string())
+            .unwrap_or_default();
         out.push(ApprovalOut {
-            digest: card_digest(&id, &session, &kind, &reason, at),
-            id, session, supervisor, kind, reason, at, signed: false,
-        });
-    }
-    for s in sessions {
-        if str_at(s, "failureReason") != "blocked_waiting" {
-            continue;
-        }
-        let session = str_at(s, "id").to_string();
-        if out.iter().any(|a| a.session == session) {
-            continue;
-        }
-        let id = format!("blocked-{session}");
-        let reason = "The agent is waiting on input only you can give.".to_string();
-        let supervisor = str_at(s, "sup").to_string();
-        let at = u64_at(s, "startedAt");
-        out.push(ApprovalOut {
-            digest: card_digest(&id, &session, "blocked", &reason, at),
-            id, session, supervisor, kind: "blocked".into(), reason, at, signed: false,
+            digest: engine_card_digest(&card),
+            id: card.id,
+            session: card.session,
+            supervisor,
+            kind: card.kind,
+            reason: card.reason,
+            at: card.at,
+            signed: true,
         });
     }
     out.sort_by_key(|a| a.at);
@@ -481,7 +472,7 @@ fn approvals_from_snapshot(snap: &Value) -> Vec<ApprovalOut> {
 
 /// W2-2/W2-4 seam: the fleet projection — one unit per session, honest words,
 /// a ledger sequence/fence and the storm guard reading. All from the snapshot.
-fn fleet_from_snapshot(snap: &Value) -> Value {
+fn fleet_from_snapshot(snap: &Value, ledger_seq: u64) -> Value {
     let sessions = array_at(snap, "sessions");
     let supervisors = array_at(snap, "supervisors");
     let escalations = array_at(snap, "escalations");
@@ -531,10 +522,8 @@ fn fleet_from_snapshot(snap: &Value) -> Value {
     let holds = supervisors.iter().filter(|s| {
         s.get("paused").and_then(Value::as_bool).unwrap_or(false)
     }).count();
-    let seq = decisions.len() + bus.len();
-    let fence_src = format!("{}|{}|{}", u64_at(snap, "generatedAt"), decisions.len(), bus.len());
-    let mut fh: u64 = 0xcbf29ce484222325;
-    for b in fence_src.bytes() { fh ^= b as u64; fh = fh.wrapping_mul(0x100000001b3); }
+    let seq = ledger_seq;
+    let fh = ledger_seq;
     json!({
         "source": PROJECTION,
         "generatedAt": u64_at(snap, "generatedAt"),
@@ -561,22 +550,23 @@ fn fleet_from_snapshot(snap: &Value) -> Value {
 pub async fn fleet_state(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String> {
     let snap = daemon.snapshot();
     let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
-    Ok(fleet_from_snapshot(&value))
+    let ledger_seq = notchd::ledger::Ledger::open(&daemon.config.state_dir)
+        .map(|l| l.last_seq())
+        .unwrap_or(0);
+    Ok(fleet_from_snapshot(&value, ledger_seq))
 }
 
 /// `list_harnesses` — declared capabilities, declines before side effects.
 #[tauri::command]
 pub async fn list_harnesses() -> Result<Value, String> {
-    Ok(json!({ "source": PROJECTION, "harnesses": declare_harnesses() }))
+    Ok(json!({ "source": "engine", "harnesses": declare_harnesses() }))
 }
 
 /// `list_approvals` — one decision per card, oldest first, digest bound to the
 /// card actually shown. Never an engine write.
 #[tauri::command]
 pub async fn list_approvals(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String> {
-    let snap = daemon.snapshot();
-    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
-    Ok(json!({ "source": PROJECTION, "approvals": approvals_from_snapshot(&value) }))
+    Ok(json!({ "source": "engine", "approvals": approvals_from_engine(&daemon) }))
 }
 
 /// `answer_approval` — today routes an answer through the existing reprompt /
@@ -589,36 +579,24 @@ pub async fn answer_approval(
     note: Option<String>,
     daemon: State<'_, Arc<Daemon>>,
 ) -> Result<Value, String> {
-    let snap = daemon.snapshot();
-    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
-    let approval = approvals_from_snapshot(&value)
+    let approval = approvals_from_engine(&daemon)
         .into_iter()
         .find(|a| a.id == id)
         .ok_or_else(|| format!("unknown approval {id:?}"))?;
     let note = note.unwrap_or_default();
-    let text = if allow {
-        format!("approved: {}", if note.is_empty() { "continue" } else { &note })
-    } else {
-        format!("needs you: {}", if note.is_empty() { "answer this request" } else { &note })
-    };
-    let outcome: Result<Value, String> = if allow {
-        daemon.reprompt(&approval.session, &text).map(|_| json!({}))
-    } else {
-        let ack = daemon.message("ORCH", &approval.session, "escalate", &text);
-        if ack.ok {
-            Ok(json!({}))
-        } else {
-            Err(ack.error.unwrap_or_else(|| "message failed".into()))
-        }
-    };
-    outcome?;
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let answer = daemon.answer_approval(&id, allow, Some(note), at, &approval.digest, "answer")?;
     Ok(json!({
         "ok": true,
         "id": id,
         "session": approval.session,
         "verdict": if allow { "allow" } else { "deny" },
-        "signed": false,
-        "source": PROJECTION,
+        "signed": true,
+        "sig": answer.sig,
+        "source": "engine",
     }))
 }
 
@@ -636,16 +614,16 @@ pub async fn fleet_control(
         "hold" | "pause" => {
             let id = id.ok_or_else(|| "hold requires a supervisor id".to_string())?;
             daemon.pause_supervisor(&id)?;
-            Ok(json!({ "ok": true, "action": "hold", "id": id, "source": PROJECTION }))
+            Ok(json!({ "ok": true, "action": "hold", "id": id, "source": "engine" }))
         }
         "release" | "resume" => {
             let id = id.ok_or_else(|| "release requires a supervisor id".to_string())?;
             daemon.resume_supervisor(&id)?;
-            Ok(json!({ "ok": true, "action": "release", "id": id, "source": PROJECTION }))
+            Ok(json!({ "ok": true, "action": "release", "id": id, "source": "engine" }))
         }
         "kill_all" => {
             let ack = kill_switch_impl(&daemon);
-            Ok(json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": PROJECTION }))
+            Ok(json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": "engine" }))
         }
         other => Err(format!("unknown fleet action {other:?} (hold|release|kill_all)")),
     }
@@ -654,7 +632,7 @@ pub async fn fleet_control(
 /// Second, additive event channel. The frozen `snapshot` event is unchanged;
 /// `fleet` carries the same §1.3 object plus the derived fleet projection.
 /// It taps a second daemon subscriber — no second poll, no change to engine.rs.
-pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>) {
+pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>, state_dir: std::path::PathBuf) {
     std::thread::Builder::new()
         .name("notch-fleet-emit".into())
         .spawn(move || {
@@ -675,7 +653,10 @@ pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>) {
                 }
                 if let Some(snap) = pending.take() {
                     if last.elapsed() >= Duration::from_millis(150) {
-                        let fleet = fleet_from_snapshot(&snap);
+                        let seq = notchd::ledger::Ledger::open(&state_dir)
+                            .map(|l| l.last_seq())
+                            .unwrap_or(0);
+                        let fleet = fleet_from_snapshot(&snap, seq);
                         let _ = app.emit("fleet", json!({ "snapshot": snap, "fleet": fleet }));
                         last = Instant::now();
                     } else {
