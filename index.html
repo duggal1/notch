@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notch — your agents run. you keep the final say.</title>
+<meta name="description" content="Notch is a macOS control plane for coding agents. A supervisor tree, four views, one wire. you can stop anything in one click.">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cg fill='%23F5D0FE'%3E%3Crect x='8' y='8' width='4' height='4'/%3E%3Crect x='12' y='8' width='4' height='4'/%3E%3Crect x='16' y='8' width='4' height='4'/%3E%3Crect x='20' y='8' width='4' height='4'/%3E%3Crect x='8' y='12' width='4' height='4'/%3E%3Crect x='12' y='12' width='4' height='4'/%3E%3Crect x='16' y='12' width='4' height='4'/%3E%3Crect x='20' y='12' width='4' height='4'/%3E%3Crect x='8' y='16' width='4' height='4'/%3E%3Crect x='12' y='16' width='4' height='4'/%3E%3Crect x='16' y='16' width='4' height='4'/%3E%3Crect x='20' y='16' width='4' height='4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ───────────────────────────────────────────────────────── tokens (§2, §3, §4, §7) */
+:root {
+  /* brand ramp */
+  --f0:#2A0A33; --f1:#701A75; --f2:#A21CAF; --f3:#D946EF; --f4:#F5D0FE;
+  /* surfaces */
+  --s0:#000000; --s1:#0A0310; --s2:#12061A; --s3:#1B0A26;
+  /* text */
+  --t1:#FFFFFF; --t2:rgba(255,255,255,.62); --t3:rgba(255,255,255,.40); --ink:#000000;
+  /* lines: neutral, never fuchsia-tinted */
+  --line:rgba(255,255,255,.14); --line-hi:rgba(255,255,255,.30);
+  /* radii */
+  --r-sm:12px; --r-md:16px; --r-lg:22px; --r-xl:28px; --r-pill:999px;
+  /* motion */
+  --ease:cubic-bezier(.22,1,.36,1);
+  --ease-expo:cubic-bezier(.16,1,.3,1);
+  --dur-micro:160ms; --dur-state:280ms; --dur-enter:520ms;
+  /* type */
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--s0);color-scheme:dark}
+body{
+  margin:0; background:var(--s0); color:var(--t1);
+  font:400 13px/1.45 var(--sans); letter-spacing:-.01em;
+  -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
+  text-rendering:optimizeLegibility; overflow-x:clip;
+}
+h1,h2,h3,p{margin:0}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+::selection{background:rgba(245,208,254,.22)}
+:focus{outline:none}
+:focus-visible{box-shadow:0 0 0 2px var(--s0),0 0 0 4px #fff}
+@layer base{
+  button:not(:disabled),a[href]{cursor:pointer}
+  :disabled{cursor:not-allowed}
+}
+.wrap{width:min(1180px,calc(100% - 64px));margin-inline:auto}
+
+/* type scale — exactly five sizes */
+.num-xl{font:500 88px/.84 var(--sans);letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.num-l{font:500 40px/1 var(--sans);letter-spacing:-.035em;font-variant-numeric:tabular-nums}
+.title{font:500 20px/1.2 var(--sans);letter-spacing:-.02em}
+.body{font:400 13px/1.45 var(--sans)}
+.lbl{font:400 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--t3)}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"zero" 1}
+.dim{color:var(--t2)}
+
+/* one icon family, bare, masked */
+.ic{display:inline-block;width:16px;height:16px;flex:none;background:currentColor;
+  -webkit-mask:var(--ic) center/contain no-repeat; mask:var(--ic) center/contain no-repeat}
+:root{
+  --i-tree:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round'%3E%3Ccircle cx='12' cy='5' r='2.5'/%3E%3Ccircle cx='6' cy='19' r='2.5'/%3E%3Ccircle cx='18' cy='19' r='2.5'/%3E%3Cpath d='M12 7.5v4M6 16.5v-4h12v4'/%3E%3C/svg%3E");
+  --i-mux:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75'%3E%3Crect x='4' y='4' width='6' height='6'/%3E%3Crect x='14' y='4' width='6' height='6'/%3E%3Crect x='4' y='14' width='6' height='6'/%3E%3Crect x='14' y='14' width='6' height='6'/%3E%3C/svg%3E");
+  --i-wire:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round'%3E%3Ccircle cx='5' cy='6' r='2'/%3E%3Ccircle cx='19' cy='12' r='2'/%3E%3Ccircle cx='5' cy='18' r='2'/%3E%3Cpath d='M7 6h5a3 3 0 0 1 3 3v6a3 3 0 0 0 3 3M7 18h5a3 3 0 0 0 3-3'/%3E%3C/svg%3E");
+  --i-alarm:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round'%3E%3Cpath d='M12 4 2.5 20h19L12 4Z'/%3E%3Cpath d='M12 10v4M12 17.5v.01'/%3E%3C/svg%3E");
+  --i-check:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7'/%3E%3C/svg%3E");
+  --i-x:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E");
+  --i-dot:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Crect width='8' height='8'/%3E%3C/svg%3E");
+  --i-down:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round'%3E%3Cpath d='M12 4v16M5 13l7 7 7-7'/%3E%3C/svg%3E");
+  --i-play:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linejoin='round'%3E%3Cpath d='M7 4.5l12 7.5-12 7.5V4.5Z'/%3E%3C/svg%3E");
+  --i-up:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20V5M5 12l7-7 7 7'/%3E%3C/svg%3E");
+  --i-sliders:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round'%3E%3Cpath d='M4 7h10M18 7h2M4 17h2M10 17h10'/%3E%3Ccircle cx='16' cy='7' r='2'/%3E%3Ccircle cx='8' cy='17' r='2'/%3E%3C/svg%3E");
+  --i-term:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.75' stroke-linecap='round'%3E%3Cpath d='M4 6l6 6-6 6M12 18h8'/%3E%3C/svg%3E");
+  --i-mark:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' shape-rendering='crispEdges'%3E%3Cpath fill='%23000' d='M6 8h36v6H6zM6 18h36v6H6zM6 28h36v6H6zM6 38h36v6H6z'/%3E%3C/svg%3E");
+  --i-logo:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 960 960' shape-rendering='crispEdges'%3E%3Cpath fill='%23000' d='M560 200h80v10h-80zM450 210h200v10h-200zM330 220h320v10h-320zM450 230h200v10h-200zM560 240h80v10h-80zM600 270h100v10h-100zM470 280h240v10h-240zM320 290h390v10h-390zM470 300h240v10h-240zM600 310h100v10h-100zM620 340h130v10h-130zM460 350h300v10h-300zM280 360h480v10h-480zM460 370h300v10h-300zM620 380h130v10h-130zM620 410h130v10h-130zM460 420h300v10h-300zM270 430h490v10h-490zM460 440h300v10h-300zM620 450h130v10h-130zM630 480h150v10h-150zM450 490h340v10h-340zM240 500h550v10h-550zM450 510h340v10h-340zM630 520h150v10h-150zM600 550h150v10h-150zM420 560h340v10h-340zM210 570h550v10h-550zM420 580h340v10h-340zM600 590h150v10h-150zM580 620h140v10h-140zM410 630h320v10h-320zM210 640h520v10h-520zM410 650h320v10h-320zM580 660h140v10h-140zM520 690h120v10h-120zM360 700h290v10h-290zM180 710h470v10h-470zM360 720h290v10h-290zM520 730h120v10h-120z'/%3E%3C/svg%3E");
+}
+
+/* ───────────────────────────────────────────────────────── dither fields (canvas) */
+.dither{position:absolute;inset:0;pointer-events:none;overflow:hidden;border-radius:inherit;z-index:0}
+.dither canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;
+  -webkit-mask-image:var(--mask); mask-image:var(--mask);--mask:linear-gradient(#000,transparent)}
+[hidden]{display:none!important}
+
+/* ───────────────────────────────────────────────────────── shell */
+main{position:relative}
+section{position:relative}
+.mark{position:relative}
+.hero-atmos{position:absolute;left:0;right:0;bottom:-2px;height:560px;pointer-events:none;z-index:0;
+  --mask:radial-gradient(ellipse 62% 68% at 74% 78%,#000 0%,rgba(0,0,0,.5) 55%,transparent 100%)}
+.hero-glow{position:absolute;left:0;right:0;bottom:-2px;height:520px;pointer-events:none;z-index:0;
+  background:radial-gradient(ellipse 55% 60% at 74% 80%,rgba(217,70,239,.16) 0%,rgba(162,28,175,.07) 45%,transparent 100%)}
+
+/* ───────────────────────────────────────────────────────── nav */
+.nav{position:sticky;top:0;z-index:60;background:rgba(0,0,0,.9)}
+.nav-in{height:72px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.nav-l{display:flex;align-items:center;gap:12px}
+.mark-lg{width:28px;height:28px;flex:none;color:var(--f4);
+  -webkit-mask:var(--i-logo) center/contain no-repeat; mask:var(--i-logo) center/contain no-repeat}
+.word{font:500 20px/1 var(--sans);letter-spacing:-.02em}
+.nav-c{display:flex;align-items:center;gap:28px}
+.nav-c a{font:400 13px/1 var(--sans);color:var(--t2);transition:color var(--dur-micro) var(--ease)}
+.nav-c a:hover{color:var(--t1)}
+.nav-r{display:flex;align-items:center;gap:24px}
+.nav-cta{font:500 13px/1 var(--sans);color:var(--t1);display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 14px;border-radius:var(--r-pill);background:var(--s2);border:1px solid var(--line);
+  transition:background-color var(--dur-micro) var(--ease),border-color var(--dur-micro) var(--ease),transform var(--dur-micro) var(--ease)}
+.nav-cta:hover{background:var(--s3);border-color:var(--line-hi)}
+.nav-cta:active{transform:scale(.96)}
+.nav-dl{position:relative}
+.nav-dl>a{display:flex;align-items:center;height:32px;padding:0 14px;border-radius:var(--r-pill);background:var(--f3);color:var(--ink);font:500 13px/1 var(--sans);
+  transition:brightness var(--dur-micro) var(--ease),transform var(--dur-micro) var(--ease)}
+.nav-dl>a:hover{filter:brightness(1.06)}
+.nav-dl>a:active{transform:scale(.96)}
+.nav-menu{position:absolute;right:0;top:40px;width:260px;padding:8px;background:var(--s1);border:1px solid var(--line);border-radius:var(--r-lg);z-index:80;
+  opacity:0;transform:translateY(-4px);pointer-events:none;
+  transition:opacity var(--dur-state) var(--ease),transform var(--dur-state) var(--ease)}
+.nav-dl[data-open] .nav-menu{opacity:1;transform:none;pointer-events:auto}
+.nav-menu a{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:var(--r-sm);font:400 13px/1 var(--sans);color:var(--t1);
+  transition:background-color var(--dur-micro) var(--ease)}
+.nav-menu a:hover{background:var(--s2)}
+.nav-menu .lbl{letter-spacing:.04em}
+
+/* ───────────────────────────────────────────────────────── buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:40px;padding:0 20px;border-radius:var(--r-pill);
+  font:500 13px/1 var(--sans);letter-spacing:-.01em;white-space:nowrap;
+  transition:transform var(--dur-micro) var(--ease),filter var(--dur-micro) var(--ease),background-color var(--dur-micro) var(--ease),opacity var(--dur-micro) var(--ease)}
+.btn-primary{background:var(--f3);color:var(--ink)}
+.btn-primary:hover{filter:brightness(1.06)}
+.btn-primary:active{transform:scale(.96)}
+.btn-ghost{color:var(--t2)}
+.btn-ghost:hover{background:var(--s2);color:var(--t1)}
+.btn-ghost:active{transform:scale(.96)}
+.btn .ic{width:15px;height:15px}
+.btn:disabled{opacity:.4;pointer-events:none}
+.kbd{font:400 10.5px/1 var(--mono);letter-spacing:.02em;color:var(--t3);margin-left:8px;font-variant-numeric:tabular-nums}
+
+/* ───────────────────────────────────────────────────────── hero */
+.hero{display:grid;grid-template-columns:minmax(0,1.28fr) minmax(0,.72fr);gap:48px;align-items:end;padding:72px 0 64px}
+.hero .eyebrow{display:flex;align-items:center;gap:8px}
+.st-dot{width:8px;height:8px;background:var(--f3);display:inline-block;animation:pulse 2.4s var(--ease) infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hero h1{margin:24px 0 0;max-width:18ch}
+.hero h1 .g{color:var(--t3)}
+.hero .lede{margin-top:24px;color:var(--t2);max-width:46ch;font-size:13px;line-height:1.6}
+.hero-actions{display:flex;align-items:center;gap:12px;margin-top:32px}
+.hero-note{margin-top:16px;display:flex;align-items:center;gap:8px}
+.hero-note .ic{width:13px;height:13px;color:var(--t3)}
+.hero-card{position:relative;align-self:start}
+
+/* mini window */
+.mw{background:var(--s1);border:1px solid var(--line);border-radius:var(--r-xl);overflow:hidden;position:relative;min-width:0}
+.mw *{min-width:0}
+.mw-term,.mw-col-h,.mw-node span{overflow:hidden}
+.mw-top{display:flex;align-items:center;justify-content:space-between;height:72px;padding:0 16px;gap:12px}
+.mw-l{display:flex;align-items:center;gap:12px;min-width:0}
+.mw-logo{width:20px;height:20px;color:var(--f4);flex:none;
+  -webkit-mask:var(--i-logo) center/contain no-repeat;mask:var(--i-logo) center/contain no-repeat}
+.mw-t{font:500 20px/1.2 var(--sans);letter-spacing:-.02em;white-space:nowrap}
+.mw-s{font:400 13px/1 var(--sans);color:var(--t2);white-space:nowrap}
+.mw-rule{height:6px;position:relative;flex:none}
+.mw-r{position:relative;overflow:hidden;width:100%;height:6px}
+.mw-r canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated;
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent);
+  mask-image:linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)}
+.mw-body{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:16px}
+.mw-col{background:var(--s2);border-radius:var(--r-md);padding:12px;display:flex;flex-direction:column;gap:8px;min-height:168px}
+.mw-col-h{font:400 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--t3);display:flex;justify-content:space-between;align-items:center}
+.mw-node{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:var(--r-pill);font:400 13px/1 var(--sans);color:var(--t2)}
+.mw-node[data-on]{background:var(--f3);color:var(--ink)}
+.mw-node[data-on] .s{background:var(--ink)}
+.mw-node .s{width:8px;height:8px;flex:none;background:var(--f2)}
+.mw-node .s.work{background:var(--f3);animation:pulse 2.4s var(--ease) infinite}
+.mw-node .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mw-node .c{margin-left:auto;font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t3);font-variant-numeric:tabular-nums}
+.mw-node[data-on] .c{color:rgba(0,0,0,.55)}
+.mw-pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:var(--r-pill);background:var(--s3);font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t1)}
+.mw-pill .s{width:8px;height:8px;background:var(--f3)}
+.mw-spine{position:relative;flex:1;display:flex;flex-direction:column;gap:4px;padding-left:2px}
+.mw-spine::before{content:"";position:absolute;left:4px;top:4px;bottom:4px;width:1px;background:var(--line)}
+.mw-bar{margin-top:auto}
+.pixmeter{display:flex;gap:2px;height:12px}
+.pixmeter i{flex:1;height:12px;display:block}
+.pixmeter i[data-lit]{background:var(--f3)}
+.mw-term{font:400 13px/1.5 var(--mono);color:var(--t2);display:flex;flex-direction:column;gap:2px;flex:1}
+.mw-term .tm{color:var(--f3)}
+.mw-term .tw{color:var(--t1)}
+.mw-term .tg{color:var(--t3);font-size:10.5px}
+.mw-term .tl{color:var(--t2)}
+.mw-spark{display:flex;align-items:flex-end;gap:2px;height:28px;margin-top:auto}
+.mw-spark i{flex:1;background:var(--f3);opacity:.85}
+
+/* ───────────────────────────────────────────────────────── stat strip */
+.stats{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--s2);border-radius:var(--r-pill);overflow:hidden}
+.stat{padding:20px 24px;position:relative;display:flex;flex-direction:column;gap:8px}
+.stat+.stat::before{content:"";position:absolute;left:0;top:16px;bottom:16px;width:1px;background:var(--line)}
+.stat .num-l{font-size:40px}
+.stat .u{font:400 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--t3);margin-left:6px}
+.stat .lbl{margin-top:0}
+
+/* ───────────────────────────────────────────────────────── sections */
+.sec-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:32px}
+.sec-head .lbl{display:inline-flex;align-items:center;gap:8px}
+.sec-head h2{margin-top:16px;max-width:24ch}
+.principle{padding:88px 0}
+.principles{display:grid;grid-template-columns:1fr 1fr 1fr;gap:48px}
+.principles .num-l{font-size:40px;color:var(--f1)}
+.principles h3{margin-top:16px;max-width:22ch}
+.principles p{margin-top:12px;color:var(--t2);max-width:38ch}
+
+/* demo */
+.demo-wrap{background:var(--s1);border-radius:var(--r-xl);padding:24px;position:relative}
+.demo-bar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 8px 0}
+.seg{display:inline-flex;gap:4px;padding:4px;border-radius:var(--r-pill);background:var(--s2);position:relative}
+.seg button{position:relative;height:32px;padding:0 14px;border-radius:var(--r-pill);font:400 13px/1 var(--sans);color:var(--t2);
+  transition:color var(--dur-micro) var(--ease)}
+.seg button[data-on]{color:var(--ink)}
+.seg .ind{position:absolute;top:4px;left:4px;height:32px;border-radius:var(--r-pill);background:var(--f3);
+  transition:transform var(--dur-state) var(--ease-expo),width var(--dur-state) var(--ease-expo)}
+.demo-hint{font:400 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--t3)}
+.demo{margin-top:16px}
+.view{animation:none}
+.view[data-in]{animation:rise var(--dur-enter) var(--ease-expo) both}
+
+/* tree */
+.tree{display:grid;grid-template-columns:240px minmax(0,1fr) 260px;gap:8px}
+.tree-spine,.tree-insp{background:var(--s2);border-radius:var(--r-lg);padding:16px;display:flex;flex-direction:column;min-height:480px}
+.tree-stage{background:var(--s2);border-radius:var(--r-lg);display:flex;flex-direction:column;min-height:480px;overflow:hidden}
+.spine-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
+.spine-h .lbl{color:var(--t1);display:inline-flex;align-items:center;gap:8px}
+.spine-h .ic{width:14px;height:14px;color:var(--t2)}
+.search{display:flex;align-items:center;gap:8px;height:32px;padding:0 12px;background:var(--s1);border:1px solid var(--line);border-radius:var(--r-pill);
+  transition:border-color var(--dur-micro) var(--ease)}
+.search:focus-within{border-color:#fff;box-shadow:0 0 0 2px var(--s0),0 0 0 4px #fff}
+.search .ic{width:14px;height:14px;color:var(--t3)}
+.search input{flex:1;min-width:0;background:none;border:0;font:400 13px/1 var(--sans);color:var(--t1)}
+.search input::placeholder{color:var(--t3)}
+.spine-tree{display:flex;flex-direction:column;gap:2px}
+.node{position:relative;display:flex;align-items:center;gap:8px;padding:0 10px;height:32px;border-radius:var(--r-pill);
+  font:400 13px/1 var(--sans);color:var(--t2);width:100%;
+  transition:background-color var(--dur-micro) var(--ease),color var(--dur-micro) var(--ease),transform var(--dur-micro) var(--ease)}
+.node:hover{background:var(--s3);color:var(--t1)}
+.node[data-sel]{background:var(--f3);color:var(--ink)}
+.node[data-sel] .c{color:rgba(0,0,0,.55)}
+.node[data-sel] .s{background:var(--ink)}
+.node[data-sel] .s.work{animation:none;opacity:1}
+.node[data-lv="1"]{margin-left:16px}
+.node[data-lv="2"]{margin-left:32px}
+.node .s{width:8px;height:8px;flex:none;background:var(--f1)}
+.node .s.work{background:var(--f3);animation:pulse 2.4s var(--ease) infinite}
+.node .s.done{background:var(--f2)}
+.node .s.fail{background:var(--f4)}
+.node .c{margin-left:auto;font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t3);font-variant-numeric:tabular-nums}
+.node:focus-visible{outline:none}
+.stage-head{padding:16px 16px 0;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.stage-head .title{max-width:30ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stage-meta{margin-top:6px;font:400 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--t3)}
+.status-pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:var(--r-pill);
+  font:400 10.5px/1 var(--mono);letter-spacing:.04em}
+.status-pill .s{width:8px;height:8px}
+.status-pill.work{background:var(--s3);color:var(--t1)}
+.status-pill.work .s{background:var(--f3);animation:pulse 2.4s var(--ease) infinite}
+.status-pill.fail{background:var(--f4);color:var(--ink)}
+.status-pill.fail .s{background:var(--ink)}
+.status-pill.done{background:var(--s3);color:var(--t1)}
+.status-pill.done .s{background:var(--f2)}
+.estrip{padding:16px 16px 0;display:flex;align-items:flex-end;gap:3px;height:40px}
+.estrip i{flex:1;background:var(--f3)}
+.transcript{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:8px;min-height:120px}
+.tline{display:grid;grid-template-columns:56px minmax(0,1fr);gap:12px;align-items:baseline}
+.tline .t{font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t3);font-variant-numeric:tabular-nums;text-align:right}
+.tline .m{font:400 13px/1.5 var(--sans);color:var(--t2);overflow-wrap:anywhere}
+.tline .m b{color:var(--t1);font-weight:500}
+.tline.tool .m{font-family:var(--mono);font-size:13px;color:var(--t1)}
+.tline.tool .m .ic{width:13px;height:13px;margin-right:6px;vertical-align:-2px;color:var(--f2)}
+.composer{margin:0 16px 16px;height:40px;padding:0 14px;background:var(--s1);border:1px solid var(--line);border-radius:var(--r-pill);
+  display:flex;align-items:center;gap:8px;transition:border-color var(--dur-micro) var(--ease)}
+.composer:focus-within{border-color:#fff;box-shadow:0 0 0 2px var(--s0),0 0 0 4px #fff}
+.composer input{flex:1;min-width:0;background:none;border:0;font:400 13px/1 var(--sans);color:var(--t1)}
+.composer input::placeholder{color:var(--t3)}
+.send{display:flex;align-items:center;gap:6px;height:28px;padding:0 12px;border-radius:var(--r-pill);background:var(--f3);color:var(--ink);font:500 13px/1 var(--sans);
+  transition:transform var(--dur-micro) var(--ease)}
+.send .ic{width:14px;height:14px}
+.send:hover{filter:brightness(1.06)}
+.send:active{transform:scale(.96)}
+.insp-h{margin-bottom:16px}
+.insp-row{margin-top:16px}
+.insp-row .lbl{display:block}
+.insp-row .body{margin-top:6px;color:var(--t1)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chip{height:28px;padding:0 10px;border-radius:var(--r-pill);background:var(--s3);font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t1)}
+
+/* mux */
+.mux-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:16px}
+.mux-tot{display:flex;align-items:baseline;gap:24px}
+.mux-tot .cell .num-l{font-size:40px}
+.mux-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));grid-auto-rows:224px;gap:8px}
+.mcard{position:relative;background:var(--s2);border-radius:var(--r-md);padding:16px;display:flex;flex-direction:column;gap:8px;overflow:hidden;
+  transition:transform var(--dur-micro) var(--ease)}
+.mcard:hover{transform:translateY(-1px)}
+.mstrip{position:absolute;left:16px;right:16px;top:16px;height:4px;display:flex;gap:1px}
+.mstrip i{flex:1}
+.mcard .title{margin-top:12px;font-size:20px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mcard .goal{font-size:13px;color:var(--t2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mcard .meter{margin-top:4px}
+.logwell{margin-top:auto;background:var(--s1);border-radius:var(--r-sm);padding:8px 10px;height:56px;overflow:hidden;
+  font:400 13px/1.5 var(--mono);color:var(--t3);display:flex;flex-direction:column;gap:0}
+.logwell .ok{color:var(--f2)}
+.logwell .wr{color:var(--t2)}
+
+/* comms */
+.wire{display:grid;grid-template-columns:72px 1fr;gap:16px}
+.wire-times{display:flex;flex-direction:column;gap:24px}
+.wire-times .t{font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t3);font-variant-numeric:tabular-nums;text-align:right;padding-top:2px}
+.wire-main{position:relative;padding-left:24px;display:flex;flex-direction:column;gap:24px}
+.wire-main::before{content:"";position:absolute;left:7px;top:4px;bottom:4px;width:1px;background:var(--line)}
+.wmsg{position:relative}
+.wmsg::before{content:"";position:absolute;left:-21px;top:5px;width:8px;height:8px;background:var(--f2)}
+.wmsg[data-t="work"]::before{background:var(--f3);animation:pulse 2.4s var(--ease) infinite}
+.wmsg[data-t="fail"]::before{background:var(--f4)}
+.route{display:flex;align-items:center;gap:8px;font:400 13px/1 var(--sans)}
+.route .from{color:var(--t1)}
+.route .to{color:var(--t2)}
+.route .arw{color:var(--t3)}
+.type-chip{height:24px;padding:0 10px;border-radius:var(--r-pill);background:var(--s3);font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t2);display:inline-flex;align-items:center}
+.wmsg .payload{margin-top:8px;color:var(--t2);max-width:64ch}
+.wmsg .payload b{color:var(--t1);font-weight:500}
+
+/* alarms */
+.alarms{display:flex;flex-direction:column;gap:8px}
+.acard{position:relative;background:var(--s2);border-radius:var(--r-md);padding:16px 16px 16px 24px;display:flex;flex-direction:column;gap:8px;overflow:hidden;
+  transition:transform var(--dur-micro) var(--ease)}
+.acard:hover{transform:translateY(-1px)}
+.arail{position:absolute;left:8px;top:8px;bottom:8px;width:4px;display:flex;flex-direction:column;gap:1px}
+.arail i{flex:1;background:var(--f4)}
+.acard .top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.acard .top .title{max-width:48ch}
+.aage{font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t3);margin-left:auto;white-space:nowrap}
+.aact{display:flex;gap:8px;margin-top:4px}
+.aact .btn{height:32px;padding:0 14px;font-size:13px}
+.aact .kill{background:var(--f4);color:var(--ink)}
+.aact .kill:hover{filter:brightness(1.04)}
+.aact .sec{background:var(--s3);color:var(--t1)}
+.aact .sec:hover{background:var(--s3);filter:brightness(1.12)}
+.alarms-foot{margin-top:16px}
+.empty-alarms{display:flex;flex-direction:column;gap:12px;align-items:flex-start;padding:8px 0}
+
+/* ───────────────────────────────────────────────────────── night shift */
+.night{padding:88px 0}
+.timeline{position:relative;padding-left:0}
+.tl-row{display:grid;grid-template-columns:88px minmax(0,1fr);gap:24px;padding-bottom:32px;position:relative}
+.tl-row:last-child{padding-bottom:0}
+.tl-time{font:400 10.5px/1.3 var(--mono);letter-spacing:.04em;color:var(--t3);font-variant-numeric:tabular-nums;padding-top:10px;text-align:right}
+.tl-line{position:absolute;left:104px;top:14px;bottom:-10px;width:1px;background:var(--line)}
+.tl-row:last-child .tl-line{display:none}
+.tl-node{position:absolute;left:100px;top:10px;width:8px;height:8px;background:var(--s3)}
+.tl-row[data-done] .tl-node{background:var(--f2)}
+.tl-row[data-wait] .tl-node{background:var(--f4)}
+.tl-card{background:var(--s2);border-radius:var(--r-md);padding:16px 20px;position:relative}
+.tl-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tl-top .title{font-size:20px}
+.tl-card p{margin-top:8px;color:var(--t2);max-width:64ch}
+.tl-card .out{margin-top:12px;display:flex;align-items:center;gap:8px;color:var(--t1)}
+.tl-card .out .ic{color:var(--f2);width:14px;height:14px}
+.tl-card .who{margin-left:auto;display:flex;align-items:center;gap:6px;font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--t3)}
+.tl-card[data-wait]{background:var(--s1);border:1px solid var(--line)}
+.tl-waitpill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:var(--r-pill);background:var(--f4);color:var(--ink);
+  font:400 10.5px/1 var(--mono);letter-spacing:.04em}
+.tl-card .prompt{margin-top:12px;padding:10px 12px;background:var(--s1);border:1px solid var(--line);border-radius:var(--r-sm);
+  font:400 13px/1.5 var(--mono);color:var(--t2);max-width:60ch}
+.payoff{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-top:40px;flex-wrap:wrap}
+.payoff-n{display:flex;align-items:baseline;gap:24px;flex-wrap:wrap}
+.payoff-n .cell .num-l{font-size:40px}
+.payoff-n .cell[data-hot] .num-l{color:var(--f4)}
+.payoff .btn{height:40px}
+
+/* ───────────────────────────────────────────────────────── philosophy */
+.philo{padding:88px 0}
+.philo-grid{display:grid;grid-template-columns:1fr 1fr;gap:48px}
+.term{background:var(--s1);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px;display:flex;flex-direction:column;gap:8px;min-height:220px}
+.term-bar{display:flex;align-items:center;gap:6px}
+.term-bar .s{width:8px;height:8px;background:var(--f2)}
+.term-bar .t{font:400 10.5px/1 var(--mono);letter-spacing:.08em;color:var(--t3);margin-left:auto;font-variant-numeric:tabular-nums}
+.term-out{font:400 13px/1.6 var(--mono);color:var(--t2)}
+.term-out .p{color:var(--f3)}
+.term-out .d{color:var(--t1)}
+.term-out .c{color:var(--t3)}
+.princi{display:flex;flex-direction:column;gap:0}
+.pr-row{display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px;padding:16px 0;border-top:1px solid var(--line)}
+.pr-row:first-child{border-top:0;padding-top:0}
+.pr-row .n{font:400 10.5px/1 var(--mono);letter-spacing:.04em;color:var(--f1);padding-top:2px;font-variant-numeric:tabular-nums}
+.pr-row h3{font-size:20px}
+.pr-row p{margin-top:6px;color:var(--t2);max-width:48ch}
+
+/* ───────────────────────────────────────────────────────── closing */
+.closing{padding:96px 0;position:relative;overflow:hidden}
+.closing-atmos{position:absolute;left:0;right:0;bottom:-2px;height:320px;pointer-events:none;z-index:0;
+  --mask:radial-gradient(ellipse 55% 80% at 50% 100%,#000 0%,transparent 100%)}
+.closing-glow{position:absolute;left:0;right:0;bottom:-2px;height:300px;pointer-events:none;z-index:0;
+  background:radial-gradient(ellipse 50% 74% at 50% 100%,rgba(217,70,239,.14) 0%,transparent 100%)}
+.closing-in{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;text-align:center;gap:24px}
+.closing h2{max-width:26ch}
+.closing .lede{color:var(--t2);max-width:48ch}
+.closing-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center}
+.closing .lbl{display:flex;align-items:center;gap:8px}
+
+/* footer */
+.foot{border-top:1px solid var(--line);margin-top:48px;padding:32px 0 48px}
+.foot-in{display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}
+.foot-l{display:flex;align-items:center;gap:12px}
+.foot .mark-lg{width:20px;height:20px;color:var(--t3)}
+.foot-c{display:flex;gap:24px;flex-wrap:wrap}
+.foot-c a{font:400 13px/1 var(--sans);color:var(--t2);transition:color var(--dur-micro) var(--ease)}
+.foot-c a:hover{color:var(--t1)}
+.foot-r{display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+
+/* ───────────────────────────────────────────────────────── responsive */
+@media (max-width:1024px){
+  .wrap{width:calc(100% - 48px)}
+  .hero{grid-template-columns:1fr;gap:40px;align-items:start;padding:48px 0 40px}
+  .tree{grid-template-columns:1fr 1fr}
+  .tree-insp{display:none}
+  .principles{grid-template-columns:1fr;gap:32px}
+  .philo-grid{grid-template-columns:1fr;gap:32px}
+  .nav-c{display:none}
+}
+@media (max-width:720px){
+  .wrap{width:calc(100% - 32px)}
+  .tree{grid-template-columns:1fr}
+  .mux-grid{grid-template-columns:1fr}
+  .stats{grid-template-columns:1fr}
+  .stat+.stat::before{left:16px;right:16px;top:0;bottom:auto;width:auto;height:1px}
+  .tl-row{grid-template-columns:48px minmax(0,1fr);gap:12px}
+  .tl-time{font-size:10.5px}
+  .tl-line{left:60px}
+  .tl-node{left:56px}
+  .payoff{align-items:flex-start;flex-direction:column}
+  .demo-hint{display:none}
+  .demo-wrap{padding:16px}
+  .demo-bar{flex-wrap:wrap;gap:8px}
+  .hero h1{font-size:40px}
+  .mw-body{grid-template-columns:1fr}
+  .mw-col:nth-child(3){display:none}
+  .hero-card{max-width:100%}
+  .closing{padding:64px 0}
+  .principle,.night,.philo{padding:56px 0}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  html{scroll-behavior:auto}
+}
+
+/* entrance */
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.rv{animation:rise var(--dur-enter) var(--ease-expo) both;animation-delay:calc(var(--i,0) * 60ms)}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════ nav -->
+<nav class="nav" aria-label="Main">
+  <div class="wrap nav-in">
+    <div class="nav-l">
+      <span class="mark-lg" aria-hidden="true"></span>
+      <span class="word">Notch</span>
+    </div>
+    <div class="nav-c">
+      <a href="#watch">Watch</a>
+      <a href="#views">Views</a>
+      <a href="#night">Night shift</a>
+      <a href="#principles">Principles</a>
+    </div>
+    <div class="nav-r">
+      <a href="#install" class="nav-cta" data-cta>Install</a>
+      <div class="nav-dl" id="navDl">
+        <a href="#" id="dlBtn" role="button" aria-haspopup="true" aria-expanded="false">
+          <span>Download</span>
+          <svg class="ic" style="--ic:var(--i-down);width:14px;height:14px;margin-left:2px" aria-hidden="true"></svg>
+        </a>
+        <div class="nav-menu" id="dlMenu" role="menu">
+          <a href="#" role="menuitem" data-dl="arm"><span>Apple silicon</span><span class="lbl">.dmg · arm64</span></a>
+          <a href="#" role="menuitem" data-dl="x86"><span>Intel</span><span class="lbl">.dmg · x86_64</span></a>
+        </div>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<main>
+
+<!-- ══════════════════════════ hero -->
+<header class="hero wrap rv" style="--i:0">
+  <div>
+    <div class="eyebrow">
+      <span class="st-dot" aria-hidden="true"></span>
+      <span class="lbl">3 supervisors · 9 in flight</span>
+    </div>
+    <h1 class="num-l">Your agents run.<br><span class="g">You keep the final say.</span></h1>
+    <p class="lede">Notch is a macOS control plane for coding agents. One supervisor tree, four views, one wire. A job stops and asks only when herdr reports it blocked waiting on your permission or input. The rest runs while you're away.</p>
+    <div class="hero-actions">
+      <a href="#" class="btn btn-primary" data-dl="arm">
+        <svg class="ic" style="--ic:var(--i-logo);width:15px;height:15px" aria-hidden="true"></svg>
+        Download for Mac
+      </a>
+      <a href="#night" class="btn btn-ghost">Watch a night go by</a>
+    </div>
+    <div class="hero-note">
+      <svg class="ic" style="--ic:var(--i-check)" aria-hidden="true"></svg>
+      <span class="lbl">OpenCode · herdr · Ghostty · on your Mac, not in the cloud</span>
+    </div>
+  </div>
+
+  <div class="hero-card rv" style="--i:1">
+    <div class="mw" id="heroWindow">
+      <div class="dither hero-glow" data-dither="hero" aria-hidden="true"></div>
+      <div class="dither hero-atmos" data-dither="hero" data-level=".55" aria-hidden="true"></div>
+      <div class="mw-top">
+        <div class="mw-l">
+          <span class="mark-lg mw-logo" aria-hidden="true"></span>
+          <span class="mw-t">Tree</span>
+          <span class="mw-s">9 in flight, 3 supervisors</span>
+        </div>
+        <span class="status-pill work"><span class="s" aria-hidden="true"></span>working</span>
+      </div>
+      <div class="mw-rule"><div class="mw-r" data-rule aria-hidden="true"></div></div>
+      <div class="mw-body">
+        <div class="mw-col">
+          <div class="mw-col-h"><span>Supervisors</span><span class="lbl" style="letter-spacing:.04em">3</span></div>
+          <div class="mw-node" data-on><span class="s work" aria-hidden="true"></span><span class="n">orchestrator</span><span class="c">9</span></div>
+          <div class="mw-spine">
+            <div class="mw-node" data-lv="1"><span class="s work" aria-hidden="true"></span><span class="n">build</span><span class="c">4</span></div>
+            <div class="mw-node" data-lv="2"><span class="s work" aria-hidden="true"></span><span class="n">test-fix</span><span class="c">2</span></div>
+            <div class="mw-node" data-lv="1"><span class="s" aria-hidden="true"></span><span class="n">docs</span><span class="c">3</span></div>
+            <div class="mw-node" data-lv="1"><span class="s done" aria-hidden="true"></span><span class="n">release</span><span class="c">0</span></div>
+          </div>
+        </div>
+        <div class="mw-col">
+          <div class="mw-col-h"><span>Session</span><span class="lbl" style="letter-spacing:.04em">live</span></div>
+          <div class="mw-term">
+            <div><span class="tm">[09:41]</span> <span class="tw">build passes</span></div>
+            <div><span class="tm">[09:41]</span> <span class="tg">tool</span> <span class="tl">cargo test · 212 passed</span></div>
+            <div><span class="tm">[09:42]</span> <span class="tw">fixing retry logic</span></div>
+          </div>
+          <div class="mw-bar"><div class="pixmeter" data-meter="68" aria-hidden="true"></div></div>
+        </div>
+        <div class="mw-col">
+          <div class="mw-col-h"><span>Events</span><span class="lbl" style="letter-spacing:.04em">ev/s</span></div>
+          <div class="mw-spark" data-spark aria-hidden="true"></div>
+          <div style="display:flex;align-items:baseline;gap:6px;margin-top:auto">
+            <span class="num-l" style="font-size:40px" id="heroEps">17.3</span><span class="lbl">ev/s</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════════════════════ stat strip -->
+<section class="wrap rv" style="--i:2" aria-label="System totals">
+  <div class="stats">
+    <div class="stat">
+      <div><span class="num-l" id="statFlight">9</span><span class="u">in flight</span></div>
+      <div class="lbl">sessions working</div>
+    </div>
+    <div class="stat">
+      <div><span class="num-l" id="statEps">17.3</span><span class="u">ev/s</span></div>
+      <div class="lbl">events per second</div>
+    </div>
+    <div class="stat">
+      <div><span class="num-l" id="statSup">3</span><span class="u">live</span></div>
+      <div class="lbl">supervisors watching</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ watch (principle) -->
+<section class="principle wrap" id="watch">
+  <div class="sec-head rv" style="--i:0">
+    <div>
+      <div class="lbl"><svg class="ic" style="--ic:var(--i-tree);width:14px;height:14px" aria-hidden="true"></svg>The supervisor tree</div>
+      <h2 class="title">One tree you can follow.</h2>
+    </div>
+    <a href="#views" class="btn btn-ghost">See the four views <svg class="ic" style="--ic:var(--i-down);width:14px;height:14px" aria-hidden="true"></svg></a>
+  </div>
+  <div class="principles">
+    <div class="rv" style="--i:1">
+      <span class="num-l">01</span>
+      <h3 class="title">The tree, not the chat log</h3>
+      <p>Every agent hangs off a named supervisor with a permanent id. A spine runs through them, so you always know what is working, what finished, and what is stuck.</p>
+    </div>
+    <div class="rv" style="--i:2">
+      <span class="num-l">02</span>
+      <h3 class="title">Four views, one system</h3>
+      <p>Tree for the spine. Mux for density. Comms for the wire between agents. Alarms for the one screen that is allowed to shout. Nothing else moves.</p>
+    </div>
+    <div class="rv" style="--i:3">
+      <span class="num-l">03</span>
+      <h3 class="title">Cleanup is not a button</h3>
+      <p>Finished sessions close themselves. Orphans get swept. The tree returns to idle on its own, so the next job starts from zero.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ live demo -->
+<section class="principle wrap" id="views">
+  <div class="sec-head rv" style="--i:0">
+    <div>
+      <div class="lbl"><svg class="ic" style="--ic:var(--i-mux);width:14px;height:14px" aria-hidden="true"></svg>The four views</div>
+      <h2 class="title">One app, four ways to read it.</h2>
+    </div>
+    <span class="demo-hint">Switch the view — this is the real layout</span>
+  </div>
+
+  <div class="demo-wrap rv" style="--i:1">
+    <div class="demo-bar">
+      <div class="seg" id="seg" role="tablist" aria-label="Views">
+        <span class="ind" id="segInd" aria-hidden="true"></span>
+        <button role="tab" data-view="tree" data-on aria-selected="true">Tree</button>
+        <button role="tab" data-view="mux" aria-selected="false">Mux</button>
+        <button role="tab" data-view="comms" aria-selected="false">Comms</button>
+        <button role="tab" data-view="alarms" aria-selected="false">Alarms</button>
+      </div>
+      <span class="lbl" id="demoCount">3 supervisors · 9 in flight</span>
+    </div>
+    <div class="demo" id="demo">
+
+      <!-- tree -->
+      <div class="view" data-view="tree" id="v-tree">
+        <div class="tree">
+          <div class="tree-spine">
+            <div class="spine-h">
+              <span class="lbl">Supervisors</span>
+              <span class="lbl" style="letter-spacing:.04em;color:var(--t2)">3</span>
+            </div>
+            <label class="search">
+              <svg class="ic" aria-hidden="true" style="--ic:var(--i-sliders)"></svg>
+              <input type="text" placeholder="Filter" aria-label="Filter supervisors">
+            </label>
+            <div class="spine-tree" role="tree" aria-label="Supervisor tree">
+              <button class="node" role="treeitem" aria-selected="true" data-sel data-lv="0"><span class="s work" aria-hidden="true"></span><span>orchestrator</span><span class="c">9</span></button>
+              <button class="node" role="treeitem" aria-selected="false" data-lv="1"><span class="s work" aria-hidden="true"></span><span>build</span><span class="c">4</span></button>
+              <button class="node" role="treeitem" aria-selected="false" data-lv="2"><span class="s work" aria-hidden="true"></span><span>test-fix</span><span class="c">2</span></button>
+              <button class="node" role="treeitem" aria-selected="false" data-lv="2"><span class="s" aria-hidden="true"></span><span>lint</span><span class="c">2</span></button>
+              <button class="node" role="treeitem" aria-selected="false" data-lv="1"><span class="s work" aria-hidden="true"></span><span>docs</span><span class="c">3</span></button>
+              <button class="node" role="treeitem" aria-selected="false" data-lv="2"><span class="s" aria-hidden="true"></span><span>changelog</span><span class="c">3</span></button>
+              <button class="node" role="treeitem" aria-selected="false" data-lv="1"><span class="s done" aria-hidden="true"></span><span>release</span><span class="c">0</span></button>
+            </div>
+          </div>
+
+          <div class="tree-stage">
+            <div class="stage-head">
+              <div>
+                <div class="title">test-fix</div>
+                <div class="stage-meta">build · sonnet · 3m 12s</div>
+              </div>
+              <span class="status-pill work"><span class="s" aria-hidden="true"></span>working</span>
+            </div>
+            <div class="estrip" id="estrip" aria-hidden="true"></div>
+            <div class="transcript" id="transcript">
+              <div class="tline"><span class="t">09:41:02</span><span class="m"><b>Retry logic fails on 409.</b> A 409 means the first charge went through. Retrying here bills the customer twice.</span></div>
+              <div class="tline tool"><span class="t">09:41:06</span><span class="m"><svg class="ic" style="--ic:var(--i-sliders)" aria-hidden="true"></svg>cargo test --all</span></div>
+              <div class="tline"><span class="t">09:41:19</span><span class="m">212 passed, 0 failed. Isolating the retry path.</span></div>
+              <div class="tline tool"><span class="t">09:41:24</span><span class="m"><svg class="ic" style="--ic:var(--i-term)" aria-hidden="true"></svg>read billing/retry.ts</span></div>
+              <div class="tline"><span class="t">09:41:31</span><span class="m">Found it. The catch retries on any 4xx. Only 409 should retry, and only after a read-back.</span></div>
+              <div class="tline tool"><span class="t">09:41:40</span><span class="m"><svg class="ic" style="--ic:var(--i-sliders)" aria-hidden="true"></svg>edit billing/retry.ts +3 −1</span></div>
+              <div class="tline"><span class="t">09:41:52</span><span class="m">Verifying against the duplicate-charge fixture…</span></div>
+            </div>
+            <div class="composer">
+              <input type="text" placeholder="Message this session" aria-label="Message this session">
+              <button class="send" aria-label="Send"><span>Send</span><svg class="ic" style="--ic:var(--i-up)" aria-hidden="true"></svg></button>
+            </div>
+          </div>
+
+          <div class="tree-insp">
+            <div class="lbl insp-h">Inspector</div>
+            <div class="insp-row">
+              <span class="lbl">Goal</span>
+              <div class="body">Stop duplicate charges on retry</div>
+            </div>
+            <div class="insp-row">
+              <span class="lbl">Definition of done</span>
+              <div class="body">212 passed, fixture added</div>
+            </div>
+            <div class="insp-row">
+              <span class="lbl">Iterations</span>
+              <div class="pixmeter" data-meter="68" aria-hidden="true"></div>
+            </div>
+            <div class="insp-row">
+              <span class="lbl">Model</span>
+              <div class="body">sonnet</div>
+            </div>
+            <div class="insp-row">
+              <span class="lbl">Files touched</span>
+              <div class="chips">
+                <span class="chip">billing/retry.ts</span>
+                <span class="chip">billing/retry.test.ts</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- mux -->
+      <div class="view" data-view="mux" id="v-mux" hidden>
+        <div class="mux-head">
+          <div class="mux-tot">
+            <div class="cell"><span class="num-l">6</span><span class="lbl" style="margin-left:8px">working</span></div>
+            <div class="cell"><span class="num-l">2</span><span class="lbl" style="margin-left:8px">done</span></div>
+            <div class="cell"><span class="num-l">1</span><span class="lbl" style="margin-left:8px">failed</span></div>
+          </div>
+          <span class="lbl">Density is load — every card the same height</span>
+        </div>
+        <div class="mux-grid" id="muxGrid"></div>
+      </div>
+
+      <!-- comms -->
+      <div class="view" data-view="comms" id="v-comms" hidden>
+        <div class="wire" id="wire"></div>
+      </div>
+
+      <!-- alarms -->
+      <div class="view" data-view="alarms" id="v-alarms" hidden>
+        <div class="alarms" id="alarms"></div>
+        <div class="alarms-foot"><span class="lbl">Alarms clear when the session changes state or you act.</span></div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ night shift -->
+<section class="night wrap" id="night">
+  <div class="sec-head rv" style="--i:0">
+    <div>
+      <div class="lbl"><svg class="ic" style="--ic:var(--i-wire);width:14px;height:14px" aria-hidden="true"></svg>The night shift</div>
+      <h2 class="title">Close the laptop at seven.</h2>
+    </div>
+    <span class="lbl">One night, five jobs, real artifacts</span>
+  </div>
+
+  <div class="timeline rv" style="--i:1">
+    <div class="tl-row" data-done>
+      <div class="tl-time">19:12</div>
+      <div class="tl-line" aria-hidden="true"></div><div class="tl-node" aria-hidden="true"></div>
+      <div class="tl-card">
+        <div class="tl-top">
+          <span class="title">Reply to support emails</span>
+          <span class="type-chip">gmail</span>
+          <span class="who"><span class="lbl">23 replies</span></span>
+        </div>
+        <p>Re: Where is my order #4471? Hi Maya, it shipped this morning. Tracking is below. The tone matches the last 200 replies.</p>
+        <div class="out"><svg class="ic" style="--ic:var(--i-check)" aria-hidden="true"></svg><span>Done · 23 replies sent</span></div>
+      </div>
+    </div>
+
+    <div class="tl-row" data-done>
+      <div class="tl-time">20:40</div>
+      <div class="tl-line" aria-hidden="true"></div><div class="tl-node" aria-hidden="true"></div>
+      <div class="tl-card">
+        <div class="tl-top">
+          <span class="title">Update the CRM after calls</span>
+          <span class="type-chip">hubspot</span>
+          <span class="who"><span class="lbl">14 records</span></span>
+        </div>
+        <p>ACME Corp moves Discovery to Proposal. Next step: send pricing, Friday. Harbor Ops tagged hiring-finance.</p>
+        <div class="out"><svg class="ic" style="--ic:var(--i-check)" aria-hidden="true"></svg><span>Done · 14 records updated</span></div>
+      </div>
+    </div>
+
+    <div class="tl-row" data-done>
+      <div class="tl-time">23:30</div>
+      <div class="tl-line" aria-hidden="true"></div><div class="tl-node" aria-hidden="true"></div>
+      <div class="tl-card">
+        <div class="tl-top">
+          <span class="title">Find leads for Monday</span>
+          <span class="type-chip">sheets</span>
+          <span class="who"><span class="lbl">3 leads</span></span>
+        </div>
+        <p>Northwind Pay, new CFO. Lumen Bank, Series B. Harbor Ops, hiring finance. Each row carries the trigger event that surfaced it.</p>
+        <div class="out"><svg class="ic" style="--ic:var(--i-check)" aria-hidden="true"></svg><span>Done · 3 leads added</span></div>
+      </div>
+    </div>
+
+    <div class="tl-row" data-wait>
+      <div class="tl-time">02:14</div>
+      <div class="tl-line" aria-hidden="true"></div><div class="tl-node" aria-hidden="true"></div>
+      <div class="tl-card">
+        <div class="tl-top">
+          <span class="title">Pay vendor €8,400</span>
+          <span class="type-chip">stripe</span>
+          <span class="tl-waitpill"><span class="lbl" style="letter-spacing:.04em;color:var(--ink)">Waiting for you</span></span>
+        </div>
+        <p>The invoice matches the contract. This is the one job that stops. It touches money, and it has never done this before.</p>
+        <div class="prompt">[02:14] approve payment of €8,400 to Northwind Pay — invoice matches contract <span class="c">↵</span></div>
+        <div class="aact" style="margin-top:12px">
+          <button class="btn kill" data-ripple>Approve</button>
+          <button class="btn sec" data-ripple>Not now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="tl-row" data-done>
+      <div class="tl-time">06:20</div>
+      <div class="tl-line" aria-hidden="true"></div><div class="tl-node" aria-hidden="true"></div>
+      <div class="tl-card">
+        <div class="tl-top">
+          <span class="title">Prepare Monday's report</span>
+          <span class="type-chip">docs</span>
+          <span class="who"><span class="lbl">8 pages</span></span>
+        </div>
+        <p>Revenue by region, up 6% on last week. Headcount flat. One churn risk flagged with the account name and the last login.</p>
+        <div class="out"><svg class="ic" style="--ic:var(--i-check)" aria-hidden="true"></svg><span>Done · ready in Drive</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="payoff rv" style="--i:2">
+    <div class="payoff-n">
+      <div class="cell"><span class="num-l">4</span><span class="lbl" style="margin-left:8px">jobs done</span></div>
+      <div class="cell"><span class="num-l">1</span><span class="lbl" style="margin-left:8px">waiting for you</span></div>
+      <div class="cell" data-hot><span class="num-l">0</span><span class="lbl" style="margin-left:8px">done without asking</span></div>
+    </div>
+    <button class="btn btn-primary" data-ripple>Review 1 request</button>
+  </div>
+</section>
+
+<!-- ══════════════════════════ philosophy -->
+<section class="philo wrap" id="principles">
+  <div class="sec-head rv" style="--i:0">
+    <div>
+      <div class="lbl"><svg class="ic" style="--ic:var(--i-sliders);width:14px;height:14px" aria-hidden="true"></svg>Why it feels different</div>
+      <h2 class="title">Square inside, soft outside.</h2>
+    </div>
+  </div>
+  <div class="philo-grid">
+    <div class="term rv" style="--i:1">
+      <div class="term-bar">
+        <span class="s" aria-hidden="true"></span>
+        <span class="lbl">notch · live</span>
+        <span class="t" id="termClock">09:41:52</span>
+      </div>
+      <div class="term-out">
+        <div><span class="p">→</span> build <span class="d">test-fix</span></div>
+        <div><span class="c">[09:41]</span> cargo test --all</div>
+        <div><span class="c">[09:41]</span> 212 passed, 0 failed</div>
+        <div><span class="p">→</span> fix retry on <span class="d">409</span></div>
+        <div><span class="c">[09:42]</span> verifying…</div>
+      </div>
+    </div>
+    <div class="princi">
+      <div class="pr-row rv" style="--i:2">
+        <span class="n">01</span>
+        <div><h3 class="title">Data is square</h3><p>Pixels, dither, status dots, meters. Hard edges, integer cells, no blur, no shadow. The data is honest, so it looks honest.</p></div>
+      </div>
+      <div class="pr-row rv" style="--i:3">
+        <span class="n">02</span>
+        <div><h3 class="title">Chrome is soft</h3><p>Buttons, inputs, chips, panels are pills. The tension between the square data and the soft chrome is the whole brand.</p></div>
+      </div>
+      <div class="pr-row rv" style="--i:4">
+        <span class="n">03</span>
+        <div><h3 class="title">Hierarchy is value</h3><p>No shadows, no glass, no glow. Depth is a step from black to near-black. If it needs a shadow to read, it is in the wrong place.</p></div>
+      </div>
+      <div class="pr-row rv" style="--i:5">
+        <span class="n">04</span>
+        <div><h3 class="title">One loud screen</h3><p>Alarms is the only screen allowed to shout, and it only shouts when a human has to decide. Everything else stays quiet.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ closing -->
+<section class="closing" id="install">
+  <div class="closing-atmos dither" data-dither="close" data-level=".35" aria-hidden="true"></div>
+  <div class="closing-glow dither" data-dither="close" data-level=".35" aria-hidden="true"></div>
+  <div class="closing-in wrap rv" style="--i:0">
+    <span class="lbl"><svg class="ic" style="--ic:var(--i-logo);width:12px;height:12px" aria-hidden="true"></svg>macOS · Apple silicon and Intel</span>
+    <h2 class="title">Install Notch. Hand it the job.</h2>
+    <p class="lede">Lives in the notch and the menu bar. No cloud account, no daemon to babysit. OpenCode, herdr and Ghostty do the work; Notch keeps the tree honest.</p>
+    <div class="closing-actions">
+      <a href="#" class="btn btn-primary" data-dl="arm">
+        <svg class="ic" style="--ic:var(--i-logo);width:15px;height:15px" aria-hidden="true"></svg>
+        Download for Mac
+      </a>
+      <a href="#" class="btn btn-ghost" data-dl="x86">Intel build</a>
+    </div>
+    <span class="lbl">v0.4.1 · 12 MB · macOS 13 or later</span>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <div class="foot-l">
+      <span class="mark-lg" aria-hidden="true"></span>
+      <span class="word" style="font-size:20px;color:var(--t2)">Notch</span>
+    </div>
+    <div class="foot-r">
+      <div class="foot-c">
+        <a href="#watch">Watch</a>
+        <a href="#views">Views</a>
+        <a href="#night">Night shift</a>
+        <a href="#principles">Principles</a>
+      </div>
+      <span class="lbl">An agent control plane for macOS</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ── pixel engine: Bayer 8×8 ordered dither over the 5-stop brand ramp (src/lib/pixel.ts) */
+  var RAMP = ['#2A0A33', '#701A75', '#A21CAF', '#D946EF', '#F5D0FE'];
+  var BAYER8 = [
+    0,32,8,40,2,34,10,42, 48,16,56,24,50,18,58,26,
+    12,44,4,36,14,46,6,38, 60,28,52,20,62,30,54,22,
+    3,35,11,43,1,33,9,41, 51,19,59,27,49,17,57,25,
+    15,47,7,39,13,45,5,37, 63,31,55,23,61,29,53,21
+  ];
+  var BAYER = BAYER8.map(function (n) { return (n + 0.5) / 64; });
+  function hexRgb(h) { var n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  var RAMP_RGB = RAMP.map(hexRgb);
+  function rampColor(v, bx, by) {
+    if (v <= 0.02) return null;
+    var span = RAMP_RGB.length - 1;
+    var pos = Math.min(1, v) * span;
+    var idx = Math.min(span - 1, Math.floor(pos));
+    var frac = pos - idx;
+    return frac > BAYER[(by & 7) * 8 + (bx & 7)] ? RAMP_RGB[idx + 1] : RAMP_RGB[idx];
+  }
+  var REDUCE = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function paintDither(cv, w, h, opt) {
+    opt = opt || {};
+    var cell = Math.max(2, Math.round(opt.cell || 4));
+    var floor = opt.floor != null ? opt.floor : 0.03;
+    var gain = opt.gain != null ? opt.gain : 0.42;
+    var level = opt.level != null ? opt.level : 0.55;
+    var mode = opt.mode || 'radial';
+    var dpr = Math.min(devicePixelRatio || 1, 2);
+    cv.width = Math.max(1, Math.round(w * dpr));
+    cv.height = Math.max(1, Math.round(h * dpr));
+    var cx = cv.getContext('2d');
+    if (!cx) return;
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx.clearRect(0, 0, w, h);
+    var cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
+    var ccx = (opt.cx != null ? opt.cx : 0.5) * w;
+    var ccy = (opt.cy != null ? opt.cy : 0.78) * h;
+    var rad = Math.hypot(w, h) * (opt.radius || 0.56);
+    for (var gy = 0; gy < rows; gy++) {
+      for (var gx = 0; gx < cols; gx++) {
+        var v;
+        if (mode === 'bottom') {
+          v = 1 - (gy / rows);
+        } else if (mode === 'linear') {
+          v = gx / cols;
+        } else {
+          v = 1 - Math.hypot(gx * cell - ccx, gy * cell - ccy) / rad;
+        }
+        v = floor + Math.max(0, Math.min(1, v)) * (gain * level);
+        var c = rampColor(v, gx, gy);
+        if (!c) continue;
+        cx.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+        cx.fillRect(gx * cell, gy * cell, cell, cell);
+      }
+    }
+  }
+
+  function paintSphere(cv, size, phase) {
+    var cell = 3;
+    var dpr = Math.min(devicePixelRatio || 1, 2);
+    cv.width = Math.round(size * dpr); cv.height = Math.round(size * dpr);
+    var cx = cv.getContext('2d');
+    if (!cx) return;
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx.clearRect(0, 0, size, size);
+    var c = size / 2, r = size * 0.46;
+    var la = -2.2 + Math.sin(phase * 0.5) * 0.22, lx = Math.cos(la), ly = Math.sin(la);
+    var n = Math.ceil(size / cell);
+    for (var gy = 0; gy < n; gy++) {
+      for (var gx = 0; gx < n; gx++) {
+        var x = (gx + 0.5) * cell, y = (gy + 0.5) * cell;
+        var nx = (x - c) / r, ny = (y - c) / r, d2 = nx * nx + ny * ny;
+        if (d2 > 1) continue;
+        var nz = Math.sqrt(1 - d2);
+        var diff = Math.max(0, nx * lx + ny * ly + nz * 0.45);
+        var rim = Math.pow(d2, 2.1) * 0.55;
+        var col = rampColor(Math.min(1, diff * 0.78 + rim + 0.06), gx, gy);
+        if (!col) continue;
+        cx.fillStyle = 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')';
+        cx.fillRect(gx * cell, gy * cell, cell, cell);
+      }
+    }
+  }
+
+  /* mount every dither host */
+  function mountDithers(root) {
+    (root || document).querySelectorAll('[data-dither]').forEach(function (host) {
+      var cv = document.createElement('canvas');
+      host.appendChild(cv);
+      var mode = host.getAttribute('data-mode') || 'radial';
+      var level = parseFloat(host.getAttribute('data-level') || '0.55');
+      function draw() {
+        var r = host.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return;
+        paintDither(cv, r.width, r.height, { cell: 4, level: level, gain: 0.42, mode: mode, cy: 0.8, radius: 0.6 });
+      }
+      draw();
+      new ResizeObserver(draw).observe(host);
+    });
+  }
+
+  /* topbar rule: 6px dither fading at both ends */
+  function mountRules(root) {
+    (root || document).querySelectorAll('[data-rule]').forEach(function (host) {
+      var cv = document.createElement('canvas');
+      host.appendChild(cv);
+      function draw() {
+        var r = host.getBoundingClientRect();
+        if (r.width < 2) return;
+        var dpr = Math.min(devicePixelRatio || 1, 2);
+        cv.width = Math.round(r.width * dpr); cv.height = Math.round(6 * dpr);
+        var cx = cv.getContext('2d'); if (!cx) return;
+        cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        cx.clearRect(0, 0, r.width, 6);
+        var cell = 4, cols = Math.ceil(r.width / cell);
+        for (var gx = 0; gx < cols; gx++) {
+          var t = gx / cols;
+          var env = Math.pow(Math.sin(Math.PI * t), 1.6);
+          for (var gy = 0; gy < 2; gy++) {
+            var c = rampColor(env * 0.55, gx, gy);
+            if (!c) continue;
+            cx.fillStyle = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+            cx.fillRect(gx * cell, gy * cell, cell, cell);
+          }
+        }
+      }
+      draw();
+      new ResizeObserver(draw).observe(host);
+    });
+  }
+
+  /* pixel meters */
+  function mountMeters(root) {
+    (root || document).querySelectorAll('[data-meter]').forEach(function (el) {
+      var pct = parseFloat(el.getAttribute('data-meter') || '0');
+      var lit = Math.round(pct / 100 * 24);
+      var html = '';
+      for (var i = 0; i < 24; i++) html += '<i' + (i < lit ? ' data-lit' : '') + '></i>';
+      el.innerHTML = html;
+    });
+  }
+
+  /* sparkline */
+  function mountSparks(root) {
+    (root || document).querySelectorAll('[data-spark]').forEach(function (el) {
+      var n = 22, html = '';
+      for (var i = 0; i < n; i++) {
+        var h = 4 + Math.round((Math.sin(i * 0.7) * 0.5 + 0.5) * 20 + (i / n) * 4);
+        html += '<i style="height:' + h + 'px"></i>';
+      }
+      el.innerHTML = html;
+    });
+  }
+
+  /* event strip */
+  function mountEStrip() {
+    var el = document.getElementById('estrip');
+    if (!el) return;
+    var n = 30, html = '';
+    for (var i = 0; i < n; i++) {
+      var h = 4 + Math.round((Math.sin(i * 0.9) * 0.5 + 0.5) * 22);
+      html += '<i style="height:' + h + 'px;opacity:' + (0.35 + (i % 5) * 0.13).toFixed(2) + '"></i>';
+    }
+    el.innerHTML = html;
+  }
+
+  /* mux cards */
+  function mountMux() {
+    var grid = document.getElementById('muxGrid');
+    if (!grid) return;
+    var cards = [
+      { t: 'test-fix', goal: 'stop duplicate charges on retry', st: 'work', it: 68, log: ['cargo test --all', '212 passed, 0 failed', 'verifying fixture…'] },
+      { t: 'lint', goal: 'clear the clippy backlog', st: 'work', it: 42, log: ['cargo clippy', '3 warnings left', 'fixing needless_pass_by_value'] },
+      { t: 'build', goal: 'bundle the tauri shell', st: 'work', it: 81, log: ['vite build', 'tsc clean', 'notarizing…'] },
+      { t: 'changelog', goal: 'write the 0.4.1 notes', st: 'work', it: 30, log: ['reading git log', 'drafting entries', '12 commits'] },
+      { t: 'docs', goal: 'document the bridge', st: 'work', it: 55, log: ['editing bridge.md', 'added §1.3', 'review pending'] },
+      { t: 'migrate', goal: 'move sessions to the new schema', st: 'work', it: 73, log: ['draining 4 sessions', '3 done, 1 left', 'almost there'] },
+      { t: 'release', goal: 'tag and publish 0.4.1', st: 'done', it: 100, log: ['tag v0.4.1', 'upload dmg', 'published'] },
+      { t: 'verify', goal: 'confirm the build artifact', st: 'done', it: 100, log: ['notarization ok', 'spctl accepted', 'ready'] },
+      { t: 'index', goal: 'reindex the worktrees', st: 'fail', it: 22, log: ['git gc --aggressive', 'error: lock exists', 'needs a human'] }
+    ];
+    grid.innerHTML = cards.map(function (c) {
+      var strip = '', i;
+      var col = c.st === 'fail' ? 'var(--f4)' : (c.st === 'done' ? 'var(--f2)' : 'var(--f3)');
+      for (i = 0; i < 28; i++) strip += '<i style="background:' + col + ';opacity:' + (0.3 + (i % 6) * 0.13).toFixed(2) + '"></i>';
+      var meter = '', lit = Math.round(c.it / 100 * 24);
+      for (i = 0; i < 24; i++) meter += '<i' + (i < lit ? ' data-lit style="background:' + col + '"' : '') + '></i>';
+      var logs = c.log.map(function (l, k) { return '<div class="' + (k === c.log.length - 1 && c.st === 'done' ? 'ok' : (c.st === 'fail' && k === 2 ? 'wr' : '')) + '">' + l + '</div>'; }).join('');
+      return '<article class="mcard">' +
+        '<div class="mstrip">' + strip + '</div>' +
+        '<div class="title">' + c.t + '</div>' +
+        '<div class="goal">' + c.goal + '</div>' +
+        '<div class="pixmeter meter">' + meter + '</div>' +
+        '<div class="logwell">' + logs + '</div>' +
+        '</article>';
+    }).join('');
+  }
+
+  /* comms wire */
+  function mountWire() {
+    var wire = document.getElementById('wire');
+    if (!wire) return;
+    var msgs = [
+      { t: '09:38', from: 'orchestrator', to: 'build', type: 'spawn', kind: 'work', body: 'Supervisor <b>build</b> takes the retry bug. Done when <b>212 passed</b> and the fixture exists.' },
+      { t: '09:39', from: 'build', to: 'test-fix', type: 'delegate', kind: 'work', body: 'Retry path is isolated to <b>billing/retry.ts</b>. Two sessions, one file, no overlap.' },
+      { t: '09:41', from: 'test-fix', to: 'build', type: 'result', kind: 'work', body: '<b>212 passed, 0 failed.</b> The 409 now reads back before retrying. Diff is +3 −1.' },
+      { t: '09:42', from: 'build', to: 'docs', type: 'notify', kind: 'work', body: 'Changelog entry drafted. Needs one line on the duplicate-charge fix before it ships.' },
+      { t: '09:43', from: 'index', to: 'orchestrator', type: 'alarm', kind: 'fail', body: '<b>git gc failed:</b> lock exists on the worktree. A human has to clear it before the reindex continues.' },
+      { t: '09:44', from: 'orchestrator', to: 'index', type: 'ack', kind: 'work', body: 'Alarm raised. Session parked as <b>needs-human</b>. It will resume when the lock clears.' }
+    ];
+    wire.innerHTML =
+      '<div class="wire-times">' + msgs.map(function (m) { return '<div class="t">' + m.t + '</div>'; }).join('') + '</div>' +
+      '<div class="wire-main">' + msgs.map(function (m) {
+        return '<div class="wmsg" data-t="' + m.kind + '">' +
+          '<div class="route"><span class="from">' + m.from + '</span>' +
+          '<span class="arw">→</span><span class="to">' + m.to + '</span>' +
+          '<span class="type-chip">' + m.type + '</span></div>' +
+          '<div class="payload">' + m.body + '</div>' +
+          '</div>';
+      }).join('') + '</div>';
+  }
+
+  /* alarms */
+  function mountAlarms() {
+    var el = document.getElementById('alarms');
+    if (!el) return;
+    var items = [
+      { reason: 'git gc failed: lock exists on the worktree', kind: 'blocked', age: '2m ago', sess: 'index' },
+      { reason: '3 sessions idle past the grace window', kind: 'stalled', age: '11m ago', sess: 'migrate' }
+    ];
+    el.innerHTML = items.map(function (a) {
+      var rail = '';
+      for (var i = 0; i < 10; i++) rail += '<i></i>';
+      return '<article class="acard">' +
+        '<div class="arail">' + rail + '</div>' +
+        '<div class="top">' +
+          '<svg class="ic" style="--ic:var(--i-alarm);color:var(--f4);width:16px;height:16px" aria-hidden="true"></svg>' +
+          '<span class="title">' + a.reason + '</span>' +
+          '<span class="type-chip">' + a.kind + '</span>' +
+          '<span class="aage">' + a.age + '</span>' +
+        '</div>' +
+        '<div class="aact">' +
+          '<button class="btn kill" data-ripple>Re-prompt</button>' +
+          '<button class="btn sec" data-ripple>Open session</button>' +
+          '<button class="btn btn-ghost" data-ripple>Dismiss</button>' +
+        '</div>' +
+        '</article>';
+    }).join('');
+  }
+
+  /* nav download menu */
+  function mountNav() {
+    var dl = document.getElementById('navDl');
+    var btn = document.getElementById('dlBtn');
+    if (!dl || !btn) return;
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      var open = dl.hasAttribute('data-open');
+      if (open) dl.removeAttribute('data-open'); else dl.setAttribute('data-open', '');
+      btn.setAttribute('aria-expanded', String(!open));
+    });
+    document.addEventListener('click', function (e) {
+      if (!dl.contains(e.target)) { dl.removeAttribute('data-open'); btn.setAttribute('aria-expanded', 'false'); }
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { dl.removeAttribute('data-open'); btn.setAttribute('aria-expanded', 'false'); }
+    });
+  }
+
+  /* view switch */
+  function mountViews() {
+    var seg = document.getElementById('seg');
+    if (!seg) return;
+    var ind = document.getElementById('segInd');
+    var btns = seg.querySelectorAll('button[data-view]');
+    var views = document.querySelectorAll('.view');
+    var count = document.getElementById('demoCount');
+    var counts = { tree: '3 supervisors · 9 in flight', mux: '9 sessions · 6 working · 2 done · 1 failed', comms: '6 messages · 3 routes', alarms: '2 alarms · 1 blocked · 1 stalled' };
+
+    function moveInd(btn) {
+      var r = btn.getBoundingClientRect(), pr = seg.getBoundingClientRect();
+      ind.style.width = r.width + 'px';
+      ind.style.transform = 'translateX(' + (r.left - pr.left - 4) + 'px)';
+    }
+    function select(name) {
+      btns.forEach(function (b) {
+        var on = b.getAttribute('data-view') === name;
+        if (on) b.setAttribute('data-on', ''); else b.removeAttribute('data-on');
+        b.setAttribute('aria-selected', String(on));
+      });
+      views.forEach(function (v) {
+        if (v.getAttribute('data-view') === name) {
+          v.hidden = false;
+          v.setAttribute('data-in', '');
+        } else {
+          v.hidden = true;
+          v.removeAttribute('data-in');
+        }
+      });
+      if (count) count.textContent = counts[name] || '';
+      var onBtn = seg.querySelector('button[data-on]');
+      if (onBtn) moveInd(onBtn);
+    }
+    btns.forEach(function (b) {
+      b.addEventListener('click', function () { select(b.getAttribute('data-view')); });
+    });
+    var first = seg.querySelector('button[data-on]');
+    if (first) requestAnimationFrame(function () { moveInd(first); select(first.getAttribute('data-view')); });
+    new ResizeObserver(function () {
+      var onBtn = seg.querySelector('button[data-on]');
+      if (onBtn) moveInd(onBtn);
+    }).observe(seg);
+  }
+
+  /* ripple */
+  function mountRipple() {
+    document.addEventListener('pointerdown', function (e) {
+      if (REDUCE) return;
+      var t = e.target.closest('[data-ripple], .btn, .node, .seg button, .send, .aact .btn');
+      if (!t) return;
+      var r = t.getBoundingClientRect();
+      var s = document.createElement('span');
+      s.className = 'ripple';
+      var d = Math.max(r.width, r.height) * 2;
+      s.style.cssText = 'position:absolute;left:' + (e.clientX - r.left - d / 2) + 'px;top:' + (e.clientY - r.top - d / 2) + 'px;width:' + d + 'px;height:' + d + 'px;border-radius:50%;background:var(--f4);opacity:.28;pointer-events:none;transform:scale(0);animation:ripple 420ms var(--ease) forwards;';
+      if (getComputedStyle(t).position === 'static') t.style.position = 'relative';
+      t.appendChild(s);
+      s.addEventListener('animationend', function () { s.remove(); });
+    });
+  }
+
+  /* live data: numbers cross-fade, never count */
+  function mountLive() {
+    var flights = [9, 11, 8, 12, 10, 9];
+    var eps = ['17.3', '19.8', '15.2', '21.4', '18.1', '17.3'];
+    var i = 0;
+    function swap(el, to) {
+      if (!el || el.textContent === to) return;
+      el.animate([{ opacity: 1 }, { opacity: 0, offset: 0.5 }, { opacity: 1 }], { duration: 160, easing: 'ease' });
+      el.textContent = to;
+    }
+    setInterval(function () {
+      i = (i + 1) % flights.length;
+      swap(document.getElementById('heroEps'), eps[i]);
+      swap(document.getElementById('statEps'), eps[i]);
+      swap(document.getElementById('statFlight'), String(flights[i]));
+    }, 4200);
+  }
+
+  /* term clock */
+  function mountClock() {
+    var el = document.getElementById('termClock');
+    if (!el) return;
+    setInterval(function () {
+      el.textContent = new Date().toTimeString().slice(0, 8);
+    }, 1000);
+  }
+
+  /* init */
+  function init() {
+    mountDithers(document);
+    mountRules(document);
+    mountMeters(document);
+    mountSparks(document);
+    mountEStrip();
+    mountMux();
+    mountWire();
+    mountAlarms();
+    mountNav();
+    mountViews();
+    mountRipple();
+    mountLive();
+    mountClock();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+<style>
+@keyframes ripple{to{transform:scale(1);opacity:0}}
+.ripple{will-change:transform,opacity}
+</style>
+</body>
+</html>
