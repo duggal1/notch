@@ -203,6 +203,9 @@ pub(crate) fn show_dashboard(app: &AppHandle) -> Result<serde_json::Value, Strin
     )
     .position(dash.x, dash.y)
     .decorations(true)
+    .title_bar_style(tauri::TitleBarStyle::Overlay)
+    .hidden_title(true)
+    .background_color(tauri::window::Color(0, 0, 0, 255))
     .resizable(true)
     .always_on_top(false)
     .skip_taskbar(false)
@@ -222,14 +225,7 @@ pub fn open_dashboard(app: AppHandle) -> Result<serde_json::Value, String> {
     show_dashboard(&app)
 }
 
-/// Resize/reposition the popover INSTANTLY. The webview's clip-path morph owns
-/// the smoothness; this only moves the frame (DESIGN.md §5.1: resize once per
-/// mode change, never per frame).
-///
-/// Cursor events stay enabled during and after the morph: the popover may be
-/// clicked mid-flight and, in `rest`, the wings must remain hoverable for the
-/// intent system. The transient oversized click target is ≤ 460 ms and by
-/// design (`peek` grows downward from the bar, never over neighbours' work).
+/// Apply the native popover frame for the requested mode.
 #[tauri::command]
 pub fn set_frame(
     mode: String,

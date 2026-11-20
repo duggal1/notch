@@ -138,3 +138,12 @@ fn mode_parsing() {
     assert_eq!(Mode::Peek.as_str(), "peek");
     assert_eq!(Mode::Open.as_str(), "open");
 }
+
+#[test]
+fn compact_dashboard_leaves_clearance_for_the_notch() {
+    let frame = notch::frame::dashboard_frame(1200.0, 760.0);
+    let peek = frame_for_mode(Mode::Peek, 1200.0, None);
+    assert!(frame.y >= peek.height + 8.0);
+    assert!(frame.y + frame.height <= 760.0);
+    assert!(frame.x + frame.width <= 1200.0);
+}

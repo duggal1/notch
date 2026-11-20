@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { useSnapshot } from '../lib/use-snapshot';
 import { send, submitTask } from '../lib/bridge';
 import type { Supervisor } from '../lib/bridge';
@@ -9,7 +8,6 @@ import { MultiplexerTab } from './dashboard/MultiplexerTab';
 import { CommsTab } from './dashboard/CommsTab';
 import { EscalationsTab } from './dashboard/EscalationsTab';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
-import { useRipple } from '../lib/use-ripple';
 import { FleetDeck } from './fleet/FleetDeck';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
@@ -43,8 +41,6 @@ export function Dashboard() {
   const armTimer = useRef(0);
   useEffect(() => () => window.clearTimeout(armTimer.current), []);
   const initialPicked = useRef(false);
-  const dashRef = useRef<HTMLDivElement>(null);
-  useRipple(dashRef);
 
   const sessions = snapshot?.sessions ?? [];
   const supervisors = snapshot?.supervisors ?? [];
@@ -73,6 +69,28 @@ export function Dashboard() {
     setTab(t);
     try { localStorage.setItem('notch.dashboardTab', JSON.stringify(t)); } catch { /* storage may be unavailable */ }
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const recoverTarget = () => {
+      const handoff = readStorage<Selection>('notch.handoff');
+      if (!handoff) return;
+      try { localStorage.removeItem('notch.handoff'); } catch { /* storage may be unavailable */ }
+      if ((handoff.kind === 'session' && snapshot.sessions.some(({ id }) => id === handoff.id))
+        || (handoff.kind === 'supervisor' && snapshot.supervisors.some(({ id }) => id === handoff.id))) {
+        select(handoff);
+        switchTab('tree');
+      }
+    };
+    recoverTarget();
+    const onStorage = (event: StorageEvent) => { if (event.key === 'notch.handoff') recoverTarget(); };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', recoverTarget);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', recoverTarget);
+    };
+  }, [snapshot, select, switchTab]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -134,56 +152,45 @@ export function Dashboard() {
     { value: rate, unit: 'ev/s', precision: 1 },
     { value: supervisors.length, unit: supervisors.length === 1 ? 'supervisor' : 'supervisors' },
   ].filter(({ value }) => value > 0);
-  const railIndex = TABS.findIndex((item) => item.id === tab);
+
 
   return (
-    <MotionConfig reducedMotion="user">
-      <div className="dash" ref={dashRef}>
-        {/* ---------- rail ---------- */}
-        <nav className="rail" aria-label="Dashboard">
-          <div className="rail-mark" title="notch">
-            <span className="brand-logo" aria-hidden="true" />
-          </div>
-          <div className="rail-nav" role="tablist" aria-label="Dashboard tabs" aria-orientation="vertical">
-            <span className="rail-indicator" style={{ transform: `translateY(${railIndex * 64}px)` }} aria-hidden="true" />
-            {TABS.map((t, index) => {
-              const isActive = tab === t.id;
-              const isEsc = t.id === 'escalations' && escalations.length > 0;
-              return (
-                <button
-                  key={t.id}
-                  role="tab"
-                  aria-selected={isActive}
-                  tabIndex={isActive ? 0 : -1}
-                  className={`rail-item ripple${isActive ? ' is-active' : ''}`}
-                  onClick={() => switchTab(t.id)}
-                  title={`${t.label} · ⌘${index + 1} · ⌘K compose`}
-                  data-ripple
-                  onKeyDown={(event) => {
-                    const delta = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
-                    if (!delta) return;
-                    const next = (index + delta + TABS.length) % TABS.length;
-                    const item = TABS[next];
-                    if (!item) return;
-                    event.preventDefault();
-                    switchTab(item.id);
-                    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
-                  }}
-                >
-                  <span className="rail-glyph"><PixelIcon name={t.icon} size={24} /></span>
-                  <span className="rail-label">{t.label}</span>
-                  {isEsc && <span className="rail-badge" aria-label={`${escalations.length} unresolved escalations`}>{escalations.length}</span>}
-                </button>
-              );
-            })}
-          </div>
-          <div className="rail-foot">
-            <span className="rail-live"><i className={`dot dot--${top}`} aria-hidden="true" />{top[0]?.toUpperCase()}{top.slice(1)}</span>
-          </div>
+    <div className="dash">
+      <header className="dashboard-masthead" data-tauri-drag-region>
+        <div className="dashboard-brand" aria-label="Notch">
+          <span className="brand-logo" aria-hidden="true" />
+          <span>Notch</span>
+        </div>
+        <nav className="dashboard-tabs" role="tablist" aria-label="Dashboard tabs">
+          {TABS.map((item, index) => (
+            <button key={item.id} role="tab" aria-selected={tab === item.id}
+              tabIndex={tab === item.id ? 0 : -1} className="dashboard-tab"
+              onClick={() => { switchTab(item.id); setFleetOpen(false); }}
+              title={`${item.label} · ⌘${index + 1}`}
+              onKeyDown={(event) => {
+                const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+                if (!delta) return;
+                const next = (index + delta + TABS.length) % TABS.length;
+                const target = TABS[next];
+                if (!target) return;
+                event.preventDefault();
+                switchTab(target.id);
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
+              }}>
+              <PixelIcon name={item.icon} size={24} />
+              <span>{item.label}</span>
+              {item.id === 'escalations' && escalations.length > 0 && <span className="dashboard-tab-count" aria-label={`${escalations.length} unresolved alarms`}>{escalations.length}</span>}
+            </button>
+          ))}
         </nav>
-
-        {/* ---------- stage ---------- */}
-        <div className="stage">
+        <div className="dashboard-controls">
+          <span className="dashboard-status"><i className={`dot dot--${top}`} />{top[0]?.toUpperCase()}{top.slice(1)}</span>
+          <button className="dashboard-fleet" aria-pressed={fleetOpen} onClick={() => setFleetOpen((current) => !current)} title={snapshot?.warnings.length ? "Fleet has warnings · ⌘5" : "Fleet · ⌘5"}>
+            <PixelIcon name={snapshot?.warnings.length ? "alert" : "orchestrator"} size={12} />Fleet
+          </button>
+        </div>
+      </header>
+      <div className="stage">
           <header className="topbar" data-tauri-drag-region>
             <h1>{view.title}</h1>
             <div className="topbar-spacer" data-tauri-drag-region />
@@ -197,7 +204,7 @@ export function Dashboard() {
                 ))}
               </div>
             )}
-            <button className="killswitch" data-ripple disabled={active === 0}
+            <button className="killswitch" disabled={active === 0}
               onClick={killSwitch} aria-pressed={armed && active > 0}
               title="Close all managed panes and stop running sessions">
               <PixelIcon name="power" size={12} />
@@ -205,17 +212,7 @@ export function Dashboard() {
             </button>
           </header>
 
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.main
-              key={tab}
-              className="view"
-              role="tabpanel"
-              aria-label={`${view.label} view`}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -3 }}
-              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-            >
+          <main key={tab} className={`view view--${tab}`} role="tabpanel" aria-label={`${view.label} view`}>
               {tab === 'tree' && (
                 <TreeTab
                   snapshot={snapshot}
@@ -260,8 +257,7 @@ export function Dashboard() {
                   onOpenSession={jumpToSession}
                 />
               )}
-            </motion.main>
-          </AnimatePresence>
+          </main>
 
 
         </div>
@@ -269,6 +265,6 @@ export function Dashboard() {
         {/* W2-5: fleet management surface, composed around the four owned tabs. */}
         {fleetOpen && <FleetDeck snapshot={snapshot} onClose={() => setFleetOpen(false)} />}
       </div>
-    </MotionConfig>
+
   );
 }
