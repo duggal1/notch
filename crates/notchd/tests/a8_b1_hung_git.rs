@@ -50,15 +50,19 @@ fn config(r: &Path) -> Config {
 /// shim hangs on). The commit makes `git status` meaningful.
 fn init_dirty_repo(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
+    // Global core.fsmonitor=true makes plain `git add` wait on a dead socket;
+    // disable it exactly as worktree::git_run does.
     let git = |args: &[&str]| {
+        let mut full = vec!["-c", "core.fsmonitor=false"];
+        full.extend_from_slice(args);
         assert!(
             std::process::Command::new("git")
-                .args(args)
+                .args(&full)
                 .current_dir(dir)
                 .status()
                 .unwrap()
                 .success(),
-            "git {args:?} failed"
+            "git {full:?} failed"
         );
     };
     git(&["init", "-q"]);

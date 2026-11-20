@@ -91,15 +91,19 @@ fn agent_entry(pane: &str, status: &str, revision: u64) -> Value {
 
 fn init_repo(dir: &Path) {
     std::fs::create_dir_all(dir).unwrap();
+    // Global core.fsmonitor=true on this host makes plain `git add` wait on a
+    // dead fsmonitor socket. worktree::git_run disables it; do the same here.
     let git = |args: &[&str]| {
+        let mut full = vec!["-c", "core.fsmonitor=false"];
+        full.extend_from_slice(args);
         assert!(
             std::process::Command::new("git")
-                .args(args)
+                .args(&full)
                 .current_dir(dir)
                 .status()
                 .unwrap()
                 .success(),
-            "git {args:?} failed"
+            "git {full:?} failed"
         );
     };
     git(&["init", "-q"]);
@@ -276,6 +280,8 @@ fn failed_wip_snapshot_vetoes_pane_close() {
     std::fs::write(session_cwd.join("wip.txt"), "uncommitted\n").unwrap();
     let lock_path = std::process::Command::new("git")
         .args([
+            "-c",
+            "core.fsmonitor=false",
             "-C",
             session_cwd.to_str().unwrap(),
             "rev-parse",
