@@ -278,6 +278,8 @@ fn snapshot_commits_wip_and_dirty_removal_is_refused() {
 struct Capture {
     split_args: Mutex<Vec<Vec<String>>>,
     panes: Mutex<Vec<String>>,
+    /// Fault injection: a slow-but-successful herdr pane split (loaded host).
+    split_delay: std::time::Duration,
     /// Signalled by the fake on the LAST herdr call of a detached spawn, so
     /// tests can wait deterministically (no sleep-as-synchronisation).
     done: Mutex<bool>,
@@ -307,6 +309,9 @@ impl Capture {
             let sub2 = args.get(2).cloned().unwrap_or_default();
             if sub == "pane" && sub2 == "split" {
                 cap.split_args.lock().unwrap().push(args.to_vec());
+                if !cap.split_delay.is_zero() {
+                    std::thread::sleep(cap.split_delay);
+                }
                 let mut panes = cap.panes.lock().unwrap();
                 let pane = format!("w9:p{}", panes.len() + 1);
                 panes.push(pane.clone());
@@ -673,4 +678,41 @@ fn pane_id_is_visible_in_snapshot_immediately_after_submit() {
     assert!(!panes[1].is_empty(), "real pane id missing immediately after ack: {ids:?} -> {panes:?}");
     assert_ne!(panes[0], panes[1], "each session must have its own pane id: {panes:?}");
     capture.wait_done(); // let the detached workers finish before teardown
+}
+
+#[test]
+fn slow_successful_pane_split_still_publishes_pane_id_before_ack() {
+    // Regression for the parallel-run flake: herdr succeeds, but a loaded
+    // host makes pane_split take 300ms. The invariant must still hold.
+    let root = tmp_root("slowpane");
+    let repo = init_repo(&root);
+    let cfg = test_config(&root);
+    std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
+    std::fs::create_dir_all(&cfg.state_dir).unwrap();
+    let capture = Arc::new(Capture {
+        split_delay: std::time::Duration::from_millis(300),
+        ..Default::default()
+    });
+    let daemon = Daemon::open(
+        test_config(&root),
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
+    let ack = daemon.submit_task(
+        "slow pane".to_string(),
+        Some(repo.to_string_lossy().to_string()),
+        None, None, None, None,
+    );
+    assert!(ack.ok, "{:?}", ack.error);
+    let id = ack.session_id.unwrap();
+    let pane = daemon
+        .snapshot()
+        .sessions
+        .into_iter()
+        .find(|s| s.id == id)
+        .unwrap()
+        .pane_id;
+    assert!(!pane.is_empty(), "slow-but-successful split must publish its real pane id before ack");
+    capture.wait_done();
 }
