@@ -66,7 +66,7 @@ fn decider_parser_rejects_forged_fenced_colliding_late_and_garbage() {
     ];
     for c in cases {
         let got = parse_decider_output(c.raw);
-        assert_eq!(got, c.want, "case `{}` failed on {c.raw:?}", c.name);
+        assert_eq!(got, c.want, "case `{}` failed on {:?}", c.name, c.raw);
         eprintln!("JUDGE PARSER decider `{}`: HELD", c.name);
     }
 }
@@ -111,7 +111,7 @@ fn verifier_parser_applies_the_same_first_line_rule() {
     ];
     for c in cases {
         let got = parse_verifier_output(c.raw);
-        assert_eq!(got, c.want, "case `{}` failed on {c.raw:?}", c.name);
+        assert_eq!(got, c.want, "case `{}` failed on {:?}", c.name, c.raw);
         eprintln!("JUDGE PARSER verifier `{}`: HELD", c.name);
     }
 }

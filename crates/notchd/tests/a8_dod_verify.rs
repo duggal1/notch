@@ -120,7 +120,7 @@ fn self_declared_done_reverts_queues_verify_and_waits_for_verifier() {
     assert!(
         decisions.iter().any(|d| {
             d["action"] == json!("verify_pending")
-                && d["detail"].as_str().unwrap_or("").contains("reverted")
+                && d["reason"].as_str().unwrap_or("").contains("reverted")
         }),
         "revert decision missing: {decisions:?}"
     );

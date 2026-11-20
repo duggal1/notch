@@ -201,7 +201,11 @@ fn snapshot_returns_in_under_one_second_while_wip_git_is_hung() {
     // run_plan gives the session its OWN git worktree under tmp/. Dirty that
     // exact cwd so the WIP snapshot reaches `git add -A`.
     let session_cwd = daemon.snapshot().sessions[0].cwd.clone();
-    std::fs::write(Path::new(&session_cwd).join("wip.txt"), "uncommitted work\n").unwrap();
+    std::fs::write(
+        Path::new(&session_cwd).join("wip.txt"),
+        "uncommitted work\n",
+    )
+    .unwrap();
     *fake.agents.lock().unwrap() = vec![agent_entry(&pane, "working", 7)];
 
     // Prime, then step to 28 s quiet (Suspect, not yet Stuck). Real git is on PATH.

@@ -108,9 +108,9 @@ fn plan_parses_alias_fallbacks_and_rejects_broken_plans() {
     assert_eq!(sessions.len(), 2);
     assert_eq!(sessions[0].cwd, b.to_string_lossy()); // session cwd wins
     assert_eq!(sessions[1].cwd, a.to_string_lossy()); // supervisor fallback
-    assert_eq!(sessions[0].title, "do the work and more"); // prompt-head fallback
+    assert_eq!(sessions[0].title, "do the work"); // prompt first-line fallback
     assert_eq!(sessions[1].title, "Custom");
-    assert_eq!(sessions[0].task_head(), "do the work and more");
+    assert_eq!(sessions[0].task_head(), "do the work");
 
     let path = r.join("plan.json");
     std::fs::write(&path, &good).unwrap();

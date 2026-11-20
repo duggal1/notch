@@ -8,7 +8,7 @@
 //!
 //! Run: cargo test -p notchd --test a8_proc_setsid
 
-use notchd::proc::{run, ProcError, Spec};
+use notchd::proc::{run, ProcError, Spec, PIPE_EOF_GRACE};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
@@ -114,8 +114,11 @@ fn setsid_grandchild_escapes_group_kill_limitation_documented() {
         matches!(result, Err(ProcError::Timeout { .. })),
         "expected typed Timeout, got {result:?}"
     );
+    // The escaped grandchild also inherits stdout/stderr, so BOTH pipe readers
+    // wait their full PIPE_EOF_GRACE: the bound is timeout + 2x grace, not
+    // timeout + 1x. That extra latency is part of the documented limitation.
     assert!(
-        elapsed < spec.timeout + Duration::from_millis(500),
+        elapsed < spec.timeout + 2 * PIPE_EOF_GRACE + Duration::from_millis(500),
         "run took {elapsed:?}"
     );
 

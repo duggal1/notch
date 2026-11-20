@@ -7,7 +7,7 @@
 //!
 //! Run: cargo test -p notchd --test a8_watchdog_real
 
-use notchd::clock::FakeClock;
+use notchd::clock::{Clock, FakeClock};
 use notchd::config::Config;
 use notchd::daemon::Daemon;
 use notchd::herdr::Herdr;
@@ -269,10 +269,29 @@ fn failed_wip_snapshot_vetoes_pane_close() {
     init_repo(&cwd);
     let (daemon, clock, fake) = setup(&r, &cwd, 15);
 
-    // Make the WIP snapshot genuinely fail: dirty file + a real index.lock
-    // that blocks git's index write. No fake git, no injected error.
-    std::fs::write(cwd.join("wip.txt"), "uncommitted\n").unwrap();
-    std::fs::write(cwd.join(".git").join("index.lock"), "").unwrap();
+    // Make the WIP snapshot genuinely fail: dirty the SESSION worktree (not
+    // the plan's source repo) and place a real index.lock at the path git
+    // actually uses for that worktree. No fake git, no injected error.
+    let session_cwd = PathBuf::from(daemon.snapshot().sessions[0].cwd.clone());
+    std::fs::write(session_cwd.join("wip.txt"), "uncommitted\n").unwrap();
+    let lock_path = std::process::Command::new("git")
+        .args([
+            "-C",
+            session_cwd.to_str().unwrap(),
+            "rev-parse",
+            "--git-path",
+            "index.lock",
+        ])
+        .output()
+        .unwrap();
+    assert!(lock_path.status.success());
+    let lock_path = PathBuf::from(String::from_utf8_lossy(&lock_path.stdout).trim());
+    let lock_path = if lock_path.is_absolute() {
+        lock_path
+    } else {
+        session_cwd.join(lock_path)
+    };
+    std::fs::write(&lock_path, "").unwrap();
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
 
     clock.advance_mono_ms(30_000); // large single gap -> grace, no kill
@@ -301,7 +320,7 @@ fn failed_wip_snapshot_vetoes_pane_close() {
         "vetoed snapshot must not close the pane"
     );
     // The uncommitted file is still there: no work was lost or committed.
-    assert!(cwd.join("wip.txt").exists());
+    assert!(session_cwd.join("wip.txt").exists());
     let log = std::fs::read_to_string(r.join("state").join("events.jsonl")).unwrap_or_default();
     assert!(
         log.contains("WIP snapshot failed")
@@ -311,5 +330,5 @@ fn failed_wip_snapshot_vetoes_pane_close() {
         "failure is on the record"
     );
     eprintln!("WIP SNAPSHOT VETO: HELD (real index.lock, pane close skipped)");
-    std::fs::remove_file(cwd.join(".git").join("index.lock")).ok();
+    std::fs::remove_file(&lock_path).ok();
 }
