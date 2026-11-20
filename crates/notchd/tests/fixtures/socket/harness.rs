@@ -112,16 +112,13 @@ impl TestDaemon {
         // Wait until the socket answers with a hello.
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            match UnixStream::connect(&sock) {
-                Ok(stream) => {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                    let mut br = BufReader::new(stream);
-                    let mut line = String::new();
-                    if br.read_line(&mut line).is_ok() && line.contains("\"hello\"") {
-                        break;
-                    }
+            if let Ok(stream) = UnixStream::connect(&sock) {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut br = BufReader::new(stream);
+                let mut line = String::new();
+                if br.read_line(&mut line).is_ok() && line.contains("\"hello\"") {
+                    break;
                 }
-                Err(_) => {}
             }
             if Instant::now() > deadline {
                 let _ = child.kill();

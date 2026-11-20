@@ -119,13 +119,24 @@ fn socket_parser_single_line_5mb() {
     let d = TestDaemon::start("parse-5mb");
     let mut c = TestConn::connect_with_timeouts(&d.sock, Duration::from_secs(10), Duration::from_secs(60));
     let _hello = c.hello();
-    // A single NDJSON frame just over 5 MB.
+    // A single NDJSON frame just over 5 MB — well beyond the daemon's
+    // MAX_NDJSON_LINE (1 MiB, socket.rs). Under the hardening the capped
+    // reader drains the overflow and DROPS this connection without ever
+    // buffering the whole frame. Intent preserved: fuzz robustness — no
+    // crash, no wedge, and the daemon still answers a ping afterwards.
     let pad = "x".repeat(5 * 1024 * 1024);
     let frame = format!(r#"{{"cmd":"ping","pad":"{pad}"}}"#);
     assert!(frame.len() > 5 * 1024 * 1024);
     c.send_raw(frame.as_bytes());
     c.send_raw(b"\n");
-    let ack = c.read_value();
+    // Oversize line: no ack for it; the server closes this connection.
+    let buf = c.read_to_end();
+    assert!(buf.is_empty(), "over-cap line must be dropped without a reply, got {buf:?}");
+    // A fresh connection still works — the daemon did not wedge or crash.
+    let mut fresh = TestConn::connect(&d.sock);
+    let _hello = fresh.hello();
+    let ack = fresh.rpc(&json!({"cmd":"ping"}));
+    assert_eq!(ack["event"], "ack");
     assert_eq!(ack["cmd"], "ping");
     assert_eq!(ack["ok"], true);
     assert!(ack["pong"].as_u64().is_some());
@@ -185,13 +196,24 @@ fn socket_parser_high_bytes_0xff() {
     let d = TestDaemon::start("parse-ff");
     let mut c = TestConn::connect(&d.sock);
     let _hello = c.hello();
-    // 0xFF 0xFE are not valid UTF-8. The server's read_line() hits
-    // ErrorKind::InvalidData and the ACTUAL behavior is a silent connection
-    // close (no ack). Assert the close and that the daemon itself survives.
+    // 0xFF 0xFE are not valid UTF-8. Under the hardening the capped reader
+    // passes bytes through String::from_utf8_lossy (socket.rs), mapping them
+    // to U+FFFD: the frame stays valid NDJSON/JSON but no longer names a real
+    // command. The daemon rejects it CLEANLY (ok:false / unknown_command),
+    // keeps the connection open and never crashes. Intent preserved: bad bytes
+    // must not be accepted as a command and must not wedge the daemon.
     c.send_raw(b"{\"cmd\":\"pi\xFF\xFEng\"}\n");
-    let buf = c.read_to_end();
-    assert!(buf.is_empty(), "server must not answer invalid UTF-8, got {buf:?}");
-    // A fresh connection still works — the daemon did not wedge or crash.
+    let ack = c.read_value();
+    assert_eq!(ack["event"], "ack");
+    assert_eq!(ack["ok"], false);
+    assert_eq!(ack["error"], "unknown_command");
+    assert_ne!(ack["cmd"], "ping", "invalid bytes must not be accepted as a valid ping");
+    // The same connection is still usable — invalid bytes did not wedge it.
+    let ack = c.rpc(&json!({"cmd":"ping"}));
+    assert_eq!(ack["cmd"], "ping");
+    assert_eq!(ack["ok"], true);
+    assert!(ack["pong"].as_u64().is_some());
+    // A fresh connection still works — the daemon did not crash.
     let mut fresh = TestConn::connect(&d.sock);
     let _hello = fresh.hello();
     let ack = fresh.rpc(&json!({"cmd":"ping"}));
@@ -216,7 +238,7 @@ fn socket_parser_deep_nesting_100k_braces() {
     let mut line = String::from(r#"{"cmd":"ping","x":"#);
     line.push_str(&"[".repeat(100_000));
     line.push_str(&"]".repeat(100_000));
-    line.push_str("}");
+    line.push('}');
     c.send_line(&line);
     let ack = c.read_value();
     assert_eq!(ack["ok"], false);
@@ -346,7 +368,9 @@ fn socket_parser_kill_id_raw_nul_control_char() {
     assert_eq!(ack["event"], "ack");
     assert_eq!(ack["ok"], false);
     assert_eq!(ack["error"], "invalid_json");
-    // RAW 0xFF byte inside the id: invalid UTF-8 -> read_line errors -> silent close.
+    // RAW 0xFF byte inside the id: the capped reader replaces it with U+FFFD
+    // (from_utf8_lossy), so the line stays valid JSON and the id lookup simply
+    // misses. No crash/wedge; a fresh connection still pings below.
     c.send_raw(b"{\"cmd\":\"kill\",\"id\":\"S1-OC01\xFF\"}\n");
     let mut fresh = TestConn::connect(&d.sock);
     let _hello = fresh.hello();
