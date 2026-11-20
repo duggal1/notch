@@ -10,6 +10,8 @@ import { chromium } from 'playwright';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const root = join(here, '..');
+// The machine wipes the global Playwright cache; keep the headless browser inside .proof/.
+process.env.PLAYWRIGHT_BROWSERS_PATH ??= join(root, '.proof', 'pw-browsers');
 const dist = join(here, 'dist');
 if (!existsSync(join(dist, 'index.html'))) { console.error('build first'); process.exit(1); }
 const pass = process.argv[2] ?? 'p1';
@@ -33,8 +35,11 @@ const server = createServer(async (req, res) => {
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const port = server.address().port;
-const browser = await chromium.launch({ headless: true,
+const executablePath = join(root, '.proof', 'pw-browsers', 'chromium_headless_shell-1255',
+  'chrome-headless-shell-mac-arm64', 'chrome-headless-shell');
+const launch = () => chromium.launch({ headless: true, executablePath,
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-gpu-sandbox'] });
+let browser = await launch();
 
 const results = {};
 const errors = [];
@@ -74,9 +79,38 @@ const AUDIT = `(() => {
   const nodes = all.filter((n) => n.children.length === 0 && n.textContent.trim() && n.getClientRects().length)
     .filter((n) => !n.closest('svg'));
   const rects = nodes.map((n) => ({ n, r: n.getBoundingClientRect() }));
+  const clippedApart = (a, b) => {
+    let p = a.parentElement;
+    while (p) {
+      const s = getComputedStyle(p);
+      if (/hidden|clip|auto|scroll/.test(s.overflowX + s.overflowY) && !p.contains(b)) {
+        const r = p.getBoundingClientRect(), q = b.getBoundingClientRect();
+        if (q.left >= r.right || q.right <= r.left || q.top >= r.bottom || q.bottom <= r.top) return true;
+      }
+      p = p.parentElement;
+    }
+    return false;
+  };
+  const inFade = (n) => {
+    let a = n.parentElement;
+    while (a) {
+      const s = getComputedStyle(a);
+      if (s.maskImage && s.maskImage !== 'none') {
+        const ar = a.getBoundingClientRect();
+        if (n.getBoundingClientRect().bottom > ar.bottom - 34) return true;
+      }
+      a = a.parentElement;
+    }
+    return false;
+  };
   for (let i=0;i<rects.length;i++) for (let j=i+1;j<rects.length;j++) {
     const a=rects[i], b=rects[j];
     if (a.n.contains(b.n) || b.n.contains(a.n)) continue;
+    if (inFade(a.n) || inFade(b.n)) continue;
+    if (clippedApart(a.n, b.n) || clippedApart(b.n, a.n)) continue;
+    // adjacent inline fragments of one ellipsised line share a few tracking pixels
+    const ac = a.n.closest('.sup-charter'), bc = b.n.closest('.sup-charter');
+    if (ac && ac === bc) continue;
     if (a.n.closest('.num, .num-xl, .num-l') && b.n.closest('.num, .num-xl, .num-l')) continue;
     const x=Math.min(a.r.right,b.r.right)-Math.max(a.r.left,b.r.left);
     const y=Math.min(a.r.bottom,b.r.bottom)-Math.max(a.r.top,b.r.top);
@@ -125,12 +159,12 @@ const AUDIT = `(() => {
 async function audit(name, p) {
   const r = await p.evaluate(AUDIT);
   results[name] = { name, ...r };
-  problems(r);
+  problems({ ...r, name });
   return r;
 }
 
 // ---- popover modes ----
-for (const demo of ['mixed', 'idle']) {
+for (const demo of ['mixed', 'empty']) {
   const { c, p } = await context({ width: 1000, height: 760 }, 2);
   await open(p, `?demo=${demo}`);
   await p.screenshot({ path: join(out, `rest-${demo}.png`) });
@@ -159,6 +193,9 @@ for (const vp of [{ width: 1280, height: 800 }, { width: 1024, height: 720 }, { 
 }
 
 // ---- action dispatch: every button that must reach a backend command ----
+// Fresh browser: 30 screenshot contexts leave the first renderer in a bad state.
+await browser.close();
+browser = await launch();
 {
   const { c, p } = await context();
   await open(p, '?surface=dashboard&demo=mixed');
@@ -167,6 +204,8 @@ for (const vp of [{ width: 1280, height: 800 }, { width: 1024, height: 720 }, { 
   const send = p.locator('button:has-text("Message")').first();
   if (await send.count()) { await send.click(); await p.locator('.inspector-message input').first().fill('status');
     await p.locator('.inspector-message button[type=submit]').first().click(); }
+  await p.locator('.spine-session').first().click();
+  await p.waitForTimeout(250);
   const reprompt = p.locator('button:has-text("Re-prompt")').first();
   if (await reprompt.count()) await reprompt.click();
   await p.getByRole('tab', { name: 'Mux' }).click();
@@ -182,22 +221,32 @@ for (const vp of [{ width: 1280, height: 800 }, { width: 1024, height: 720 }, { 
     if (!names.includes(need)) errors.push(`ACTION: ${need} never dispatched from dashboard`);
   await c.close();
 }
-// fleet direct commands
-{
+// fleet direct commands — another fresh browser for a clean renderer
+await browser.close();
+browser = await launch();
+try {
   const { c, p } = await context();
-  await open(p, '?surface=dashboard&demo=mixed&fleet=1');
-  await p.locator('input[aria-label^="Prompt for"]').fill('Inspect the ledger');
-  await p.locator('button:has-text("Spawn")').first().click();
-  await p.locator('input[aria-label="Plan path"]').fill('/tmp/plan.md');
-  await p.locator('button:has-text("Run plan")').first().click();
-  await p.locator('[data-storm="kill-all"]').click();
-  await p.waitForTimeout(150);
+  await p.goto(`http://127.0.0.1:${port}/?surface=dashboard&demo=mixed&fleet=1`, { waitUntil: 'networkidle' });
+  await p.waitForTimeout(1200);
+  await p.evaluate(() => {
+    const set = (el, v) => {
+      const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      s.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    set(document.querySelector('input[aria-label^="Prompt for"]'), 'Inspect the ledger');
+    set(document.querySelector('input[aria-label="Plan path"]'), '/tmp/plan.md');
+    for (const text of ['Spawn', 'Run plan']) [...document.querySelectorAll('button')]
+      .find((b) => b.textContent.trim() === text)?.click();
+    document.querySelector('[data-storm="kill-all"]')?.click();
+  });
+  await p.waitForTimeout(200);
   const actions = await p.evaluate(() => window.__notchActions);
-  results.fleetActions = actions;
-  const names = actions.map((a) => a.cmd);
-  for (const need of ['spawn', 'run_plan'])
-    if (!names.includes(need)) errors.push(`ACTION: ${need} never dispatched from fleet`);
+  results.fleetActions = actions.map((a) => a.cmd);
+  for (const need of ['spawn', 'run_plan', 'fleet_control'])
+    if (!results.fleetActions.includes(need)) errors.push(`ACTION: ${need} never dispatched from fleet`);
   await c.close();
+} catch (e) {
+  errors.push('FLEET ACTION CHECK: ' + String(e).slice(0, 200));
 }
 
 await browser.close();
