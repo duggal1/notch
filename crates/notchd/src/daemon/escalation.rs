@@ -330,7 +330,9 @@ mod tests {
             .expect("snapshot blocked while escalation IO holds `inner`");
 
         let _ = rel_tx.send(());
-        done_rx.recv_timeout(Duration::from_secs(5)).expect("writer finish");
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("writer finish");
         writer.join().unwrap();
         snapper.join().unwrap();
         let _ = std::fs::remove_dir_all(&r);

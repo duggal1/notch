@@ -59,7 +59,11 @@ fn issue(d: &Daemon, id: &str) -> (String, ApprovalCard) {
         .into_iter()
         .find(|c| c.id == id)
         .expect("issued card is pending");
-    assert_eq!(digest, card_digest(&card), "issued digest is the real card digest");
+    assert_eq!(
+        digest,
+        card_digest(&card),
+        "issued digest is the real card digest"
+    );
     (digest, card)
 }
 
@@ -72,8 +76,14 @@ fn valid_answer_is_signed_and_consumed_exactly_once() {
         .answer_approval("esc_ok", true, Some("ok".into()), T0, &digest, "allow")
         .expect("honest signed answer");
     assert!(!ans.sig.is_empty(), "a signature is produced");
-    assert!(d.approval_signature_valid(&ans), "engine verifies its own signature");
-    assert!(d.pending_approvals().is_empty(), "card consumed on valid answer");
+    assert!(
+        d.approval_signature_valid(&ans),
+        "engine verifies its own signature"
+    );
+    assert!(
+        d.pending_approvals().is_empty(),
+        "card consumed on valid answer"
+    );
 
     // Replay: the same bytes cannot answer twice.
     let replay = d.answer_approval("esc_ok", true, Some("ok".into()), T0, &digest, "allow");
@@ -91,9 +101,15 @@ fn forged_signature_is_rejected() {
     // A worker invents a signature (no secret access) and flips the verdict.
     let mut forged = good.clone();
     forged.sig = "00".repeat(32);
-    assert!(!d.approval_signature_valid(&forged), "invented sig rejected");
+    assert!(
+        !d.approval_signature_valid(&forged),
+        "invented sig rejected"
+    );
     forged.allow = false;
-    assert!(!d.approval_signature_valid(&forged), "flipped verdict rejected");
+    assert!(
+        !d.approval_signature_valid(&forged),
+        "flipped verdict rejected"
+    );
 
     // No standing grant was created by the forged bytes.
     assert!(d.approval_grant("S1-OC01").is_none());
@@ -108,7 +124,10 @@ fn tampered_card_is_rejected() {
         ..card
     };
     let forged_digest = card_digest(&forged_card);
-    assert_ne!(digest, forged_digest, "different cards have different digests");
+    assert_ne!(
+        digest, forged_digest,
+        "different cards have different digests"
+    );
 
     let attempt = d.answer_approval("esc_tampered", true, None, T0, &forged_digest, "allow");
     assert!(attempt.is_err(), "tampered card digest must be rejected");
@@ -126,7 +145,11 @@ fn wrong_digest_is_rejected() {
     let (_digest, _card) = issue(&d, "esc_wrong");
     let attempt = d.answer_approval("esc_wrong", true, None, T0, "deadbeef", "allow");
     assert!(attempt.is_err(), "a non-card digest must be rejected");
-    assert_eq!(d.pending_approvals().len(), 1, "card survives a wrong answer");
+    assert_eq!(
+        d.pending_approvals().len(),
+        1,
+        "card survives a wrong answer"
+    );
 }
 
 #[test]
@@ -141,7 +164,11 @@ fn expired_card_is_rejected() {
         Err(msg) => assert!(msg.to_ascii_lowercase().contains("expir"), "{msg}"),
         Ok(_) => panic!("expired card must be rejected"),
     }
-    assert_eq!(d.pending_approvals().len(), 1, "expired card stays out of the grant path");
+    assert_eq!(
+        d.pending_approvals().len(),
+        1,
+        "expired card stays out of the grant path"
+    );
 }
 
 #[test]
@@ -185,5 +212,7 @@ fn forged_answer_cannot_be_verified_as_live() {
         "signature bytes are still well formed"
     );
     // A second answer for the same id is refused, so replay cannot re-enter.
-    assert!(d.answer_approval("esc_verify", true, None, T0, &digest, "allow").is_err());
+    assert!(d
+        .answer_approval("esc_verify", true, None, T0, &digest, "allow")
+        .is_err());
 }
