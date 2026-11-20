@@ -261,3 +261,56 @@ fn parked_writes_survive_restart_and_collect_moves_them() {
     let v: serde_json::Value = serde_json::from_slice(&collected).unwrap();
     assert_eq!(v["collectedBy"], json!("new-holder"));
 }
+
+#[test]
+fn bounded_window_keeps_whole_records_and_rejects_partial_prefixes() {
+    use notchd::ledger::{LEDGER_FILE, MAX_LEDGER_BYTES};
+
+    let dir = root();
+    let path = dir.join(LEDGER_FILE);
+    let mut observed = Vec::new();
+    for prefix in [b"torn", b"old\n"] {
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(prefix).unwrap();
+        for seq in [1, 2] {
+            writeln!(file, r#"{{"seq":{seq},"ts":0,"op":{{"type":"release"}}}}"#).unwrap();
+        }
+        file.set_len(MAX_LEDGER_BYTES + prefix.len() as u64)
+            .unwrap();
+        drop(file);
+        observed.push(
+            read_lines(&path)
+                .unwrap()
+                .into_iter()
+                .map(|line| line.seq)
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    assert_eq!(observed, vec![vec![2], vec![1, 2]]);
+}
+
+#[test]
+fn reopen_repairs_a_torn_suffix_beyond_the_replay_window() {
+    let dir = root();
+    let mut ledger = Ledger::open(&dir).unwrap();
+    ledger.claim("worker", "S1-OC01", 300_000, 1_000).unwrap();
+    let path = ledger.path().to_path_buf();
+    drop(ledger);
+    let original = std::fs::read(&path).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(original.len() as u64 + 256 * 1024 * 1024)
+        .unwrap();
+
+    let mut reopened = Ledger::open(&dir).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(reopened.current_epoch("S1-OC01"), 1);
+    assert_eq!(
+        reopened.claim("next", "S1-OC01", 300_000, 1_001).unwrap(),
+        2
+    );
+    assert_eq!(read_lines(&path).unwrap().len(), 2);
+}
