@@ -1,6 +1,6 @@
 //! Daemon lifecycle: open, reconcile, poll loop, and the injected
 //! client seams (`set_opencode`).
-use super::state::load_state;
+use super::state::{load_or_recover, prime_registry};
 use super::types::{lock, push_warning, Daemon, Inner, Subscribers, EVENTS_MAX_BYTES};
 use crate::bus::OrchestratorBus;
 use crate::cleanup;
@@ -43,8 +43,14 @@ impl Daemon {
         std::fs::create_dir_all(&config.state_dir)?;
         std::fs::create_dir_all(&config.tmp_dir)?;
 
-        let state_path = config.state_dir.join("state.json");
-        let state = load_state(&state_path);
+        // Strict boot: unrecoverable state corruption is a HARD ERROR (never a
+        // silent reset to SV-1). This is the single boot seam used by `notchd
+        // serve` and the Tauri embedding, so both inherit the strict contract.
+        let recovered = load_or_recover(&config)?;
+        let state = recovered.state;
+        // Fail fast here too: a corrupt registry with no parseable backup must
+        // not survive boot and silently hand out reused IDs later.
+        prime_registry(&config.state_dir)?;
         let stuck_after = state.stuck_after_secs.unwrap_or(config.stuck_after_secs);
         let start_ms = clock.now_ms();
         let watchdog = Watchdog::new(stuck_after);

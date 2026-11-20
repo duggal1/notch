@@ -44,7 +44,6 @@ pub(crate) fn registry_for(state_dir: &Path) -> Arc<Mutex<Registry>> {
 
 /// Eager variant for `Daemon::open`: fails loudly when the registry and all
 /// backups are corrupt. Contracted to A2 in COORD.md.
-#[allow(dead_code)] // contract API: wired by A2 in lifecycle.rs
 pub(crate) fn prime_registry(state_dir: &Path) -> io::Result<Arc<Mutex<Registry>>> {
     let path = registry_path(state_dir);
     // Strict check first: unrecoverable corruption is a hard error.
@@ -284,13 +283,10 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
 // Load / recover.
 // ---------------------------------------------------------------------------
 
-/// Result of a strict load. `warnings` must be merged into `Inner.warnings` so
-/// corruption is observable in `snapshot.warnings`, not swallowed.
-#[allow(dead_code)] // contract API: wired by A2 in lifecycle.rs
+/// Result of a strict load. Recovery warnings are merged into
+/// `state.warnings`, so they reach `Inner.warnings` -> `snapshot.warnings`.
 pub(crate) struct Recovered {
     pub state: StateFile,
-    pub registry: Registry,
-    pub warnings: Vec<String>,
 }
 
 fn rank_state(s: &StateFile) -> (usize, usize, u64, u64) {
@@ -331,12 +327,21 @@ fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<S
 /// Strict entry point. HARD ERROR when no parseable state file exists; a
 /// corrupt registry alone is rebuilt from the recovered state, never reset to
 /// SV-1. Warnings from every parse failure are returned to the caller.
-#[allow(dead_code)] // contract API: wired by A2 in lifecycle.rs
 pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
     let state_path = config.state_dir.join("state.json");
     let reg_path = registry_path(&config.state_dir);
     let mut warnings: Vec<String> = Vec::new();
-    let mut state = load_state_recovered(&state_path, &mut warnings)?;
+    // A genuinely fresh state dir (no live file and no backups) is a valid
+    // empty start. Corruption — files present but none parseable — is a HARD
+    // ERROR, never a silent reset to SV-1 / an empty registry.
+    let any_candidate = durable::read_candidates(&state_path)
+        .iter()
+        .any(|p| p.exists());
+    let mut state = if any_candidate {
+        load_state_recovered(&state_path, &mut warnings)?
+    } else {
+        StateFile::empty()
+    };
     if state.version == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -355,7 +360,12 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
     let registry = match Registry::load_or_error(&reg_path) {
         Ok(reg) => reg,
         Err(e) => {
-            warnings.push(format!("{e}; rebuilding registry from state"));
+            // A registry that never existed is a normal fresh start, not
+            // corruption. Only a file (or backup) that existed but could not
+            // be read is worth a warning.
+            if durable::read_candidates(&reg_path).iter().any(|p| p.exists()) {
+                warnings.push(format!("{e}; rebuilding registry from state"));
+            }
             let rebuilt = Registry::rebuild_from_state(&state);
             // Persist the rebuilt registry immediately so a later crash cannot
             // lose the reconstructed high-water marks.
@@ -365,15 +375,13 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
     };
     warnings.extend(registry.warnings.iter().cloned());
     state.warnings.extend(warnings.iter().cloned());
-    Ok(Recovered {
-        state,
-        registry,
-        warnings,
-    })
+    Ok(Recovered { state })
 }
 
-/// Lenient form used by the current `open()` until A2 lands the strict call.
+/// Lenient form, kept for callers that only need a value (tests). Production
+/// boot uses the strict `load_or_recover` — corruption there is a hard error.
 /// Warnings still travel to `Inner.warnings` through `StateFile.warnings`.
+#[allow(dead_code)] // used only by the state.rs unit tests
 pub(crate) fn load_state(path: &Path) -> StateFile {
     let mut warnings = Vec::new();
     let mut state = match load_state_recovered(path, &mut warnings) {
@@ -433,6 +441,22 @@ impl Daemon {
 
     pub(crate) fn registry_path(&self) -> PathBuf {
         registry_path(&self.config.state_dir)
+    }
+
+    /// C2: real ledger high-water seq, read fresh from disk (Ledger::open
+    /// refreshes). Config-backed so every caller sees the authoritative value.
+    pub fn ledger_last_seq(&self) -> u64 {
+        ledger::Ledger::open(&self.config.state_dir)
+            .map(|l| l.last_seq())
+            .unwrap_or(0)
+    }
+
+    /// C2: epoch for the system/orchestrator target ("ORCH"). Ledger epochs are
+    /// per-target (ledger.rs:317); this is the global fleet-fence value A4 uses.
+    pub fn ledger_epoch(&self) -> u64 {
+        ledger::Ledger::open(&self.config.state_dir)
+            .map(|l| l.current_epoch("ORCH"))
+            .unwrap_or(0)
     }
 
     /// Clone of the daemon's single registry instance. Allocation itself goes
