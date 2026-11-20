@@ -129,6 +129,7 @@ fn agent_entry(pane: &str, status: &str, revision: u64) -> Value {
 /// and sleeps 60 s. Only the WIP-snapshot path calls `add`, so the hung call is
 /// unambiguously snapshot-before-kill. `proc::run` kills it at TIMEOUT_GIT=5 s.
 const GIT_SHIM: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$SHIM_LOG"
 for a in "$@"; do
   if [ "$a" = "add" ]; then
     printf 'started\n' > "$SHIM_MARKER"
@@ -145,7 +146,9 @@ fn install_shim(r: &Path, real_git: &str) -> (PathBuf, String) {
     std::fs::write(&shim, GIT_SHIM).unwrap();
     std::fs::set_permissions(&shim, PermissionsExt::from_mode(0o755)).unwrap();
     let marker = r.join("git_add_started");
+    let log = r.join("git_shim.log");
     std::env::set_var("SHIM_MARKER", &marker);
+    std::env::set_var("SHIM_LOG", &log);
     std::env::set_var("REAL_GIT", real_git);
     let old_path = std::env::var("PATH").unwrap_or_default();
     std::env::set_var("PATH", format!("{}:{}", bin.display(), old_path));
@@ -195,6 +198,10 @@ fn snapshot_returns_in_under_one_second_while_wip_git_is_hung() {
         .into_iter()
         .next()
         .unwrap();
+    // run_plan gives the session its OWN git worktree under tmp/. Dirty that
+    // exact cwd so the WIP snapshot reaches `git add -A`.
+    let session_cwd = daemon.snapshot().sessions[0].cwd.clone();
+    std::fs::write(Path::new(&session_cwd).join("wip.txt"), "uncommitted work\n").unwrap();
     *fake.agents.lock().unwrap() = vec![agent_entry(&pane, "working", 7)];
 
     // Prime, then step to 28 s quiet (Suspect, not yet Stuck). Real git is on PATH.
@@ -214,9 +221,23 @@ fn snapshot_returns_in_under_one_second_while_wip_git_is_hung() {
     let killer = std::thread::spawn(move || {
         c.advance_ms(2000); // quiet = 30 s = 2x stuck_after -> Stuck
         d.poll_once();
+        eprintln!(
+            "B1 killer done: status={:?} warnings={:?}",
+            d.snapshot().sessions[0].status,
+            d.snapshot().warnings
+        );
     });
 
-    wait_for_marker(&marker);
+    if let Err(e) = std::panic::catch_unwind(|| wait_for_marker(&marker)) {
+        let _ = e;
+        eprintln!(
+            "B1 DEBUG shim log:\n{}",
+            std::fs::read_to_string(r.join("git_shim.log")).unwrap_or_default()
+        );
+        std::env::set_var("PATH", &old_path);
+        let _ = killer.join();
+        panic!("shim never reached git add (see B1 DEBUG above)");
+    }
     // The snapshot-before-kill git is now hung. A snapshot command must not wait.
     let t = Instant::now();
     let snap = daemon.snapshot();
@@ -233,6 +254,7 @@ fn snapshot_returns_in_under_one_second_while_wip_git_is_hung() {
 
     std::env::set_var("PATH", &old_path);
     std::env::remove_var("SHIM_MARKER");
+    std::env::remove_var("SHIM_LOG");
     std::env::remove_var("REAL_GIT");
     let _ = killer.join();
     eprintln!("B1 VERDICT=HELD");
