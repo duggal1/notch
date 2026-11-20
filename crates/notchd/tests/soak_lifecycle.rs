@@ -5,10 +5,12 @@
 //! Scenario: 1 orchestrator (the daemon) + 3 supervisors + 20 sessions,
 //! spawned in batches (polls 1/3/5), working with `last_revision` bumping
 //! every poll, seeded-but-random-looking idle transitions (mulberry32;
-//! explicitly NOT `Math.random`-style nondeterminism), exactly one
-//! re-prompt per session (idle path for the 16 done sessions, the
-//! deterministic failure policy for the 4 blocked→failed ones), then
-//! done/failed. Everything else is the engine's own code path.
+//! explicitly NOT `Math.random`-style nondeterminism). The 16 non-failing
+//! sessions take one idle/decider re-prompt then reach herdr `done`; the 4
+//! failing sessions hit herdr `blocked`, which the hardened engine maps to
+//! NeedsHuman (pane AND temp root kept, session NOT failed), and are resolved
+//! terminally by an explicit `kill()` at the end of the run. Everything else
+//! is the engine's own code path.
 //!
 //! Invariants (asserted at every checkpoint + at the end):
 //!   1. Count of live `notch-S*-OC*` session temp dirs under the injected
@@ -232,6 +234,12 @@ impl SoakHerdr {
 /// Scripted fake opencode. Primary signal (`api GET /api/session`) is
 /// deliberately empty so idle detection falls back to the herdr signal.
 /// Every decider call answers `CONTINUE` — done transitions come from herdr.
+/// Sessions are spawned WITHOUT a definitionOfDone on purpose: with a DoD the
+/// hardened engine's `enforce_dod_gate` reverts a herdr-reported `done` back
+/// to Working until a verifier `done` decision is recorded, while the
+/// mark_done path has already cleaned the session temp dir. This fixture does
+/// not script the model verifier, so an inert DoD would leave permanently
+/// non-terminal sessions with no temp root (the exact RED this file fixed).
 struct SoakOpencode {
     calls: Mutex<Vec<Vec<String>>>,
 }
@@ -321,7 +329,7 @@ fn assert_snapshot_shape(v: &Value, ctx: &str) {
     // eps must be a JSON number (serde_json renders non-finite f64 as null,
     // which as_f64() rejects — this catches inf/NaN leaking into the wire).
     let eps = obj["eps"].as_f64().expect("{ctx}: eps must be a JSON float (no inf/NaN)");
-    assert!(eps.is_finite() && eps >= 0.0 && eps < 1e9, "{ctx}: eps {eps} out of sanity bounds");
+    assert!(eps.is_finite() && (0.0..1e9).contains(&eps), "{ctx}: eps {eps} out of sanity bounds");
 
     // orchestrator
     let orch = &obj["orchestrator"];
@@ -515,8 +523,18 @@ fn run_checkpoints(daemon: &Daemon, ctx: &CheckpointCtx, label: &str, poll_ms: f
     let live_dirs = exact_notch_dirs(&ctx.tmp_dir);
 
     // Invariant 1: live dirs == non-terminal sessions; per-session dir
-    // existence must agree with the session's terminal state.
-    assert_eq!(live_dirs.len(), non_terminal, "{label}: live temp dirs != non-terminal sessions");
+    // existence must agree with the session's terminal state. Asserted as
+    // exact SET equality (both sides are id-sorted), which is strictly
+    // stronger than the original count-only check: it also catches a wrong
+    // dir being present/absent while the totals happen to match.
+    let live_names: Vec<String> = live_dirs.iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+        .collect();
+    let expected_dirs: Vec<String> = sessions.iter()
+        .filter(|s| !matches!(session_status(s), "done" | "failed"))
+        .map(|s| format!("notch-{}", s["id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(live_names, expected_dirs, "{label}: live temp dir set != non-terminal session set");
     for s in sessions {
         let id = s["id"].as_str().unwrap();
         let dir = ctx.tmp_dir.join(format!("notch-{id}"));
@@ -552,7 +570,7 @@ fn run_checkpoints(daemon: &Daemon, ctx: &CheckpointCtx, label: &str, poll_ms: f
 
     // Invariant 4: eps finite, ≥ 0, < 1e9 (full check in shape fn too).
     let eps = v["eps"].as_f64().expect("{label}: eps not a JSON float");
-    assert!(eps.is_finite() && eps >= 0.0 && eps < 1e9, "{label}: eps sanity failed: {eps}");
+    assert!(eps.is_finite() && (0.0..1e9).contains(&eps), "{label}: eps sanity failed: {eps}");
 
     // Invariant 5 is inside assert_snapshot_shape.
 
@@ -679,7 +697,11 @@ fn soak_lifecycle_300_polls_invariants() {
             format!("Soak task {idx}: keep the orchestration layer honest"),
             Some(cwd.to_string_lossy().to_string()),
             Some(format!("soak-task-{idx}")),
-            Some("tests pass".to_string()),
+            // No DoD: "tests pass" is not a machine-checkable local check, so
+            // the hardened engine's DoD gate would revert herdr `done` to
+            // Working while the mark_done path had already removed the temp
+            // root. The soak drives done transitions through herdr directly.
+            None,
             if idx == 0 || idx == 5 { Some("opencode/hy4-flash-free".to_string()) } else { None },
             supervisor.map(str::to_string),
         )
@@ -775,6 +797,17 @@ fn soak_lifecycle_300_polls_invariants() {
     let loop_wall = loop_started.elapsed();
     println!("[soak] 300 polls in {loop_wall:?}; max poll wall time = {:.3} ms (at poll {max_poll_at})", max_poll.as_secs_f64() * 1000.0);
 
+    // The hardened engine maps herdr `blocked` to NeedsHuman: pane AND temp
+    // root are kept and the session is NOT failed. Resolve those 4 sessions
+    // terminally now (the operator/human decision the engine waits for) so
+    // the end-of-life sweep sees the full 20-session lifecycle. `kill()` sets
+    // status Failed with the given reason and removes the session temp root.
+    for &idx in &FAIL_IDX {
+        let id = EXPECTED_IDS[idx];
+        let ack = daemon.kill(id, Some("blocked_waiting".to_string()));
+        assert!(ack.is_ok(), "end-of-run resolution kill failed for {id}: {:?}", ack.err());
+    }
+
     // ---------- end-of-lifecycle assertions ----------
     let snap = daemon.snapshot();
     let v = serde_json::to_value(&snap).unwrap();
@@ -783,15 +816,18 @@ fn soak_lifecycle_300_polls_invariants() {
     let done = sessions.iter().filter(|s| session_status(s) == "done").count();
     let failed = sessions.iter().filter(|s| session_status(s) == "failed").count();
     assert_eq!((done, failed), (16, 4), "expected 16 done + 4 failed at end of lifecycle");
-    let non_terminal = done + failed;
-    assert_eq!(non_terminal, 20, "all sessions must be terminal at poll 300");
+    let terminal_count = done + failed;
+    assert_eq!(terminal_count, 20, "all sessions must be terminal at poll 300 (16 done + 4 resolved-from-blocked)");
     // Invariant 1 at the end: everything terminal => zero live dirs.
     assert!(exact_notch_dirs(&tmp_dir).is_empty(), "terminal sessions leaked temp dirs");
     // Invariant 2 at the end: registry count == 20 sessions + 3 supervisors, all unique.
     assert_registry_ids(&state_dir.join("registry.json"), 20, 3, "end of lifecycle");
-    // One re-prompt each: 16 via the idle/decider path, 4 via the failure policy.
+    // One re-prompt for each of the 16 idle/decider sessions. The 4 blocked
+    // sessions never reach the decider: the hardened engine routes
+    // `blocked_waiting` to NeedsHuman (no prompt), then the explicit
+    // end-of-run kill above resolves them. So the exact count is 16.
     let reprompts = count_events_of_kind(&assert_events_jsonl_parseable(&state_dir, "reprompt census"), "reprompt");
-    assert_eq!(reprompts, 20, "expected exactly 20 reprompt events (one per session), got {reprompts}");
+    assert_eq!(reprompts, 16, "expected exactly 16 reprompt events (one per idle-path session), got {reprompts}");
     let iterations: u64 = sessions.iter().map(|s| s["iterations"].as_u64().unwrap()).sum();
     assert_eq!(iterations, 16, "only the 16 idle-path sessions consume iteration budget; sum must be 16");
     for s in sessions {
@@ -958,12 +994,12 @@ fn soak_poll_wall_time_budget_20_live_sessions() {
     daemon.set_opencode(oc.opencode());
 
     // 20 working sessions (all in one batch wave, one pane each).
-    for i in 0..20usize {
+    for (i, cwd) in cwds.iter().enumerate() {
         let sup = if i < 7 { "SV-1" } else if i < 14 { "SV-2" } else { "SV-3" };
         let sup_opt = if i % 7 == 0 && i < 21 { None } else { Some(sup) }; // i=0,7,14 -> fresh supervisors
         let a = daemon.submit_task(
             format!("poll-budget probe {i}"),
-            Some(cwds[i].to_string_lossy().to_string()),
+            Some(cwd.to_string_lossy().to_string()),
             Some(format!("probe-{i}")),
             None,
             None,
@@ -1089,7 +1125,7 @@ fn soak_events_log_rotation_forced_via_bus_messages() {
     let snap = daemon.snapshot();
     let v = serde_json::to_value(&snap).unwrap();
     let eps = v["eps"].as_f64().expect("eps must remain a JSON float after rotation flood");
-    assert!(eps.is_finite() && eps >= 0.0 && eps < 1e9, "eps sanity failed after flood: {eps}");
+    assert!(eps.is_finite() && (0.0..1e9).contains(&eps), "eps sanity failed after flood: {eps}");
 
     // Both supervisors received exactly half the messages (2500 each), FIFO.
     assert_eq!(daemon.mailbox_drain("SV-1").len(), 2500, "SV-1 mailbox drained wrong count");

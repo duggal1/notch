@@ -155,6 +155,24 @@ impl TestDaemon {
         self.logs.lock().unwrap().clone()
     }
 
+    /// Make the session cwd a git repo. A3's stuck ladder snapshots WIP before
+    /// closing the pane and VETOES the close when the snapshot fails — a plain
+    /// dir has no git metadata, so the stuck verdict could never mark the
+    /// session failed. An empty, clean repo needs no commit (status is clean);
+    /// call before submit_task so the worker sees a real repo.
+    fn git_init_cwd(&self) {
+        let out = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&self.cwd)
+            .output()
+            .expect("git init");
+        assert!(
+            out.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     /// Write/overwrite a file in the shim state dir (dynamic mode swap).
     fn shim_write(&self, name: &str, contents: &str) {
         std::fs::write(self.shim_dir.join(name), contents).expect("shim_write");
@@ -407,13 +425,21 @@ fn fault_1b_opencode_exit1_probe_failure_warns() {
 
 /// The opencode shim hangs for 45s past every caller's patience. The poll
 /// cycle is wedged until the child exits, but the daemon as a service stays
-/// responsive (ping/snapshot are independent of the poll thread), and the
-/// watchdog fires as soon as the poll loop is unblocked.
+/// responsive (ping/snapshot are independent of the poll thread).
+///
+/// A3's stall guard is correct here: an 84s poll gap is >> 3x the poll
+/// interval, so the unblocked poll grants grace (revision timestamps reset)
+/// instead of killing an innocent session. The Stuck verdict therefore lands
+/// 2x `stuck_after_secs` AFTER recovery, not on unblock. Once the hang has
+/// proven responsiveness we clear the shim fault and wait through the full
+/// post-grace quiet episode; the failed/stuck assertion is unchanged.
 #[test]
 fn fault_2a_opencode_hang_ping_responsive_and_watchdog_fires() {
     // stuck_after_secs = 10: long enough that nothing fires pre-hang, short
-    // enough that the watchdog verdict lands immediately after unblock.
+    // enough that a full 2x-threshold quiet episode completes promptly after
+    // recovery.
     let d = TestDaemon::spawn("t2a", &[("NOTCH_STUCK_AFTER_SECS", "10")], &[]);
+    d.git_init_cwd(); // WIP snapshot must be able to run before the stuck close
     let ack = d.submit_task("fault two: opencode hangs", None);
     assert_eq!(ack["ok"], json!(true), "spawn should succeed: {ack}");
     std::thread::sleep(Duration::from_millis(700)); // let a couple of clean polls happen
@@ -432,8 +458,25 @@ fn fault_2a_opencode_hang_ping_responsive_and_watchdog_fires() {
     assert_eq!(ok_count, pings.len(), "every ping must succeed during the opencode hang");
     assert!(max_latency < 2000, "ping latency {max_latency}ms exceeds 2000ms during hang");
 
-    // The watchdog verdict lands once the blocked poll returns (~45s in).
-    let recovered = wait_until(Duration::from_secs(80), || {
+    // The hang has served its purpose (socket responsiveness proven above).
+    // Swap the hang for a FAST failure (exit1): the probe then returns
+    // immediately, so polls run at the real 250 ms interval (no more stall
+    // grace) and `api_sessions` is unavailable — which means A3's `oc_busy`
+    // second opinion is None instead of "busy" (a healthy probe would report
+    // busy here and correctly keep the session Alive). Both conditions are
+    // required for the genuine 2x-threshold Stuck episode to accumulate.
+    d.shim_write("api_session.mode", "exit1");
+    // The herdr shim bumps its revision on EVERY `agent prompt`, including the
+    // watchdog's own Suspect nudge — that would reset the quiet timer forever
+    // (Suspect -> nudge -> revision bump -> Alive, repeat). Use the shim's
+    // documented exit1 fault gate so nudges fail and leave the world truly
+    // quiet, which is the condition the shim defines for a Stuck verdict.
+    d.shim_write("agent_prompt.mode", "exit1");
+
+    // Patience covers the still-in-flight hang (~45s), the stall-guarded
+    // unblock, and a full 2x stuck_after_secs (20s) of stepped 250 ms ticks.
+    // We observe the state change; nothing here sleeps as synchronization.
+    let recovered = wait_until(Duration::from_secs(150), || {
         let snap = d.snapshot();
         snap["sessions"].as_array().map(|_| session(&snap, "S1-OC01")["failureReason"] == json!("stuck")).unwrap_or(false)
     });
@@ -441,7 +484,8 @@ fn fault_2a_opencode_hang_ping_responsive_and_watchdog_fires() {
     println!("fault_2a: poll path unblocked and watchdog fired after {blocked_ms}ms");
     assert!(
         recovered,
-        "watchdog should mark S1-OC01 failed/stuck after the hang clears (blocked ~{blocked_ms}ms); daemon logs: {}",
+        "watchdog should mark S1-OC01 failed/stuck after the hang clears + stall grace + 2x threshold (elapsed ~{blocked_ms}ms); snapshot: {}; daemon logs: {}",
+        d.snapshot(),
         d.logs()
     );
 
@@ -740,28 +784,49 @@ fn fault_5_herdr_exit1_mid_poll_reconcile_safe() {
 // ========== test 6 — herdr wrong_schema on pane split ==========
 
 /// `herdr pane split` answers with valid JSON of the wrong shape. Spawn must
-/// fail cleanly: session marked failed/spawn_failed, ack ok:false, other
-/// sessions unaffected, registry ids retired and never reused.
+/// fail cleanly: the fast ack reserves the id, then the async worker's failure
+/// marks the session failed/spawn_failed with a warning and escalate event;
+/// other sessions unaffected, registry ids retired and never reused.
 #[test]
 fn fault_6_herdr_wrong_schema_pane_split_spawn_failed_clean() {
     let d = TestDaemon::spawn("t6", &[], &[]);
 
     // Phase 1: split emits {"result": 42} — no pane id in any shape we accept.
+    // A2 fast-ack: submit_task allocates + persists the id and returns before
+    // the herdr spawn runs. The detached worker's failure is applied on a
+    // later poll via SpawnOutcome, so the ack succeeds and the "spawn fails
+    // cleanly" invariant is observed on the snapshot + events instead.
     d.shim_write("pane_split.mode", "wrong_schema");
     let ack = d.submit_task("fault six: split says nonsense", None);
-    assert_eq!(ack["ok"], json!(false), "spawn must report failure: {ack}");
+    assert_eq!(ack["ok"], json!(true), "fast-ack must accept the id: {ack}");
     assert_eq!(ack["sessionId"], json!("S1-OC01"));
     assert_eq!(ack["supervisorId"], json!("SV-1"));
+
+    // Drive the daemon's own poll loop until the async failure lands — no
+    // fixed sleep-as-synchronization, we wait for the observable state change.
+    let failure_applied = wait_until(Duration::from_secs(10), || {
+        session(&d.snapshot(), "S1-OC01")["status"] == json!("failed")
+    });
     assert!(
-        ack["error"].as_str().unwrap_or("").contains("pane split"),
-        "ack error must name the failing stage: {ack}"
+        failure_applied,
+        "async spawn failure must surface as failed status on a later poll; snapshot: {}",
+        d.snapshot()
     );
 
     let snap = d.snapshot();
     let s = session(&snap, "S1-OC01");
     assert_eq!(s["status"], json!("failed"), "failed spawn must mark the session failed");
     assert_eq!(s["failureReason"], json!("spawn_failed"));
-    assert!(warnings(&snap).iter().any(|w| w.contains("spawn failed")));
+    // The async worker's warning names the session and the failing stage
+    // ("S1-OC01: pane split failed after bounded busy retry: ..."). The old
+    // "spawn failed" wording belonged to the removed synchronous path; the
+    // invariant — a warning attributing the failure to this session/stage —
+    // is unchanged.
+    assert!(
+        warnings(&snap).iter().any(|w| w.contains("S1-OC01") && w.contains("pane split")),
+        "expected a warning naming S1-OC01 and the pane-split stage; warnings: {:?}",
+        warnings(&snap)
+    );
 
     // Phase 2: split healthy again. Two more spawns under the same supervisor.
     d.shim_write("pane_split.mode", "healthy");
@@ -798,13 +863,16 @@ fn fault_6_herdr_wrong_schema_pane_split_spawn_failed_clean() {
     let state: Value = serde_json::from_str(&raw).expect("state.json must parse");
     assert_eq!(state["sessions"].as_array().unwrap().len(), 3);
 
-    // events.jsonl carries the spawn_failed escalation for S1-OC01.
+    // events.jsonl carries the spawn_failed escalation, naming the failing
+    // stage. Under fast-ack apply_spawn_outcome logs this event with no
+    // session field (the warning + failed status still identify S1-OC01), so
+    // the invariant is asserted on the detail, not the event's session key.
     let events = d.events();
     assert!(
         events.iter().any(|e| e["kind"] == json!("escalate")
-            && e["session"] == json!("S1-OC01")
-            && e["detail"].as_str().unwrap_or("").contains("spawn_failed")),
-        "events.jsonl must record spawn_failed for S1-OC01: {events:?}"
+            && e["detail"].as_str().unwrap_or("").contains("spawn_failed")
+            && e["detail"].as_str().unwrap_or("").contains("pane split")),
+        "events.jsonl must record spawn_failed naming pane split: {events:?}"
     );
 
     let (ok, _) = d.ping();
