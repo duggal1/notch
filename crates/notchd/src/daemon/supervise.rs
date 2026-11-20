@@ -709,7 +709,7 @@ impl Daemon {
                         }
                     }
                     decider::DeciderVerdict::Continue { instruction } => {
-                        if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                        if !matches!(self.admit_reprompt(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
                             return;
                         }
                         let mut inner = lock(&self.inner);
@@ -751,7 +751,7 @@ impl Daemon {
                         );
                     }
                     decider::DeciderVerdict::Stuck { blocker } => {
-                        if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                        if !matches!(self.admit_reprompt(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
                             return;
                         }
                         let mut inner = lock(&self.inner);
@@ -813,7 +813,7 @@ impl Daemon {
                         );
                     }
                     decider::DeciderVerdict::Unparseable { head } => {
-                        if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                        if !matches!(self.admit_reprompt(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
                             return;
                         }
                         let strikes = seed.stuck_strikes.saturating_add(1);
@@ -900,7 +900,7 @@ impl Daemon {
                 let _ = cleanup::cleanup_session(&self.config.tmp_dir, &seed.id);
             }
             Some(decider::VerifierVerdict::No { missing }) => {
-                if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                if !matches!(self.admit_reprompt(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
                     return;
                 }
                 self.reprompt_session(
@@ -917,7 +917,7 @@ impl Daemon {
                 );
             }
             Some(decider::VerifierVerdict::Unparseable { head }) => {
-                if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                if !matches!(self.admit_reprompt(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
                     return;
                 }
                 self.reprompt_session(
@@ -936,7 +936,7 @@ impl Daemon {
                 );
             }
             None => {
-                if !matches!(self.admit_start(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
+                if !matches!(self.admit_reprompt(&seed.id, self.clock.mono_ms(), &seed.sup), crate::supervisor::StartGate::Admit) {
                     return;
                 }
                 self.reprompt_session(

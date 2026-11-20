@@ -323,6 +323,44 @@ impl FleetGuard {
         StartGate::Admit
     }
 
+    /// A model re-prompt is NOT a new process start: it must not feed the
+    /// dead-start storm detector. It still honours an existing per-session
+    /// storm preemption (bounded self-retry / needs-human), so the guard's
+    /// authority is preserved without misclassifying normal supervisor loops.
+    pub fn note_reprompt(&mut self, id: &str, mono_ms: u64) -> StartGate {
+        if id.is_empty() || !self.sessions.get(id).map(|st| st.stormed).unwrap_or(false) {
+            return StartGate::Admit;
+        }
+        let st = self.sessions.get_mut(id).expect("checked above");
+        if st.needs_human {
+            let first = !st.preempt_logged;
+            st.preempt_logged = true;
+            return StartGate::Preempt {
+                reason: format!("fleet storm preempt: {id} exhausted 3 bounded self-retries; needs human"),
+                first,
+            };
+        }
+        if mono_ms < st.next_retry_ms {
+            let first = !st.preempt_logged;
+            st.preempt_logged = true;
+            let wait = st.next_retry_ms.saturating_sub(mono_ms);
+            return StartGate::Preempt {
+                reason: format!("fleet storm preempt: {id} held {wait}ms more (self-retry {}/3)", st.retries),
+                first,
+            };
+        }
+        st.retries = st.retries.saturating_add(1);
+        st.preempt_logged = false;
+        if st.retries as usize >= HELD_RETRY_MS.len() {
+            st.needs_human = true;
+            st.next_retry_ms = u64::MAX;
+        } else {
+            st.next_retry_ms = mono_ms.saturating_add(HELD_RETRY_MS[st.retries as usize]);
+        }
+        StartGate::Admit
+    }
+
+
     /// Why a start is currently refused, if at all. Pure observation.
     pub fn admission(&self, id: &str, mono_ms: u64) -> Option<String> {
         if self.fleet_hold_until_ms > mono_ms {
