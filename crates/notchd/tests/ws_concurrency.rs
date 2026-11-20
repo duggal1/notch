@@ -203,7 +203,7 @@ fn ws_client_count_is_bounded() {
     // reason). It must get WS Close 1012 (Restart) and never a hello.
     match server.connect_raw_with_auth() {
         Err(e) => panic!("17th client should complete the upgrade, got {e}"),
-        Ok((mut ws, _)) => match ws.read() {
+        Ok(mut ws) => match ws.read() {
             Ok(Message::Close(Some(frame))) => {
                 assert_eq!(frame.code, CloseCode::Restart, "capacity close must be 1012");
             }

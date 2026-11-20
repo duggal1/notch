@@ -215,11 +215,24 @@ pub fn serve(
     daemon: Arc<Daemon>,
     shutdown: Arc<AtomicBool>,
 ) -> io::Result<()> {
+    serve_with_active(listener, daemon, shutdown, Arc::new(AtomicUsize::new(0)))
+}
+
+/// Same as [`serve`], with the admitted-client counter supplied by the caller.
+///
+/// The counter is incremented only after a client passes capacity admission
+/// and decremented when its connection thread exits. Tests use it as a
+/// deterministic readiness signal instead of guessing with fixed sleeps.
+pub fn serve_with_active(
+    listener: TcpListener,
+    daemon: Arc<Daemon>,
+    shutdown: Arc<AtomicBool>,
+    active: Arc<AtomicUsize>,
+) -> io::Result<()> {
     listener.set_nonblocking(true)?;
     let expected_host = format!("127.0.0.1:{}", listener.local_addr()?.port());
     let token = load_or_create_token(&daemon.config.state_dir)?;
     let clients: Arc<Mutex<Vec<Client>>> = Arc::new(Mutex::new(Vec::new()));
-    let active = Arc::new(AtomicUsize::new(0));
 
     // Drive the daemon's existing debounced snapshot flush. This is the same
     // call the NDJSON socket makes; pending_change makes double-flushes a no-op.

@@ -15,7 +15,7 @@ use notchd::ws;
 use serde_json::{json, Value};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -82,6 +82,8 @@ pub struct WsDaemon {
     pub port: u16,
     pub token: String,
     pub daemon: Arc<Daemon>,
+    /// Live count of admitted clients, owned by `ws::serve_with_active`.
+    active: Arc<AtomicUsize>,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -110,10 +112,12 @@ impl WsDaemon {
                 .unwrap_or_else(|e| panic!("open daemon: {e}")),
         );
         let shutdown = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicUsize::new(0));
         let d = Arc::clone(&daemon);
         let s = Arc::clone(&shutdown);
+        let a = Arc::clone(&active);
         let handle = std::thread::spawn(move || {
-            let _ = ws::serve(listener, d, s);
+            let _ = ws::serve_with_active(listener, d, s, a);
         });
 
         let server = WsDaemon {
@@ -121,6 +125,7 @@ impl WsDaemon {
             port,
             token,
             daemon,
+            active,
             shutdown,
             handle: Some(handle),
         };
@@ -135,17 +140,55 @@ impl WsDaemon {
         format!("ws://127.0.0.1:{}", self.port)
     }
 
+    /// Admitted clients as seen by the server (capacity threads only).
+    pub fn active(&self) -> usize {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    /// Condition-based wait for a specific admitted count. No fixed sleep:
+    /// under CPU contention the server thread can be descheduled arbitrarily.
+    pub fn wait_for_active(&self, expected: usize, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while self.active() != expected && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        self.active() == expected
+    }
+
+    /// Raw authenticated handshake that does NOT panic, for capacity probes.
+    pub fn connect_raw_with_auth(
+        &self,
+    ) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, tungstenite::Error> {
+        let request = ClientRequestBuilder::new(self.url().parse().unwrap())
+            .with_header("Authorization", format!("Bearer {}", self.token));
+        let (ws, _) = connect(request)?;
+        Ok(ws)
+    }
+
     pub fn connect(&self) -> WsClient {
         let url = self.url();
-        let request = ClientRequestBuilder::new(url.parse().unwrap())
-            .with_header("Authorization", format!("Bearer {}", self.token));
-        let (mut ws, _) = connect(request)
-            .unwrap_or_else(|e| panic!("connect {url}: {e}"));
-        if let MaybeTlsStream::Plain(stream) = ws.get_mut() {
-            stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
-            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let request = ClientRequestBuilder::new(url.parse().unwrap())
+                .with_header("Authorization", format!("Bearer {}", self.token));
+            match connect(request) {
+                Ok((mut ws, _)) => {
+                    if let MaybeTlsStream::Plain(stream) = ws.get_mut() {
+                        stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+                        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                    }
+                    return WsClient { ws };
+                }
+                // A descheduled server can drop the first handshake under
+                // heavy parallel load; retry until the deadline, then fail
+                // loudly rather than hiding a real auth/capacity rejection.
+                Err(e) if Instant::now() < deadline => {
+                    let _ = e;
+                    std::thread::yield_now();
+                }
+                Err(e) => panic!("connect {url}: {e}"),
+            }
         }
-        WsClient { ws }
     }
 }
 
