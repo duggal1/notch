@@ -18,6 +18,7 @@ import { Sym } from './Symbol';
 import { useWhiteHot } from '../lib/hot';
 import { PixelMeter } from './pixel/PixelMeter';
 import { DitherField } from './pixel/DitherField';
+import { FleetDeck } from './fleet/FleetDeck';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
 
@@ -45,6 +46,10 @@ export function Dashboard() {
   const [armed, setArmed] = useState(false);
   const [fired, setFired] = useState(false);
   const [killBtn, setKillBtn] = useState<HTMLButtonElement | null>(null);
+  // W2-5: opt-in fleet surface. Default is absent from the DOM, so every
+  // existing tab renders the exact same pixels as before this change.
+  const [fleetOpen, setFleetOpen] = useState(() =>
+    new URLSearchParams(window.location.search).get('fleet') === '1');
   const armTimer = useRef(0);
   const initialPicked = useRef(false);
   const dashRef = useRef<HTMLDivElement>(null);
@@ -88,6 +93,10 @@ export function Dashboard() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setComposerFocusSignal((n) => n + 1);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === '5') {
+        e.preventDefault();
+        setFleetOpen((v) => !v);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -137,8 +146,8 @@ export function Dashboard() {
         {/* ---------- rail ---------- */}
         <nav className="rail" aria-label="Dashboard">
           <div className="rail-mark" title="notch">
-            <DitherField mode="radial" cell={2} floor={0.26} ceil={0.9} />
-            <img className="brand-logo" src="/logo.svg" alt="" aria-hidden="true" />
+            <DitherField mode="linear" angle={135} cell={2} floor={0.08} ceil={0.62} />
+            <span className="brand-logo" aria-hidden="true" />
           </div>
           <div className="rail-nav" role="tablist" aria-label="Dashboard tabs" aria-orientation="vertical">
             {TABS.map((t) => {
@@ -168,9 +177,8 @@ export function Dashboard() {
             })}
           </div>
           <div className="rail-foot">
-            <i className={`dot dot--${top}`} aria-hidden="true" />
-            <span className="rail-live">{top}</span>
-            <span className="rail-rate">{snapshot?.eps.toFixed(1) ?? '0.0'}</span>
+            <span className="rail-live"><i className={`dot dot--${top}`} aria-hidden="true" />{top}</span>
+            <span className="rail-rate">{snapshot?.eps.toFixed(1) ?? '0.0'}<em>ev/s</em></span>
           </div>
         </nav>
 
@@ -259,12 +267,16 @@ export function Dashboard() {
                   onKillSession={killSession}
                   onOpenHerdr={openHerdr}
                   onFocusComposerRequest={() => setComposerFocusSignal((n) => n + 1)}
+                  onPrefill={(text) => {
+                    setComposerPrefill({ text, at: Date.now() });
+                    setComposerFocusSignal((n) => n + 1);
+                  }}
                   composerPrefill={composerPrefill}
                   composerFocusSignal={composerFocusSignal}
                   flashId={flashId}
                 />
               )}
-              {tab === 'multiplexer' && <MultiplexerTab snapshot={snapshot} onJumpToTree={(id) => jumpToSession(id)} />}
+              {tab === 'multiplexer' && <MultiplexerTab snapshot={snapshot} onJumpToTree={(id) => jumpToSession(id)} onAssign={() => { switchTab('tree'); setComposerFocusSignal((n) => n + 1); }} />}
               {tab === 'comms' && (
                 <CommsTab snapshot={snapshot} onJumpToTree={(id) => {
                   const toFlash = sessions.find((s) => s.id === id)?.sup;
@@ -286,7 +298,19 @@ export function Dashboard() {
               )}
             </motion.main>
           </AnimatePresence>
+
+          <footer className="statusline" aria-label="Status">
+            <span className="sl-item"><i className={`dot dot--${top}`} aria-hidden="true" />{top}</span>
+            <span className="sl-item">{active} in flight</span>
+            <span className="sl-item">{sessions.length} sessions</span>
+            <span className="sl-item">{supervisors.length} supervisors</span>
+            <span className="sl-dither"><DitherField mode="linear" angle={0} cell={2} floor={0.18} /></span>
+            <span className="sl-keys">⌘1–4 views · ⌘K compose</span>
+          </footer>
         </div>
+
+        {/* W2-5: fleet management surface, composed around the four owned tabs. */}
+        {fleetOpen && <FleetDeck snapshot={snapshot} onClose={() => setFleetOpen(false)} />}
       </div>
     </MotionConfig>
   );

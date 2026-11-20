@@ -113,6 +113,9 @@ pub fn run() -> Result<(), String> {
     // Subscriber channel carries the daemon's snapshot pushes (NDJSON lines,
     // `{"event":"snapshot","snapshot":{…}}`); the emit thread unwraps them.
     let snapshot_rx = engine::spawn_daemon_threads(Arc::clone(&daemon));
+    // W2-5: a SECOND subscriber taps the same pushes for the additive `fleet`
+    // event. Same source, same debounce, no second poll and no engine.rs edit.
+    let (_fleet_sub_id, fleet_rx) = daemon.register_subscriber();
 
     tauri::Builder::default()
         .manage(Arc::clone(&daemon))
@@ -196,6 +199,7 @@ pub fn run() -> Result<(), String> {
             let tray_handle = app.handle().clone();
             tray::build(&tray_handle)?;
             engine::spawn_emit_thread(app.handle().clone(), snapshot_rx);
+            commands::spawn_fleet_emit_thread(app.handle().clone(), fleet_rx);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -217,6 +221,11 @@ pub fn run() -> Result<(), String> {
             commands::open_dashboard,
             commands::set_frame,
             commands::haptic,
+            commands::fleet_state,
+            commands::list_harnesses,
+            commands::list_approvals,
+            commands::answer_approval,
+            commands::fleet_control,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| format!("tauri run: {e}"))

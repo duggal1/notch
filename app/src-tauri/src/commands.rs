@@ -9,9 +9,12 @@
 //! (AppKit / main-thread friendly, no blocking IO).
 
 use std::path::Path;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
 use notchd::daemon::{
@@ -324,4 +327,362 @@ pub fn set_frame(mode: String, app: AppHandle) -> Result<FrameRectOut, String> {
 pub fn haptic(kind: String) -> Result<(), String> {
     macos::perform_haptic(&kind);
     Ok(())
+}
+
+// ===========================================================================
+// Wave 2 capability surface (W2-5 wiring).
+//
+// These handlers are the app-side contract for the four wave-2 engine
+// capabilities: harness registry (W2-1), ledger/fencing (W2-2), approvals +
+// A2A bridge (W2-3) and supervisor storm controls (W2-4). The engine modules
+// are owned by those agents and land in parallel, so every handler has ONE
+// marked seam: today it projects the answer from the frozen §1.3 snapshot
+// and reports `source: "snapshot-projection"`; when the engine exposes its
+// method, replace only that seam. No wire shape changes for the webview.
+// ===========================================================================
+
+/// Declared capability of a harness. `supported: false` is a DECLINE, not a
+/// missing method: optional reads refuse before any side effect (stolen from
+/// agentbox `main/harnesses.mts`, structure only).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessCapabilityOut {
+    pub name: String,
+    pub supported: bool,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessOut {
+    pub id: String,
+    pub label: String,
+    pub capabilities: Vec<HarnessCapabilityOut>,
+}
+
+/// An approval card derived from the unresolved escalations. `signed: false`
+/// is honest: the ed25519 answer channel is W2-3's work, not the app's.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalOut {
+    pub id: String,
+    pub session: String,
+    pub supervisor: String,
+    pub kind: String,
+    pub reason: String,
+    pub at: u64,
+    pub digest: String,
+    pub signed: bool,
+}
+
+const PROJECTION: &str = "snapshot-projection";
+const OPTIONAL_READS: &[&str] = &["signIn", "usage", "profiles", "remoteControl"];
+
+/// FNV-1a 64 over the answerable fields — a stable, in-process card digest.
+/// No crypto claim is made; the signed channel is the engine's job (W2-3).
+fn card_digest(id: &str, session: &str, kind: &str, reason: &str, at: u64) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in format!("{id}|{session}|{kind}|{reason}|{at}").bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+fn u64_at(v: &Value, key: &str) -> u64 {
+    v.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+}
+
+/// The one honest line each fleet unit gets. Derived only from the four legal
+/// statuses plus the escalation/failure reason — never a fifth status value.
+fn unit_line(status: &str, reason: &str, kind: &str) -> (&'static str, String) {
+    match status {
+        "working" => ("Working", "An agent is on this session right now.".to_string()),
+        "failed" if kind == "blocked" || reason == "blocked_waiting" => (
+            "Stopped",
+            "The agent stopped on a request only you can answer. Nothing moves until it is answered.".to_string(),
+        ),
+        "failed" if kind == "stuck" || reason == "stuck" => (
+            "Stopped",
+            "The watchdog stopped this session and kept its work. Send it a fresh prompt to continue.".to_string(),
+        ),
+        "failed" => ("Stopped", "This session failed. Its last action is kept on the row.".to_string()),
+        "done" => ("Done", "The session finished and its work was verified.".to_string()),
+        _ => ("Idle", "No agent is on this session, and none is waiting to start.".to_string()),
+    }
+}
+
+/// W2-1 seam. Declared registry shape: what the single harness can actually
+/// do, with optional reads declining. Replace with `notchd::harness_registry`.
+fn declare_harnesses() -> Vec<HarnessOut> {
+    let operations = [
+        "spawn", "read", "prompt", "kill", "focus", "status",
+        "signIn", "usage", "profiles", "remoteControl",
+    ];
+    vec![HarnessOut {
+        id: "opencode".into(),
+        label: "OpenCode".into(),
+        capabilities: operations
+            .iter()
+            .map(|name| HarnessCapabilityOut {
+                name: (*name).to_string(),
+                supported: !OPTIONAL_READS.contains(name),
+            })
+            .collect(),
+    }]
+}
+
+/// W2-2/W2-3 seam: approval cards from unresolved escalations + blocked
+/// sessions. Oldest first, bounded, one card per session.
+fn approvals_from_snapshot(snap: &Value) -> Vec<ApprovalOut> {
+    let sessions = array_at(snap, "sessions");
+    let mut out: Vec<ApprovalOut> = Vec::new();
+    for e in array_at(snap, "escalations") {
+        let session = str_at(e, "session").to_string();
+        let kind = str_at(e, "kind").to_string();
+        if session.is_empty() || (kind != "blocked" && kind != "stuck") {
+            continue;
+        }
+        let id = str_at(e, "id").to_string();
+        let reason = str_at(e, "reason").to_string();
+        let at = u64_at(e, "at");
+        let supervisor = str_at(e, "supervisor").to_string();
+        out.push(ApprovalOut {
+            digest: card_digest(&id, &session, &kind, &reason, at),
+            id, session, supervisor, kind, reason, at, signed: false,
+        });
+    }
+    for s in sessions {
+        if str_at(s, "failureReason") != "blocked_waiting" {
+            continue;
+        }
+        let session = str_at(s, "id").to_string();
+        if out.iter().any(|a| a.session == session) {
+            continue;
+        }
+        let id = format!("blocked-{session}");
+        let reason = "The agent is waiting on input only you can give.".to_string();
+        let supervisor = str_at(s, "sup").to_string();
+        let at = u64_at(s, "startedAt");
+        out.push(ApprovalOut {
+            digest: card_digest(&id, &session, "blocked", &reason, at),
+            id, session, supervisor, kind: "blocked".into(), reason, at, signed: false,
+        });
+    }
+    out.sort_by_key(|a| a.at);
+    out.truncate(12);
+    out
+}
+
+/// W2-2/W2-4 seam: the fleet projection — one unit per session, honest words,
+/// a ledger sequence/fence and the storm guard reading. All from the snapshot.
+fn fleet_from_snapshot(snap: &Value) -> Value {
+    let sessions = array_at(snap, "sessions");
+    let supervisors = array_at(snap, "supervisors");
+    let escalations = array_at(snap, "escalations");
+    let decisions = array_at(snap, "decisions");
+    let bus = array_at(snap, "busMessages");
+
+    let escalated: Vec<&Value> = escalations
+        .iter()
+        .filter(|e| !str_at(e, "session").is_empty())
+        .collect();
+    let mut units = Vec::with_capacity(sessions.len());
+    let mut working = 0usize;
+    let mut idle = 0usize;
+    let mut stopped = 0usize;
+    let mut done = 0usize;
+    for s in sessions {
+        let id = str_at(s, "id");
+        if id.is_empty() { continue; }
+        let status = str_at(s, "status");
+        let reason = str_at(s, "failureReason");
+        let esc = escalated.iter().find(|e| str_at(e, "session") == id).copied();
+        let kind = esc.map(|e| str_at(e, "kind")).unwrap_or("");
+        let (word, detail) = unit_line(status, reason, kind);
+        match status {
+            "working" => working += 1,
+            "failed" => stopped += 1,
+            "done" => done += 1,
+            _ => idle += 1,
+        }
+        units.push(json!({
+            "id": id,
+            "kind": "session",
+            "sup": str_at(s, "sup"),
+            "status": status,
+            "word": word,
+            "detail": detail,
+            "title": str_at(s, "title"),
+            "paneId": str_at(s, "paneId"),
+            "workspace": str_at(s, "cwd"),
+            "lastAction": str_at(s, "lastAction"),
+            "revision": u64_at(s, "lastRevision"),
+            "escalation": kind,
+        }));
+    }
+    let top = if stopped > 0 { "failed" } else if working > 0 { "working" }
+        else if done > 0 && idle == 0 && done == sessions.len() { "done" } else { "idle" };
+    let holds = supervisors.iter().filter(|s| {
+        s.get("paused").and_then(Value::as_bool).unwrap_or(false)
+    }).count();
+    let seq = decisions.len() + bus.len();
+    let fence_src = format!("{}|{}|{}", u64_at(snap, "generatedAt"), decisions.len(), bus.len());
+    let mut fh: u64 = 0xcbf29ce484222325;
+    for b in fence_src.bytes() { fh ^= b as u64; fh = fh.wrapping_mul(0x100000001b3); }
+    json!({
+        "source": PROJECTION,
+        "generatedAt": u64_at(snap, "generatedAt"),
+        "topStatus": top,
+        "units": units,
+        "groups": { "working": working, "idle": idle, "stopped": stopped, "done": done },
+        "storm": {
+            "holds": holds,
+            "guard": if holds > 0 { "holding" } else { "open" },
+            "starts": decisions.iter().filter(|d| str_at(d, "action") == "reprompt").count(),
+        },
+        "ledger": {
+            "seq": seq,
+            "fence": format!("{fh:016x}"),
+            "epoch": u64_at(snap, "version"),
+            "decisions": decisions.len(),
+            "messages": bus.len(),
+        },
+    })
+}
+
+/// `fleet_state` — one call returns the whole derived fleet surface.
+#[tauri::command]
+pub async fn fleet_state(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String> {
+    let snap = daemon.snapshot();
+    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
+    Ok(fleet_from_snapshot(&value))
+}
+
+/// `list_harnesses` — declared capabilities, declines before side effects.
+#[tauri::command]
+pub async fn list_harnesses() -> Result<Value, String> {
+    Ok(json!({ "source": PROJECTION, "harnesses": declare_harnesses() }))
+}
+
+/// `list_approvals` — one decision per card, oldest first, digest bound to the
+/// card actually shown. Never an engine write.
+#[tauri::command]
+pub async fn list_approvals(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String> {
+    let snap = daemon.snapshot();
+    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
+    Ok(json!({ "source": PROJECTION, "approvals": approvals_from_snapshot(&value) }))
+}
+
+/// `answer_approval` — today routes an answer through the existing reprompt /
+/// bus commands so the control is real, and is explicitly `signed: false`.
+/// W2-3 replaces the route with the signed answer channel (same wire shape).
+#[tauri::command]
+pub async fn answer_approval(
+    id: String,
+    allow: bool,
+    note: Option<String>,
+    daemon: State<'_, Arc<Daemon>>,
+) -> Result<Value, String> {
+    let snap = daemon.snapshot();
+    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
+    let approval = approvals_from_snapshot(&value)
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| format!("unknown approval {id:?}"))?;
+    let note = note.unwrap_or_default();
+    let text = if allow {
+        format!("approved: {}", if note.is_empty() { "continue" } else { &note })
+    } else {
+        format!("needs you: {}", if note.is_empty() { "answer this request" } else { &note })
+    };
+    let outcome: Result<Value, String> = if allow {
+        daemon.reprompt(&approval.session, &text).map(|_| json!({}))
+    } else {
+        let ack = daemon.message("ORCH", &approval.session, "escalate", &text);
+        if ack.ok {
+            Ok(json!({}))
+        } else {
+            Err(ack.error.unwrap_or_else(|| "message failed".into()))
+        }
+    };
+    outcome?;
+    Ok(json!({
+        "ok": true,
+        "id": id,
+        "session": approval.session,
+        "verdict": if allow { "allow" } else { "deny" },
+        "signed": false,
+        "source": PROJECTION,
+    }))
+}
+
+/// `fleet_control` — storm guard. `hold` / `release` reuse the frozen
+/// pause/resume commands (the decision loop only; live panes keep running).
+/// W2-4 adds start-hold, storm detection and preemption behind the same action
+/// names. `kill_all` is the existing two-step kill switch.
+#[tauri::command]
+pub async fn fleet_control(
+    action: String,
+    id: Option<String>,
+    daemon: State<'_, Arc<Daemon>>,
+) -> Result<Value, String> {
+    match action.as_str() {
+        "hold" | "pause" => {
+            let id = id.ok_or_else(|| "hold requires a supervisor id".to_string())?;
+            daemon.pause_supervisor(&id)?;
+            Ok(json!({ "ok": true, "action": "hold", "id": id, "source": PROJECTION }))
+        }
+        "release" | "resume" => {
+            let id = id.ok_or_else(|| "release requires a supervisor id".to_string())?;
+            daemon.resume_supervisor(&id)?;
+            Ok(json!({ "ok": true, "action": "release", "id": id, "source": PROJECTION }))
+        }
+        "kill_all" => {
+            let ack = kill_switch_impl(&daemon);
+            Ok(json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": PROJECTION }))
+        }
+        other => Err(format!("unknown fleet action {other:?} (hold|release|kill_all)")),
+    }
+}
+
+/// Second, additive event channel. The frozen `snapshot` event is unchanged;
+/// `fleet` carries the same §1.3 object plus the derived fleet projection.
+/// It taps a second daemon subscriber — no second poll, no change to engine.rs.
+pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>) {
+    std::thread::Builder::new()
+        .name("notch-fleet-emit".into())
+        .spawn(move || {
+            let mut last = Instant::now() - Duration::from_millis(150);
+            let mut pending: Option<Value> = None;
+            let parse = |line: &str| -> Option<Value> {
+                let v: Value = serde_json::from_str(line).ok()?;
+                v.get("snapshot").cloned()
+            };
+            loop {
+                match rx.recv_timeout(Duration::from_millis(150)) {
+                    Ok(line) => pending = parse(&line).or(pending),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+                while let Ok(line) = rx.try_recv() {
+                    if let Some(v) = parse(&line) { pending = Some(v); }
+                }
+                if let Some(snap) = pending.take() {
+                    if last.elapsed() >= Duration::from_millis(150) {
+                        let fleet = fleet_from_snapshot(&snap);
+                        let _ = app.emit("fleet", json!({ "snapshot": snap, "fleet": fleet }));
+                        last = Instant::now();
+                    } else {
+                        pending = Some(snap);
+                    }
+                }
+            }
+        })
+        .ok();
 }
