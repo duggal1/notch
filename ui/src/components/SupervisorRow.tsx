@@ -49,15 +49,15 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
           <span className="sup-actions" data-actions>
             <button className="act" aria-label={`Message ${sup.id}`} title="Message supervisor"
               onClick={(e) => { e.stopPropagation(); onMessage(sup.id); }}>
-              <PixelIcon name="bubble" size={15} />
+              <PixelIcon name="bubble" size={12} />
             </button>
             <button className="act" aria-label={sup.paused ? `Resume ${sup.id}` : `Pause ${sup.id}`} title={sup.paused ? 'Resume' : 'Pause'}
               onClick={(e) => { e.stopPropagation(); onTogglePause(sup); }}>
-              {sup.paused ? <PixelIcon name="play" size={14} /> : <PixelIcon name="pause" size={14} />}
+              {sup.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
             </button>
             <button className="act" aria-label={`Kill all sessions under ${sup.id}`} title={`Kill every session under ${sup.id}`}
               onClick={(e) => { e.stopPropagation(); onKill(sup.id); }}>
-              <PixelIcon name="kill" size={15} />
+              <PixelIcon name="kill" size={12} />
             </button>
           </span>
         </span>

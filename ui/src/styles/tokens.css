@@ -11,14 +11,14 @@
   --color-ground: #0B0210;
   --color-card: #12041A;
   --color-ink: #000000;
-  --color-f1: #2A0A33;
-  --color-f2: #701A75;
-  --color-f3: #A21CAF;
-  --color-f4: #D946EF;
-  --color-f5: #F5D0FE;
-  --color-lilac: #F5D0FE;
-  --color-red: #D946EF;
-  --color-pink: #F5D0FE;
+  --color-f0: #2A0A33;
+  --color-f1: #701A75;
+  --color-f2: #A21CAF;
+  --color-f3: #D946EF;
+  --color-f4: #F5D0FE;
+  --color-lilac: var(--color-f4);
+  --color-red: var(--color-f3);
+  --color-pink: var(--color-f4);
 
   --radius-xs: 8px;
   --radius-s: 12px;

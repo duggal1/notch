@@ -56,7 +56,7 @@ export function EscalationsTab({ snapshot, onRepromptFresh, onReassign, onKill }
           </div>
           <p className="esc-reason">{esc.reason}</p>
           {isActed ? (
-            <div className="esc-done"><PixelIcon name="check" size={11} /> {acted?.label}</div>
+            <div className="esc-done"><PixelIcon name="check" size={12} /> {acted?.label}</div>
           ) : (
             <div className="esc-actions">
               <button className="esc-btn esc-btn--primary ripple" onClick={() => onRepromptFresh(esc.session, s?.goal ?? s?.task ?? 'the goal')}>

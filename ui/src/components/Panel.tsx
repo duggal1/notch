@@ -195,10 +195,10 @@ export function Panel(props: PanelProps) {
 
       <footer className="p-foot">
         <button className="btn-primary text-btn ripple" onClick={openDashboard}>
-          <PixelIcon name="window" size={15} />Open dashboard
+          <PixelIcon name="window" size={12} />Open dashboard
         </button>
         <button className="btn-secondary text-btn ripple" onClick={onCleanup}>
-          <PixelIcon name="trash" size={14} />{sweepSent ? 'Sweep sent' : 'Sweep orphans'}
+          <PixelIcon name="trash" size={12} />{sweepSent ? 'Sweep sent' : 'Sweep orphans'}
         </button>
       </footer>
     </div>

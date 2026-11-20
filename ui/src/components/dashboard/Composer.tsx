@@ -8,7 +8,9 @@ import { PixelIcon } from '../PixelIcon';
 
 export type ComposerTarget = { kind: 'supervisor' | 'session'; id: string } | null;
 
-const FALLBACK_MODELS = ['opencode/hy4-flash-free', 'auto'];
+// `auto` uses whatever model the operator configured in OpenCode. No house
+// default is forced on anyone; real models come from the host's `list_models`.
+const FALLBACK_MODELS = ['auto'];
 
 export function Composer({ selection, sessions, prefill, focusSignal }: {
   selection: ComposerTarget;
@@ -27,7 +29,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   const [dodOpen, setDodOpen] = useState(false);
   const [cwd, setCwd] = useState(() => { try { return localStorage.getItem('notch.cwd') ?? '/Users/harshitduggal'; } catch { return '/Users/harshitduggal'; } });
   const [cwdHint, setCwdHint] = useState(false);
-  const [model, setModel] = useState(() => { try { return localStorage.getItem('notch.model') ?? 'opencode/hy4-flash-free'; } catch { return 'opencode/hy4-flash-free'; } });
+  const [model, setModel] = useState(() => { try { return localStorage.getItem('notch.model') ?? 'auto'; } catch { return 'auto'; } });
   const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
   const [modelOpen, setModelOpen] = useState(false);
   const [state, setState] = useState<'idle' | 'sending' | { ok: boolean; error?: string; id?: string; ms?: number }>('idle');
@@ -148,7 +150,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
             <span>→ {targetChipLabel}</span>
             <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
               onClick={() => setTargetSession(null)}>
-              <PixelIcon name="close" size={9} />
+              <PixelIcon name="close" size={12} />
             </button>
           </div>
         )}
@@ -167,7 +169,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
         </div>
         <div className="composer-dod">
           <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
-            <PixelIcon name="chevron-down" size={9} className={dodOpen ? 'rotate-180' : ''} />
+            <PixelIcon name="chevron_down" size={12} className={dodOpen ? 'rotate-180' : ''} />
             Done when…
           </button>
           {dodOpen && (
@@ -185,7 +187,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
           <div ref={menuRef} className="model-picker">
             <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
               <span className="tabular-nums">{model}</span>
-              <PixelIcon name="chevron-down" size={10} />
+              <PixelIcon name="chevron_down" size={12} />
             </button>
             {modelOpen && (
               <ul className="model-menu" role="listbox" aria-label="Model">
@@ -193,7 +195,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
                   <li key={m} role="option" aria-selected={m === model}>
                     <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
                       <span className="tabular-nums">{m}</span>
-                      {m === model && <PixelIcon name="check" size={10} />}
+                      {m === model && <PixelIcon name="check" size={12} />}
                     </button>
                   </li>
                 ))}
@@ -207,7 +209,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
       </VoiceBeam>
       {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
       {error && <div className="composer-error" role="alert">{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
-      {done && state.id && <div className="composer-ok"><PixelIcon name="check" size={11} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
+      {done && state.id && <div className="composer-ok"><PixelIcon name="check" size={12} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
     </div>
   );
 }

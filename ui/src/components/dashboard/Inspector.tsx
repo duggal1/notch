@@ -96,7 +96,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
               <PixelIcon name="bubble" size={12} /><span>Message</span>
             </button>
             <button className="ctl ripple" onClick={() => onTogglePause(supervisor)} title={supervisor.paused ? 'Resume supervisor' : 'Pause supervisor'}>
-              {supervisor.paused ? <PixelIcon name="play" size={11} /> : <PixelIcon name="pause" size={11} />}
+              {supervisor.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
               <span>{supervisor.paused ? 'Resume' : 'Pause'}</span>
             </button>
             <button className="ctl ctl--kill ripple" onClick={() => onKill(supervisor.id)} title="Kill every session under this supervisor">
@@ -185,7 +185,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
 
         {myConflicts.length > 0 && (
           <div className="inspector-list conflict-list">
-            <span className="label" style={{ paddingBottom: 6, color: 'var(--f5)' }}>Conflicts</span>
+            <span className="label" style={{ paddingBottom: 6, color: 'var(--f4)' }}>Conflicts</span>
             {myConflicts.map((c, i) => (
               <div key={i} className="conflict-row">
                 <span className="tabular-nums truncate">{c.file}</span>
@@ -200,7 +200,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
             <PixelIcon name="reprompt" size={12} /><span>Re-prompt</span>
           </button>
           <button className="ctl ripple" onClick={() => onTogglePause(ownSup!)} disabled={!ownSup} title={ownSup?.paused ? 'Resume supervisor' : 'Pause supervisor'}>
-            {ownSup?.paused ? <PixelIcon name="play" size={11} /> : <PixelIcon name="pause" size={11} />}
+            {ownSup?.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
             <span>{ownSup?.paused ? 'Resume' : 'Pause'}</span>
           </button>
           <button className="ctl ctl--kill ripple" onClick={() => onKill(s.id)} title="Kill session">

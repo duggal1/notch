@@ -87,66 +87,63 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
 
   return (
     <div className="tree-grid">
-      <aside className="sidebar" aria-label="Supervisors">
-        <div className="sidebar-head">
+      {/* spine: supervisors + orchestrator — one glass column, the followable spine */}
+      <aside className="spine" aria-label="Supervisors">
+        <div className="spine-head">
           <span className="label">Supervisors</span>
-          <span className="view-head-count">{String(supervisors.length).padStart(2, '0')}</span>
+          <span className="spine-count tabular-nums">{supervisors.length} supervisors</span>
         </div>
-        <div className="sidebar-body">
-          <label className="sidebar-filter">
-            <PixelIcon name="search" size={12} />
-            <input className="sidebar-filter-input" placeholder="Filter id or status" value={filter}
-              onChange={(e) => setFilter(e.target.value)} aria-label="Filter by id or status" spellCheck={false} />
-          </label>
-          <button className="orch-root" onClick={() => onSelect(null)} aria-pressed={selection === null}>
-            <i className={`dot dot--${snapshot?.orchestrator.status ?? 'idle'}`} />
-            <span className="tabular-nums">Orchestrator</span>
-            <span className="orch-root-meta tabular-nums">{supervisors.length} sup</span>
-          </button>
-          <div className="sidebar-scroll">
-            {matchedSessions.length > 0 && (
-              <div className="sidebar-group">
-                <span className="label">Matching sessions</span>
-                {matchedSessions.map((s) => (
-                  <button key={s.id} className="inspector-session-row ripple" onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
-                    <i className={`dot dot--${s.status}`} />
-                    <span className="tabular-nums">{s.id}</span>
-                    <span className="truncate">{s.title}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="sidebar-group">
-              {matchedSupervisors.map((sv) => (
-                <div key={sv.id} className={flashSupId === sv.id ? 'sup-flash' : undefined}>
-                  <SupervisorRow sup={sv} sessions={sessions} decisions={decisions} now={now}
-                    variant="dashboard"
-                    onMessage={() => { onSelect({ kind: 'supervisor', id: sv.id }); onFocusComposerRequest(); }}
-                    onTogglePause={onTogglePause}
-                    onKill={onKillSupervisor}
-                    onSelect={(id) => {
-                      // Plain click = select + focus: selection is set synchronously before the
-                      // fire-and-forget send; herdr focus is idempotent and opens no window.
-                      onSelect({ kind: 'supervisor', id });
-                      const target = sessions.find((s) => s.sup === id && s.status === 'working')
-                        ?? sessions.find((s) => s.sup === id);
-                      if (target) onOpenHerdr(target.id);
-                    }} />
+        <label className="spine-filter">
+          <PixelIcon name="search" size={12} />
+          <input className="spine-filter-input" placeholder="Filter id or status" value={filter}
+            onChange={(e) => setFilter(e.target.value)} aria-label="Filter by id or status" spellCheck={false} />
+        </label>
+        <button className="orch-root" onClick={() => onSelect(null)} aria-pressed={selection === null}>
+          <i className={`dot dot--${snapshot?.orchestrator.status ?? 'idle'}`} />
+          <span className="tabular-nums">Orchestrator</span>
+          <span className="orch-root-meta tabular-nums">{supervisors.length} sup · {sessions.length} sess</span>
+        </button>
+        <div className="spine-list">
+          {matchedSessions.length > 0 && matchedSessions.map((s) => (
+            <button key={s.id} className={`inspector-session-row ripple${selection?.kind === 'session' && selection.id === s.id ? ' is-selected' : ''}`}
+              onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
+              <i className={`dot dot--${s.status}`} />
+              <span className="tabular-nums">{s.id}</span>
+              <span className="truncate">{s.title}</span>
+            </button>
+          ))}
+          {matchedSupervisors.map((sv) => (
+            <div key={sv.id} className={flashSupId === sv.id ? 'sup-flash' : undefined}>
+              <div className={`sup-row${selection?.kind === 'supervisor' && selection.id === sv.id ? ' is-selected' : ''}`}>
+                <div className="sup-line">
+                  <i className={`dot dot--${sv.status}`} />
+                  <span className="sup-id">{sv.id}{sv.paused ? ' — paused' : ''}</span>
+                  <span className="sup-counts tabular-nums">{sessions.filter((s) => s.sup === sv.id).length} jobs · working {sv.working} idle {sv.idle}</span>
                 </div>
+                <div className="sup-actions">
+                  {sv.paused && (
+                    <button className="act ripple" aria-label={`Resume ${sv.id}`} onClick={() => onTogglePause(sv)}>
+                      <PixelIcon name="play" size={12} />
+                    </button>
+                  )}
+                  <button className="act act--kill ripple" aria-label={`Kill supervisor ${sv.id}`} onClick={() => onKillSupervisor(sv.id)}>
+                    <PixelIcon name="trash" size={12} />
+                  </button>
+                </div>
+              </div>
+              {sessions.filter((s) => s.sup === sv.id).slice(0, 5).map((s) => (
+                <button key={s.id} className={`inspector-session-row ripple${selection?.kind === 'session' && selection.id === s.id ? ' is-selected' : ''}`}
+                  onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
+                  <i className={`dot dot--${s.status}`} />
+                  <span className="tabular-nums">{s.id}</span>
+                  <span className="truncate">{s.title}</span>
+                </button>
               ))}
             </div>
-            {matchedSupervisors.length === 0 && (
-              <p className="sidebar-empty">{filter.trim() ? `Nothing matches “${filter.trim()}”.` : 'No supervisors yet — assign work below.'}</p>
-            )}
-          </div>
-        </div>
-        <div className="sidebar-actions">
-          <button className="sidebar-btn ripple" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
-            <PixelIcon name="plus" size={11} /><span>New supervisor</span>
-          </button>
-          <button className="sidebar-btn ripple" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
-            <PixelIcon name="plus" size={11} /><span>New session</span>
-          </button>
+          ))}
+          {matchedSupervisors.length === 0 && !matchedSessions.length && (
+            <p className="sidebar-empty">{filter.trim() ? `Nothing matches “${filter.trim()}”.` : 'No supervisors — wait for tasks.'}</p>
+          )}
         </div>
       </aside>
 
@@ -175,10 +172,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
 
             {sessions.length === 0 && supervisors.length === 0 ? (
               <div className="empty-state">
-                <span className="display">Nothing running.</span>
-                <p className="empty-line">
-                  No supervisors, no sessions. Start from a shape, or write your own task in the composer.
-                </p>
+                <span className="display">Start from a shape</span>
                 <div className="empty-templates">
                   {[
                     { kind: 'build', text: 'Fix the failing test in ui/ and run the suite' },
