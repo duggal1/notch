@@ -268,6 +268,21 @@ impl Ledger {
         if !ledger.path.exists() {
             crate::durable::append_durable(&ledger.path, b"")?;
         }
+        // A SIGKILL mid-append can leave a partial line with no trailing
+        // newline. It is uncommitted by definition; drop it before the next
+        // append so a fresh whole line cannot be glued onto it and lost by the
+        // fold's "whole lines only" rule.
+        let bytes = fs::read(&ledger.path)?;
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            let keep = bytes
+                .iter()
+                .rposition(|&b| b == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let f = OpenOptions::new().write(true).open(&ledger.path)?;
+            f.set_len(keep as u64)?;
+            f.sync_data()?;
+        }
         ledger.refresh();
         Ok(ledger)
     }
