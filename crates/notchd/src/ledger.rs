@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -164,32 +164,36 @@ fn encode(line: &Line) -> io::Result<Vec<u8>> {
 /// oversize/hostile line are skipped; nothing is approximated (agentbox's
 /// `readLinesFrom` / `foldRawInto` rule).
 pub fn read_lines(path: &Path) -> io::Result<Vec<Line>> {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let start = if bytes.len() > MAX_LEDGER_BYTES as usize {
-        bytes.len() - MAX_LEDGER_BYTES as usize
+    // AgentBox main/store/work-items.mts:116-139 seeks to the byte window.
+    // Read one boundary byte too, so a whole record at the cut survives.
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(MAX_LEDGER_BYTES);
+    let offset = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::with_capacity((len - offset) as usize);
+    file.take(len - offset).read_to_end(&mut bytes)?;
+    let slice = if start > 0 {
+        let Some(boundary) = bytes.iter().position(|&b| b == b'\n') else {
+            return Ok(Vec::new());
+        };
+        &bytes[boundary + 1..]
     } else {
-        0
+        &bytes
     };
-    let slice = &bytes[start..];
-    let end = slice
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    if end == 0 {
-        return Ok(Vec::new());
-    }
-    let text = String::from_utf8_lossy(&slice[..end]);
     let mut out = Vec::new();
-    for raw in text.split('\n') {
+    for raw in slice.split_inclusive(|&b| b == b'\n') {
+        let Some(raw) = raw.strip_suffix(b"\n") else {
+            break; // a torn final line is uncommitted.
+        };
         if raw.is_empty() || raw.len() > MAX_LINE_BYTES {
             continue;
         }
-        if let Ok(line) = serde_json::from_str::<Line>(raw) {
+        if let Ok(line) = serde_json::from_slice::<Line>(raw) {
             out.push(line);
         }
     }
@@ -274,6 +278,7 @@ pub struct Ledger {
 
 impl Ledger {
     pub fn open(state_dir: &Path) -> io::Result<Self> {
+        let _guard = ledger_guard();
         fs::create_dir_all(state_dir)?;
         let mut ledger = Ledger {
             dir: state_dir.to_path_buf(),
@@ -287,19 +292,24 @@ impl Ledger {
         if !ledger.path.exists() {
             crate::durable::append_durable(&ledger.path, b"")?;
         }
-        // A SIGKILL mid-append can leave a partial line with no trailing
-        // newline. It is uncommitted by definition; drop it before the next
-        // append so a fresh whole line cannot be glued onto it and lost by the
-        // fold's "whole lines only" rule.
-        let bytes = fs::read(&ledger.path)?;
-        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-            let keep = bytes
-                .iter()
-                .rposition(|&b| b == b'\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
+        // Discard an uncommitted tail before it can swallow the next append.
+        let mut file = fs::File::open(&ledger.path)?;
+        let len = file.metadata()?.len();
+        let mut end = len;
+        let mut chunk = [0; 64 * 1024];
+        while end > 0 {
+            let count = end.min(chunk.len() as u64) as usize;
+            end -= count as u64;
+            file.seek(SeekFrom::Start(end))?;
+            file.read_exact(&mut chunk[..count])?;
+            if let Some(last) = chunk[..count].iter().rposition(|&b| b == b'\n') {
+                end += (last + 1) as u64;
+                break;
+            }
+        }
+        if end < len {
             let f = OpenOptions::new().write(true).open(&ledger.path)?;
-            f.set_len(keep as u64)?;
+            f.set_len(end)?;
             f.sync_data()?;
         }
         ledger.refresh();
