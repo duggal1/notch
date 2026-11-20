@@ -2,8 +2,15 @@
 
 /* ================= layout ================= */
 .dash {
+  position: relative;
   height: 100dvh; display: grid; grid-template-columns: 96px minmax(0, 1fr);
   background: var(--s0); color: var(--t1); overflow: hidden;
+}
+.dash-notice {
+  position: absolute; top: 64px; right: 16px; z-index: 60;
+  padding: 10px 16px; border-radius: var(--r-pill); background: var(--s3);
+  color: var(--t1); font: 450 12px/1 var(--font); letter-spacing: -.01em;
+  animation: view-rise 240ms var(--ease) both; pointer-events: none;
 }
 .rail { display: flex; flex-direction: column; align-items: center; background: var(--s1); }
 .rail-mark { display: grid; place-items: center; width: 96px; height: 72px; color: var(--f4); }

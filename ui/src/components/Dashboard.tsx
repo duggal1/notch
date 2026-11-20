@@ -36,10 +36,15 @@ export function Dashboard() {
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
+  const [killNotice, setKillNotice] = useState<string | null>(null);
   const [fleetOpen, setFleetOpen] = useState(() =>
     new URLSearchParams(window.location.search).get('fleet') === '1');
   const armTimer = useRef(0);
-  useEffect(() => () => window.clearTimeout(armTimer.current), []);
+  const noticeTimer = useRef(0);
+  useEffect(() => () => {
+    window.clearTimeout(armTimer.current);
+    window.clearTimeout(noticeTimer.current);
+  }, []);
   const initialPicked = useRef(false);
   const dashRef = useRef<HTMLDivElement>(null);
   useRipple(dashRef);
@@ -116,6 +121,9 @@ export function Dashboard() {
     window.clearTimeout(armTimer.current);
     setArmed(false);
     send({ cmd: 'kill_switch' });
+    setKillNotice('Kill switch sent — stopping all sessions');
+    window.clearTimeout(noticeTimer.current);
+    noticeTimer.current = window.setTimeout(() => setKillNotice(null), 3200);
   }, [active, armed]);
 
   const jumpToSession = useCallback((sessionId: string, flash?: string) => {
@@ -270,6 +278,7 @@ export function Dashboard() {
         </div>
 
         {fleetOpen && <FleetDeck snapshot={snapshot} onClose={() => setFleetOpen(false)} />}
+        {killNotice && <div className="dash-notice" role="status">{killNotice}</div>}
       </div>
     </MotionConfig>
   );

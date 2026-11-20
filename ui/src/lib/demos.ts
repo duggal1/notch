@@ -146,23 +146,30 @@ function withAges<T extends object>(items: T[], base: number): (T & { at: number
   return items.map((it, i) => ({ ...it, at: base - (offsets[i] ?? 700) * 1000 }));
 }
 
+// Demo-side effects of destructive commands. The real daemon owns these states;
+// without them the preview would dispatch a command and show no result at all.
+let killedAll = false;
+const killedIds = new Set<string>();
+
 export function toSnapshot(name: DemoName, eps: number, jitterSeed: number): Snapshot {
   const seed = SEEDS[name];
   const jitter = mulberry32(jitterSeed);
   const now = T();
-  const sessions: Session[] = seed.sessions.map((s) => ({
+  const sessions: Session[] = seed.sessions.map((s) => {
+    const stopped = killedAll || killedIds.has(s.id);
+    return {
     id: s.id,
     sup: s.sup,
-    status: s.status,
+    status: stopped ? 'failed' as Status : s.status,
     title: s.title,
     task: s.title,
     cwd: '/Users/harshitduggal/workspace/notch',
     paneId: `w80:p${1 + (parseInt(s.id.split('-OC')[1] ?? '1', 10) % 4)}`,
     startedAt: now - Math.round(s.startedMinAgo * 60 * 1000),
-    lastAction: s.status === 'working' ? 'editing src/' : s.status === 'done' ? 'revision 12' : 'waiting for input',
+    lastAction: stopped ? 'stopped by kill switch' : s.status === 'working' ? 'editing src/' : s.status === 'done' ? 'revision 12' : 'waiting for input',
     lastRevision: Math.round(30 + jitter() * 80),
     latencyMs: s.latencyMs === null ? null : Math.max(120, Math.round(s.latencyMs + (jitter() - 0.5) * 14)),
-    failureReason: s.status === 'failed' ? (s.failureReason ?? 'stuck') : null,
+    failureReason: stopped ? 'kill_switch' : s.status === 'failed' ? (s.failureReason ?? 'stuck') : null,
     goal: s.goal,
     definitionOfDone: s.definitionOfDone,
     iterations: s.iterations,
@@ -170,7 +177,8 @@ export function toSnapshot(name: DemoName, eps: number, jitterSeed: number): Sna
     wallClockDeadline: s.wallClockMinFromNow != null ? now + s.wallClockMinFromNow * 60 * 1000 : undefined,
     lastSupervisorAction: s.lastSupervisorAction,
     model: s.model,
-  }));
+    };
+  });
   const counts = new Map<string, { working: number; idle: number; failed: number; done: number }>();
   for (const s of sessions) {
     const c = counts.get(s.sup) ?? { working: 0, idle: 0, failed: 0, done: 0 };
@@ -179,7 +187,7 @@ export function toSnapshot(name: DemoName, eps: number, jitterSeed: number): Sna
   }
   const supervisors: Supervisor[] = seed.supervisors.map((sv) => {
     const c = counts.get(sv.id) ?? { working: 0, idle: 0, failed: 0, done: 0 };
-    return { id: sv.id, status: sv.status, paused: sv.paused ?? pausedSupervisors.has(sv.id), ...c };
+    return { id: sv.id, status: killedAll ? 'failed' as Status : sv.status, paused: sv.paused ?? pausedSupervisors.has(sv.id), ...c };
   });
   const decisions: Decision[] = withAges(seed.decisions, now).sort((a, b) => b.at - a.at);
   const escalations: Escalation[] = withAges(seed.escalations, now).sort((a, b) => b.at - a.at);
@@ -187,10 +195,10 @@ export function toSnapshot(name: DemoName, eps: number, jitterSeed: number): Sna
   return {
     version: 1,
     generatedAt: now,
-    orchestrator: { id: 'ORCH', status: seed.orchestrator },
+    orchestrator: { id: 'ORCH', status: killedAll ? 'failed' as Status : seed.orchestrator },
     supervisors,
     sessions,
-    eps,
+    eps: killedAll ? 0 : eps,
     conflicts: [],
     attribution: [
       { session: 'S1-OC01', file: 'src/auth.rs' },
@@ -251,9 +259,17 @@ export async function installDemo({ onSnapshot }: { onSnapshot: (s: Snapshot) =>
       case 'message': return { ok: true, messageId: `msg_demo_${tick}` };
       case 'pause_supervisor': pausedSupervisors.add(a.id); return { ok: true };
       case 'resume_supervisor': pausedSupervisors.delete(a.id); return { ok: true };
-      case 'kill_switch':
-      case 'cleanup':
+      case 'kill_switch': {
+        killedAll = true;
+        const killed = SEEDS[name].sessions.length;
+        onSnapshot(toSnapshot(name, 0, tick));
+        return { ok: true, killed };
+      }
       case 'kill':
+        killedIds.add(a.id);
+        onSnapshot(toSnapshot(name, eps, tick));
+        return { ok: true };
+      case 'cleanup':
       case 'reprompt':
         return { ok: true };
       case 'list_models':
