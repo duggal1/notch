@@ -266,6 +266,26 @@ pub fn create(
     Ok(Some(wt))
 }
 
+/// Why `create` returned no worktree, for an honest loud warning. A freshly
+/// `git init`-ed cwd IS a repository but has no commit to branch from — do not
+/// misreport it as "not a git repository".
+pub fn fallback_reason(repo: &Path) -> &'static str {
+    let Ok(repo) = std::fs::canonicalize(repo) else {
+        return "cannot be resolved";
+    };
+    let inside = git_text(&["rev-parse", "--is-inside-work-tree"], Some(&repo)).unwrap_or_default();
+    if inside != "true" {
+        return "is not a git repository";
+    }
+    if git_text(&["rev-parse", "HEAD"], Some(&repo))
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return "is a git repository but has no HEAD commit to branch a worktree from";
+    }
+    "cannot host a per-session worktree"
+}
+
 /// Install `snapshot` as the daemon-wide WIP hook used before any pane close.
 /// Idempotent (`register_snapshot_hook` is a `OnceLock`). A2 should call this
 /// from `Daemon::open` so restart-recovered sessions are covered too.

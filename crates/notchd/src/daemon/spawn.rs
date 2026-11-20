@@ -98,8 +98,10 @@ pub(crate) fn spawn_detached(
             session.base_rev = Some(wt.base_rev.clone());
         }
         Ok(None) => warnings.push(format!(
-            "{}: cwd `{}` is not a git repository; per-session worktree disabled — attribution falls back to the shared-cwd heuristic",
-            session.id, session.cwd
+            "{}: cwd `{}` {}; per-session worktree disabled — attribution falls back to the shared-cwd heuristic",
+            session.id,
+            session.cwd,
+            crate::worktree::fallback_reason(Path::new(&session.cwd))
         )),
         Err(e) => warnings.push(format!(
             "{}: worktree setup failed ({e}); spawning in `{}` with shared-cwd heuristic",

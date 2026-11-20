@@ -632,6 +632,48 @@ fn non_git_spawn_warns_loudly() {
 }
 
 // ---------------------------------------------------------------------------
+// 9b. An unborn HEAD is a git repo with no base commit, not a non-git cwd.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unborn_head_warns_about_missing_head_not_non_git() {
+    let root = tmp_root("unborn");
+    let repo = root.join("unborn");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_ok(&repo, &["init", "-q"]); // no commit => unborn HEAD
+
+    let cfg = test_config(&root);
+    std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
+    std::fs::create_dir_all(&cfg.state_dir).unwrap();
+    let capture = Arc::new(Capture::default());
+    let daemon = Daemon::open(
+        test_config(&root),
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
+    let ack = daemon.submit_task(
+        "unborn head".to_string(),
+        Some(repo.to_string_lossy().to_string()),
+        None, None, None, None,
+    );
+    assert!(ack.ok, "{:?}", ack.error);
+    capture.wait_done();
+    daemon.poll_once();
+    let warnings = daemon.snapshot().warnings;
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("no HEAD commit") && w.contains("worktree disabled")),
+        "unborn HEAD must be reported accurately: {warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("not a git repository")),
+        "a git repo with no HEAD must not be called non-git: {warnings:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 10. Real pane id must be in the snapshot BEFORE any poll (conformance).
 // ---------------------------------------------------------------------------
 
