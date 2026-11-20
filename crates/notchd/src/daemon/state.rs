@@ -245,9 +245,17 @@ pub(crate) fn load_state(path: &Path) -> StateFile {
         }
         Err(e) => {
             let mut state = StateFile::empty();
-            state
-                .warnings
-                .push(format!("state recovery failed: {e}; starting empty"));
+            if !warnings.is_empty() {
+                // Every candidate existed but failed to parse: surface the
+                // concrete per-file errors rather than a generic message.
+                state.warnings.extend(warnings);
+            } else if durable::read_candidates(path).iter().any(|p| p.exists()) {
+                // A file existed but could not be read at all.
+                state
+                    .warnings
+                    .push(format!("state recovery failed: {e}; starting empty"));
+            }
+            // No live file and no backups: a genuine fresh start. No warning.
             state
         }
     }
