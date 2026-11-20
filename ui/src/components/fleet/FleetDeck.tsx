@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../../lib/bridge';
 import { send } from '../../lib/bridge';
 import {
-  loadFleet, registerFleetEvents, sendFleet,
+  loadFleet, registerFleetEvents, sendFleet, EMPTY_FLEET_STATE,
   type FleetData, type FleetUnit,
 } from '../../lib/fleet-wiring';
 import { DitherField } from '../pixel/DitherField';
@@ -16,23 +16,17 @@ import {
 
 export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; onClose: () => void }) {
   const [data, setData] = useState<FleetData>(() => ({
-    state: {
-      source: 'snapshot-projection', generatedAt: 0, topStatus: 'idle', units: [],
-      groups: { working: 0, idle: 0, stopped: 0, done: 0 },
-      storm: { holds: 0, guard: 'open', starts: 0 },
-      ledger: { seq: 0, fence: '0000000000000000', epoch: 1, decisions: 0, messages: 0 },
-    },
-    approvals: [], harnesses: [],
+    state: EMPTY_FLEET_STATE, approvals: [], harnesses: [],
   }));
   const [stageIndex, setStageIndex] = useState(0);
   const deckRef = useRef<HTMLDivElement>(null);
 
-  // Projections from the same snapshot; real command payloads overlay in app mode.
+  // One load from the backend view; live `fleet` events take it from here.
   useEffect(() => {
     let alive = true;
-    loadFleet(snapshot).then((next) => { if (alive) setData(next); });
+    loadFleet().then((next) => { if (alive) setData(next); });
     return () => { alive = false; };
-  }, [snapshot]);
+  }, []);
 
   useEffect(() => registerFleetEvents((state) => {
     setData((prev) => ({ ...prev, state }));

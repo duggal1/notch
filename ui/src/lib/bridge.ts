@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Status } from './tokens';
-import { connectWs, credentialsFromQuery, buildWsUrl, FLEET_EVENT, type WsCredentials } from './ws-transport';
+import { connectWs, credentialsFromQuery, buildWsUrl, FLEET_EVENT, FLEET_STATE_EVENT, type WsCredentials } from './ws-transport';
 
 export interface Session {
   id: string;
@@ -167,6 +167,14 @@ function emitFleet(s: Snapshot, onSnapshot: (s: Snapshot) => void, onFleet?: (s:
   } catch { /* non-DOM test host: the callbacks above still fire */ }
 }
 
+/** WS `fleet` frames carry the backend fleet view verbatim (never a Snapshot). */
+function dispatchFleetState(fleet: unknown) {
+  try {
+    (window as unknown as { dispatchEvent?: (e: Event) => void }).dispatchEvent?.(
+      new CustomEvent(FLEET_STATE_EVENT, { detail: fleet }));
+  } catch { /* non-DOM test host: the Tauri path still delivers */ }
+}
+
 /**
  * THE transport switch (one place). Tauri keeps `listen('snapshot')` primary and adds
  * WS only when the bridge supplies the state-dir token. Browser uses WS with `?token=`
@@ -183,13 +191,13 @@ export async function subscribe({ onSnapshot, onFleet }: Handlers): Promise<() =
     invoke<Snapshot>('snapshot').then((s) => { if (s) deliver(s); }).catch(() => undefined);
     disposers.push(() => un());
     const creds = bridgeCredentials();
-    if (creds) disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
+    if (creds) disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver, onFleetState: dispatchFleetState }));
     return () => { for (const d of disposers) d(); };
   }
 
   const creds = credentialsFromQuery();
   if (creds) {
-    disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
+    disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver, onFleetState: dispatchFleetState }));
     return () => { for (const d of disposers) d(); };
   }
   // No WS credential and no Tauri: nothing to subscribe to. The UI keeps its
