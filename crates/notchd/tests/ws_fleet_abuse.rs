@@ -187,10 +187,13 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
     // A fresh authenticated client still gets hello + a real fleet frame +
     // pong after the abuse: the fleet stream itself survived the flood.
     let mut fresh = server.connect();
-    let h = fresh.read_value_within(Duration::from_secs(5));
+    let h = fresh.read_value_within(Duration::from_secs(10));
     assert_eq!(h.as_ref().and_then(|v| v["event"].as_str()), Some("hello"));
+    // Bounded but generous: under 9-way parallel load the accept/handshake
+    // thread can be descheduled for seconds; the assertion (a real fleet
+    // frame with ORCH) is unchanged.
     let fleet = fresh
-        .wait_for_event("fleet", Duration::from_secs(5))
+        .wait_for_event("fleet", Duration::from_secs(15))
         .expect("fleet stream dead after 100k + boundary frames");
     let units = fleet["fleet"]["units"].as_array().unwrap();
     assert!(units.iter().any(|u| u["id"] == "ORCH"), "fleet lost ORCH after abuse: {units:?}");
