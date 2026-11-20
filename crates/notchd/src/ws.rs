@@ -73,7 +73,8 @@
 //! Handshake auth (3.7): any `Origin` is rejected, `Authorization: Bearer` is
 //! required and compared in constant time, and `Host` must be the bound
 //! `127.0.0.1:<port>`. No external network, no TLS. The endpoint stays UNWIRED
-//! until `NOTCH_WS=1`; no `cli.rs` call site starts it.
+//! until `NOTCH_WS=1`; the `notchd serve` path in `cli.rs` starts it when that
+//! flag is set (see the `ws_cli_wiring` test).
 //!
 //! # Browser-compatible opt-in (`NOTCH_WS_BROWSER=1`)
 //!
