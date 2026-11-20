@@ -34,7 +34,7 @@ fn real_threads_allocate_12800_ids_with_no_duplicates_or_loss() {
     let path = dir.join("registry.json");
 
     // The real SV-1 allocation path, persisted to the real file.
-    let sv1 = allocate_supervisor_at(&path);
+    let sv1 = allocate_supervisor_at(&path).expect("SV-1 allocation must persist");
     assert_eq!(sv1, "SV-1", "first supervisor must be SV-1");
 
     let collected: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -48,7 +48,7 @@ fn real_threads_allocate_12800_ids_with_no_duplicates_or_loss() {
         handles.push(std::thread::spawn(move || {
             let mut local = Vec::with_capacity(per_thread);
             for _ in 0..per_thread {
-                local.push(allocate_session_at(&p, 1));
+                local.push(allocate_session_at(&p, 1).expect("allocation must persist"));
             }
             let mut guard = set.lock().unwrap();
             for id in local {
