@@ -61,7 +61,12 @@ fn real_threads_allocate_12800_ids_with_no_duplicates_or_loss() {
     }
 
     let ids = collected.lock().unwrap();
-    assert_eq!(ids.len(), TOTAL, "expected {TOTAL} unique ids, got {}", ids.len());
+    assert_eq!(
+        ids.len(),
+        TOTAL,
+        "expected {TOTAL} unique ids, got {}",
+        ids.len()
+    );
 
     // Reload from disk: no allocation may have been lost to a stale clone or a
     // torn/lost write, and the registry must not have silently reset to SV-1.
@@ -80,7 +85,10 @@ fn real_threads_allocate_12800_ids_with_no_duplicates_or_loss() {
         TOTAL + 1
     );
     for id in ids.iter() {
-        assert!(persisted_ids.contains(id.as_str()), "id not persisted: {id}");
+        assert!(
+            persisted_ids.contains(id.as_str()),
+            "id not persisted: {id}"
+        );
     }
     println!(
         "A7 ID storm: {TOTAL} ids across {THREADS} real threads, {} persisted, 0 duplicates",
@@ -118,11 +126,19 @@ fn ledger_8mib_window_drops_old_lines_and_torn_tail_is_skipped() {
 
     let lines = read_lines(&path).expect("read real ledger file");
     let targets: Vec<&str> = lines.iter().map(|l| l.target.as_str()).collect();
-    assert!(!targets.contains(&"OLD"), "line older than the 8 MiB window re-entered replay");
-    assert!(targets.contains(&"NEW"), "newest line must be inside the window");
+    assert!(
+        !targets.contains(&"OLD"),
+        "line older than the 8 MiB window re-entered replay"
+    );
+    assert!(
+        targets.contains(&"NEW"),
+        "newest line must be inside the window"
+    );
     assert!(!targets.contains(&"TORN"), "torn last line must be skipped");
     assert!(
-        lines.iter().all(|l| l.target == "filler" || l.target == "NEW"),
+        lines
+            .iter()
+            .all(|l| l.target == "filler" || l.target == "NEW"),
         "unexpected line survived the window"
     );
     println!(

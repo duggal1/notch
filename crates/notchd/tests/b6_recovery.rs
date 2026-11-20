@@ -129,7 +129,9 @@ fn serve_refuses_to_boot_on_unrecoverable_state() {
     );
     let combined = format!("{stderr_text}{stdout_text}");
     assert!(
-        combined.contains("state") || combined.contains("unrecoverable") || combined.contains("open daemon"),
+        combined.contains("state")
+            || combined.contains("unrecoverable")
+            || combined.contains("open daemon"),
         "boot failure must carry a clear message, got: {combined}"
     );
 
