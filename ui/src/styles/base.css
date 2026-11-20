@@ -1,6 +1,7 @@
-/* base.css — v2 tokens, type, cursor law, shared primitives.
-   FUCHSIA / PIXEL. Square pixels. Hard edges. Zero radius, zero blur, zero shadow.
-   The five-stop ramp is the whole brand: #2A0A33 → #701A75 → #A21CAF → #D946EF → #F5D0FE. */
+/* base.css — v3 tokens, type, cursor law, shared primitives.
+   FUCHSIA / PIXEL. The texture is hard-edged square pixels. The chrome is soft, continuous,
+   pill and large-radius. Dither lives on gradients, headers, empty states, accents and the mark —
+   never on a border, never behind a text area. */
 
 :root {
   /* grounds */
@@ -16,7 +17,7 @@
   --f4: #D946EF;
   --f5: #F5D0FE;
 
-  /* rules */
+  /* hairlines — crisp, never dithered */
   --line: #2A0A33;
   --line-2: #4A1157;
   --line-3: #701A75;
@@ -24,8 +25,8 @@
   /* text */
   --t1: #FFFFFF;
   --t2: rgba(245, 208, 254, .76);
-  --t3: rgba(245, 208, 254, .48);
-  --t4: rgba(245, 208, 254, .27);
+  --t3: rgba(245, 208, 254, .56);
+  --t4: rgba(245, 208, 254, .32);
   --ink: #000000;
 
   /* legacy aliases — every call site resolves to the ramp */
@@ -37,19 +38,38 @@
   --red: var(--f5);
   --pink: var(--f5);
 
+  /* radii — continuous, large, pill. Nothing here is 0. */
+  --r-xs: 8px;
+  --r-s: 12px;
+  --r-m: 16px;
+  --r-l: 22px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* motion — eased or spring, never linear */
   --ease: cubic-bezier(.16, 1, .3, 1);
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
   --snap: cubic-bezier(.2, .9, .1, 1);
-  --step: steps(4, end);
-  --font: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  --release: cubic-bezier(.34, 1.56, .64, 1);
+  --step: steps(4, end); /* dither wipe only */
+
+  /* type */
+  --font: 'Inter Variable', 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* focus */
+  --ring: 0 0 0 2px var(--void), 0 0 0 4px var(--f4);
+  --ring-ink: 0 0 0 2px var(--f5);
 }
 
 html, body {
   margin: 0; height: 100%; overflow: hidden; background: transparent;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility; font-synthesis: none; font-optical-sizing: auto;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
 }
 body {
-  font: 450 13px/1.35 var(--font); letter-spacing: -.004em; color: var(--t1);
+  font: 400 13px/1.45 var(--font); letter-spacing: -.01em; color: var(--t1);
   cursor: default; -webkit-user-select: none; user-select: none;
 }
 button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
@@ -59,29 +79,33 @@ button, [role='button'], [role='tab'], [role='row'], [role='option'], select, su
 button:disabled { cursor: default; }
 input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 
-/* ---------- type: one family, three voices ----------
-   display = the thing you are looking at · label = the machine's voice (caps, tracked, tiny)
-   body = what you read · num = anything that ticks */
+/* ---------- type: two families, five sizes ----------
+   display = the thing you are looking at · label = the machine's voice (mono, sentence case, tiny)
+   body = what you read · num = anything that ticks.
+   Sizes: 88 / 40 / 20 / 13 / 10.5 mono. Tracking is tied to size. No caps anywhere. */
 .label {
-  font: 600 9px/1 var(--font); letter-spacing: .16em; text-transform: uppercase;
+  font: 500 10.5px/1 var(--mono); letter-spacing: .08em;
   color: var(--t3); font-variant-numeric: tabular-nums;
 }
 .label--hot { color: var(--f4); }
 .label--pale { color: var(--f5); }
 .dim { color: var(--t3); }
-.num { font-variant-numeric: tabular-nums; }
-.num-xl { font: 500 64px/.86 var(--font); letter-spacing: -.055em; font-variant-numeric: tabular-nums; }
-.title { font: 500 15px/1.2 var(--font); letter-spacing: -.015em; }
-.display { font: 500 26px/1.02 var(--font); letter-spacing: -.04em; }
-.mono { font-family: var(--font); font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1, 'zero' 1; }
+.num-xl { font: 500 88px/.86 var(--font); letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
+.num-l { font: 500 40px/.92 var(--font); letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+.title { font: 500 20px/1.15 var(--font); letter-spacing: -.02em; }
+.display { font: 500 40px/1.02 var(--font); letter-spacing: -.035em; }
+.body { font: 400 13px/1.45 var(--font); letter-spacing: -.01em; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; letter-spacing: .04em; }
 
 /* ---------- texture primitives ---------- */
 .dither-field { display: block; width: 100%; height: 100%; image-rendering: pixelated; pointer-events: none; }
 .pixel-sphere { display: block; image-rendering: pixelated; pointer-events: none; }
 .pixel-wordmark { display: block; color: var(--f5); }
+.brand-logo { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
 
-.pixel-meter { display: flex; gap: 2px; align-items: stretch; height: 6px; }
-.pm-cell { flex: 1; min-width: 1px; background: var(--f1); }
+.pixel-meter { display: flex; gap: 3px; align-items: stretch; height: 6px; }
+.pm-cell { flex: 1; min-width: 1px; background: var(--f1); border-radius: var(--r-pill); }
 .pm-cell--on { background: var(--f4); }
 .pixel-meter--pale .pm-cell--on { background: var(--f5); }
 .pixel-meter--dim .pm-cell { background: rgba(245, 208, 254, .1); }
@@ -89,15 +113,6 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 /* the lit run carries a checkerboard so the bar itself is dithered */
 .pixel-meter--hot .pm-cell--on:nth-child(2n) { background: var(--f3); }
 .pixel-meter--pale .pm-cell--on:nth-child(2n) { background: var(--f4); }
-
-/* hard 1px corner ticks — the only ornament */
-.ticks { position: relative; }
-.ticks::before, .ticks::after {
-  content: ''; position: absolute; width: 5px; height: 5px; pointer-events: none;
-  border-color: var(--f3); border-style: solid;
-}
-.ticks::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
-.ticks::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
 
 /* ---------- shell ---------- */
 .shell {
@@ -109,8 +124,8 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 .shell:focus-visible { outline: 2px solid var(--f4); outline-offset: -2px; }
 
 .list-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--f2) transparent; }
-.list-scroll::-webkit-scrollbar { width: 4px; }
-.list-scroll::-webkit-scrollbar-thumb { background: var(--f2); border-radius: 0; }
+.list-scroll::-webkit-scrollbar { width: 6px; }
+.list-scroll::-webkit-scrollbar-thumb { background: var(--f2); border-radius: var(--r-pill); }
 .list-scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* SF Symbols, rasterised by the host; mask + currentColor = free hover flip */
@@ -122,27 +137,48 @@ body.dev-stage { background: #000; }
 body.dev-stage::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 28px; background: #000; border-bottom: 1px solid var(--line); }
 body.dev-stage[data-surface='dashboard']::before { display: none; }
 
-/* ---------- rows: flat hard card → fuchsia wipe from the pointer entry point ---------- */
-.item {
-  position: relative; isolation: isolate; border-radius: 0; color: var(--t1); background: var(--panel);
-  border: 1px solid var(--line); --hx: 50%; --hy: 50%; outline: none; user-select: none;
-  transition: color 90ms var(--ease), border-color 90ms var(--ease), background-color 90ms var(--ease);
+/* ---------- press law: every control dips to .96 and lets go on a spring ---------- */
+button, [role='button'], .item, .rail-item, .ctl, .esc-btn, .text-btn, .mux-card, .comms-row {
+  transition: transform 240ms var(--release), background-color 180ms var(--ease),
+    border-color 180ms var(--ease), color 180ms var(--ease), box-shadow 180ms var(--ease);
 }
-.card .item { background: var(--panel-2); }
+button:active:not(:disabled), [role='button']:active, .item:active {
+  transform: scale(.96);
+  transition: transform 90ms var(--ease);
+}
+
+/* click pulse — one expanding ring from the centre, currentColor, gone in 460ms */
+.ripple { position: relative; overflow: hidden; isolation: isolate; }
+.ripple::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 160%; aspect-ratio: 1;
+  border-radius: 50%; background: currentColor; opacity: 0; pointer-events: none;
+  transform: translate(-50%, -50%) scale(0); z-index: -1;
+}
+.ripple:active::after { animation: ripple-pulse 460ms var(--ease) both; }
+@keyframes ripple-pulse {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: .2; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+}
+
+/* ---------- rows: a soft card that wipes to hot fuchsia from the pointer entry point ---------- */
+.item {
+  position: relative; isolation: isolate; border-radius: var(--r-m); color: var(--t1);
+  background: var(--panel); border: 1px solid var(--line); --hx: 50%; --hy: 50%; outline: none; user-select: none;
+}
 .item::before {
   content: ''; position: absolute; inset: 0; z-index: -1; background: var(--f4);
-  clip-path: inset(0 100% 0 0); transition: clip-path 200ms var(--step);
+  border-radius: inherit; clip-path: inset(0 100% 0 0); transition: clip-path 220ms var(--step);
 }
+.item:hover:not([data-hot]) { border-color: var(--line-3); background: var(--panel-2); }
 .item[data-hot] { color: var(--ink); border-color: var(--f4); background: transparent; }
 .item[data-hot]::before { clip-path: inset(0 0 0 0); }
 .item[data-hot] .label, .item[data-hot] .dim { color: rgba(0, 0, 0, .62); }
-.item:active { transform: translate(1px, 1px); }
-.item:focus-visible { outline: 2px solid var(--f4); outline-offset: -2px; }
-.item--row { height: 44px; }
-.item--row-tall { height: 58px; }
+.item:focus-visible { box-shadow: var(--ring); }
+.item--row { height: 46px; }
+.item--row-tall { height: 62px; }
 
-/* status squares — 8px, no radius, no glow */
-.dot { width: 8px; height: 8px; border-radius: 0; flex: 0 0 8px; transition: background-color 90ms var(--ease); }
+/* status squares — 8px, square, no glow. This is a pixel glyph, not chrome. */
+.dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 8px; transition: background-color 180ms var(--ease); }
 .dot--working { background: var(--f4); box-shadow: inset 0 0 0 1px var(--f5); }
 .dot--idle { background: var(--f2); }
 .dot--failed { background: var(--f5); animation: dot-failed 1.4s steps(2, end) infinite; }
@@ -153,22 +189,33 @@ body.dev-stage[data-surface='dashboard']::before { display: none; }
 @keyframes dot-failed { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 
 .act {
-  display: grid; place-items: center; padding: 6px; border: 1px solid transparent; border-radius: 0; background: none; color: inherit;
+  display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--r-pill); background: none; color: inherit;
   opacity: 0; transform: translateX(4px); visibility: hidden;
-  transition: opacity 90ms var(--ease), transform 140ms var(--ease), background-color 90ms, visibility 0s 140ms;
+  transition: opacity 160ms var(--ease), transform 220ms var(--ease), background-color 160ms var(--ease), visibility 0s 220ms;
 }
-.act:hover { background: rgba(0, 0, 0, .12); border-color: rgba(0, 0, 0, .3); }
-.act:active { transform: translate(1px, 1px); }
-.act:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.act:hover { background: rgba(0, 0, 0, .14); border-color: rgba(0, 0, 0, .3); }
+.act:focus-visible { box-shadow: 0 0 0 2px var(--ink); }
 .item[data-hot] .act { opacity: 1; transform: none; visibility: visible; transition-delay: 0ms; }
-.item[data-hot] .act:nth-child(2) { transition-delay: 20ms; }
-.item[data-hot] .act:nth-child(3) { transition-delay: 40ms; }
-.item[data-hot] .act:nth-child(4) { transition-delay: 60ms; }
-.item [data-elapsed], .item [data-rest] { transition: opacity 90ms var(--ease); }
+.item[data-hot] .act:nth-child(2) { transition-delay: 24ms; }
+.item[data-hot] .act:nth-child(3) { transition-delay: 48ms; }
+.item[data-hot] .act:nth-child(4) { transition-delay: 72ms; }
+.item [data-elapsed], .item [data-rest] { transition: opacity 160ms var(--ease); }
 .item[data-hot] [data-rest], .item[data-hot] [data-elapsed] { opacity: 0 !important; }
 .act--reprompt[data-emphasis] { border-color: var(--f5); }
 .item[data-hot] .act--reprompt[data-emphasis] { border-color: rgba(0, 0, 0, .5); background: rgba(0, 0, 0, .1); }
 
+/* ---------- entrance stagger: anything that arrives does so once, on an ease ---------- */
+.enter { animation: enter-rise 380ms var(--ease) both; }
+.enter-1 { animation-delay: 30ms; }
+.enter-2 { animation-delay: 60ms; }
+.enter-3 { animation-delay: 90ms; }
+.enter-4 { animation-delay: 120ms; }
+@keyframes enter-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 60ms !important; animation: none !important; }
+  *, *::before, *::after {
+    transition-duration: 60ms !important; animation-duration: 60ms !important; animation-iteration-count: 1 !important;
+  }
+  button:active:not(:disabled), [role='button']:active, .item:active { transform: none; }
 }
