@@ -1,23 +1,29 @@
 @import "tailwindcss";
 
-/* One family. mono and serif are aliased to the sans so nothing can ever render in another face. */
+/* One family. mono and serif are aliased to the sans so nothing can ever render in another face.
+   v2: fuchsia ramp, zero radius. Tailwind utilities inherit these. */
 @theme {
   --font-sans: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
   --font-serif: 'Instrument Sans Variable', 'Instrument Sans', system-ui, -apple-system, sans-serif;
 
   --color-void: #000000;
-  --color-ground: #030304;
-  --color-card: #09090b;
-  --color-ink: #0a0a0c;
-  --color-lilac: #dcd5fa;
-  --color-red: #ff5a70;
-  --color-pink: #ffb3c1;
+  --color-ground: #0B0210;
+  --color-card: #12041A;
+  --color-ink: #000000;
+  --color-f1: #2A0A33;
+  --color-f2: #701A75;
+  --color-f3: #A21CAF;
+  --color-f4: #D946EF;
+  --color-f5: #F5D0FE;
+  --color-lilac: #F5D0FE;
+  --color-red: #D946EF;
+  --color-pink: #F5D0FE;
 
-  --radius-s: 8px;
-  --radius-m: 14px;
-  --radius-l: 22px;
-  --radius-xl: 36px;
+  --radius-s: 0px;
+  --radius-m: 0px;
+  --radius-l: 0px;
+  --radius-xl: 0px;
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }

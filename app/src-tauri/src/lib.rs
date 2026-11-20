@@ -15,7 +15,8 @@ pub mod trayfmt;
 use std::sync::Arc;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::{LogicalPosition, LogicalSize, WebviewUrl};
+use tauri::{LogicalPosition, LogicalSize, TitleBarStyle, WebviewUrl};
+use tauri::window::Color;
 
 use notchd::{Config, Daemon, Herdr, SystemClock};
 
@@ -181,6 +182,10 @@ pub fn run() -> Result<(), String> {
             )
             .position(dash.x, dash.y)
             .decorations(true)
+            // The native bar is overlaid, not removed — this window's header IS the top edge.
+            .title_bar_style(TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .background_color(Color(0, 0, 0, 255))
             .resizable(true)
             .always_on_top(false)
             .skip_taskbar(false)

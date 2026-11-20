@@ -1,5 +1,5 @@
 // Panel.tsx — header strip (status only, no logo) · state · supervisors · sessions · latency · footer.
-import { useEffect, useState, type CSSProperties, type MutableRefObject, type Ref } from 'react';
+import { useEffect, useState, type MutableRefObject, type Ref } from 'react';
 import { DistortionWave, type DistortionWaveHandle, type PaletteName } from '../vendor/distortion-waves/src';
 import { NumberRoll } from './NumberRoll';
 import { HeartbeatField } from './HeartbeatField';
@@ -9,6 +9,10 @@ import { TreeList } from './TreeList';
 import { EmptyState } from './EmptyState';
 import { FocusIcon, TrashIcon } from './Icons';
 import { Sym } from './Symbol';
+import { PixelWordmark } from './pixel/PixelWordmark';
+import { PixelMeter } from './pixel/PixelMeter';
+import { PixelSphere } from './pixel/PixelSphere';
+import { DitherField } from './pixel/DitherField';
 import type { Session, Supervisor, Decision, Escalation } from '../lib/bridge';
 import { pad2 } from '../lib/format';
 import type { Status } from '../lib/tokens';
@@ -57,9 +61,12 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
   return (
     <div className="panel">
       <header className="p-head">
-        <span className="p-status">
-          <i className={`live-dot live-dot--${top}`} />
-          <span>{cap(top)}</span>
+        <span className="p-brand">
+          <PixelWordmark scale={1.5} />
+          <span className="p-status">
+            <i className={`live-dot live-dot--${top}`} />
+            <span>{cap(top)}</span>
+          </span>
         </span>
         <span className="p-head-right">
           {escCount > 0 && (
@@ -73,6 +80,7 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
             <span className="p-eps-unit">ev/s</span>
           </span>
         </span>
+        <DitherField className="p-head-rule" mode="linear" angle={90} cell={2} floor={0.4} />
       </header>
 
       {/* state: the wave passes across both cards when the top status flips */}
@@ -80,26 +88,29 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
         ref={waveRef}
         type="center"
         palette={WAVE_PAL[top]}
-        cornerRadius={22}
+        cornerRadius={0}
         prewarm={false}
-        style={{ height: 172, flex: 'none', borderRadius: 22 }}
+        style={{ height: 168, flex: 'none' }}
       >
         <div className="state">
           <div className="card state-num">
-            <NumberRoll value={wcount} format={(n) => pad2(Math.round(n))} className="num-xl" />
-            <span className="label">In flight</span>
+            <PixelSphere size={40} cell={2} live={open} className="state-num-mark" />
+            <div className="state-num-read">
+              <NumberRoll value={wcount} format={(n) => pad2(Math.round(n))} className="num-xl" />
+              <span className="label">In flight</span>
+            </div>
           </div>
           <div className="card state-signal">
             <div className="row-between">
               <span className="label">Events / sec</span>
-              <span className="label num">{eps.toFixed(1)}</span>
+              <span className="label label--pale num">{eps.toFixed(1)}</span>
             </div>
             <HeartbeatField epsRef={epsRef} active={open} />
             <div className="row-between">
               <span className="label">Load</span>
               <span className="label num">{Math.round(load * 100)}%</span>
             </div>
-            <div className="load-track"><div className="load-fill" style={{ '--lvl': load } as CSSProperties} /></div>
+            <PixelMeter value={load} cells={22} tone="hot" label="Load" />
           </div>
         </div>
       </DistortionWave>

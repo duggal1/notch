@@ -101,9 +101,12 @@ for (const demo of DEMOS) {
     await p0.waitForTimeout(300);
   }
   if (demo === 'empty') {
-    await p0.locator('.cli-hint').click();
-    await p0.waitForTimeout(250);
-    await shot('chip-click-empty');
+    const hint = p0.locator('.cli-hint');
+    if (await hint.count()) {
+      await hint.click();
+      await p0.waitForTimeout(250);
+      await shot('chip-click-empty');
+    }
   }
 
   // park pointer away so the next demo starts clean
@@ -166,9 +169,9 @@ for (const d of [
   { name: 'dashboard-empty', demo: 'empty', tab: null, click: null },
   { name: 'dashboard-tree-mixed', demo: 'mixed', tab: null, click: null },
   { name: 'dashboard-tree-flipped', demo: 'mixed', tab: null, click: '.sup-row[data-sv="SV-1"]' },
-  { name: 'dashboard-multiplexer', demo: 'mixed', tab: 'Multiplexer', click: null },
+  { name: 'dashboard-multiplexer', demo: 'mixed', tab: 'Mux', click: null },
   { name: 'dashboard-comms', demo: 'mixed', tab: 'Comms', click: null },
-  { name: 'dashboard-escalations', demo: 'mixed', tab: 'Escalations', click: null },
+  { name: 'dashboard-escalations', demo: 'mixed', tab: 'Alarms', click: null },
 ]) {
   const c = await browser.newContext({ viewport: { width: 1120, height: 760 }, deviceScaleFactor: 2, reducedMotion: 'no-preference' });
   const p = await c.newPage();

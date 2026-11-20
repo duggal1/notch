@@ -1,51 +1,69 @@
-// tokens.ts — DESIGN.md §3, single source of truth. CSS variables in tokens.css are generated from this.
+// tokens.ts — DESIGN.md §3, single source of truth. CSS variables in base.css mirror this.
+// v2 brand: fuchsia-purple, square pixels, hard edges. No blur. No shadow. No rounding.
 export const C = {
-  void: '#04051A', // behind everything
-  ink: '#0A0B1E', // text on white (hot state)
-  panel: '#171826', // darker card body (DESIGN.md v1.1) — flat, material host
-  core: '#14153A', // orb dark core
-  navy: '#0B0E3A',
-  indigo: '#3A33C8',
-  blue: '#4455EE', // electric mid
-  peri: '#8F93F5',
-  lilac: '#DCD5FA', // rim light
-  mist: '#EEEAFD',
-  violet: '#8B5CF6',
-  orchid: '#C58CF0',
+  void: '#000000', // the only ground
+  ink: '#000000', // text on a hot fill
+  panel: '#0B0210', // card body: near-black violet, never pure black on black
+  ground: '#12041A', // raised row / input well
+  line: '#2A0A33', // the 1px rule family
+  line2: '#4A1157', // stronger rule / hover
+  f1: '#2A0A33', // deepest fuchsia
+  f2: '#701A75', // dark fuchsia
+  f3: '#A21CAF', // mid fuchsia
+  f4: '#D946EF', // hot fuchsia — the action colour
+  f5: '#F5D0FE', // pale lilac — the reading colour
   white: '#FFFFFF',
-  red: '#FF4D6D',
-  pink: '#FFB3C1',
+  // aliases kept for call sites that predate v2
+  lilac: '#F5D0FE',
+  peri: '#D946EF',
+  blue: '#A21CAF',
+  red: '#D946EF',
+  pink: '#F5D0FE',
+  core: '#2A0A33',
+  navy: '#12041A',
+  indigo: '#701A75',
+  violet: '#A21CAF',
+  orchid: '#D946EF',
+  mist: '#F5D0FE',
 } as const;
 
-export const R = { s: 8, m: 16, l: 28, xl: 36, pill: 999 } as const;
+/** Radii are zero. The scale exists only so nothing can smuggle a curve back in. */
+export const R = { s: 0, m: 0, l: 0, xl: 0, pill: 0 } as const;
 export const S = (n: number) => n * 4;
 
 export type Status = 'working' | 'idle' | 'failed' | 'done';
 
-export interface GlowPreset { rim: string; mid: string; core: string; width: number; level: number }
-
-// width in CSS px, level 0..1. working = the reference look.
-export const GLOW: Record<Status, GlowPreset> = {
-  working: { rim: C.lilac, mid: C.blue, core: C.core, width: 34, level: 1.0 },
-  idle: { rim: '#3B3D66', mid: '#1C1D3A', core: '#101126', width: 16, level: 0.5 },
-  failed: { rim: C.pink, mid: C.red, core: '#1F0F1A', width: 30, level: 1.0 },
-  done: { rim: C.white, mid: C.lilac, core: '#23234A', width: 42, level: 1.0 },
+/** Status → ramp stop. Working is the hot one; idle is the dark one. */
+export const STATUS_COLOR: Record<Status, string> = {
+  working: C.f4,
+  idle: C.f2,
+  failed: C.f5,
+  done: C.f3,
 };
 
-// wave palettes: six stops, read round a loop
+export interface GlowPreset { rim: string; mid: string; core: string; width: number; level: number }
+
+// Legacy shape consumed by glow-orb; values are the v2 ramp.
+export const GLOW: Record<Status, GlowPreset> = {
+  working: { rim: C.f5, mid: C.f4, core: C.f2, width: 34, level: 1.0 },
+  idle: { rim: C.f2, mid: C.f1, core: C.void, width: 16, level: 0.5 },
+  failed: { rim: C.white, mid: C.f5, core: C.f2, width: 30, level: 1.0 },
+  done: { rim: C.f5, mid: C.f3, core: C.f2, width: 42, level: 1.0 },
+};
+
 export const PAL: Record<Exclude<Status, 'idle'>, string[]> = {
-  working: [C.violet, C.blue, C.peri, C.lilac, C.orchid, C.indigo],
-  failed: [C.red, C.pink, '#FF7A8A', C.red, '#FFD0D8', '#B3203F'],
-  done: [C.white, C.mist, C.lilac, C.white, '#C9C2F5', '#F6F4FF'],
+  working: [C.f2, C.f3, C.f4, C.f5, C.white, C.f4],
+  failed: [C.f5, C.white, C.f5, C.f4, C.white, C.f4],
+  done: [C.f3, C.f4, C.f5, C.f3, C.f4, C.f5],
 };
 
 export const EASE = {
   out: 'cubic-bezier(.16, 1, .3, 1)', // expo-out: default for anything that arrives
   inOut: 'cubic-bezier(.65, 0, .35, 1)',
   snap: 'cubic-bezier(.2, .9, .1, 1)',
+  step: 'steps(4, end)', // pixel-quantised motion: no interpolation
 } as const;
 
-// motion/react spring equivalents (DESIGN.md SPRING: k / c)
 export const SPRING_REACT = {
   open: { stiffness: 380, damping: 34 },
   hover: { stiffness: 520, damping: 38 },
@@ -54,9 +72,8 @@ export const SPRING_REACT = {
 } as const;
 
 export const MS = { press: 80, hover: 140, wipe: 220, state: 320, open: 420 } as const;
-export const WAVE = { lean: 0.30, cross: 0.62, settle: 1.15 } as const; // seconds
+export const WAVE = { lean: 0.30, cross: 0.62, settle: 1.15 } as const;
 
-// zeta = c / (2 sqrt(k)) ≈ 0.79–0.87 → overshoot 0.4–1.7%
 export const SPRING = {
   open: { k: 380, c: 34 },
   hover: { k: 520, c: 38 },

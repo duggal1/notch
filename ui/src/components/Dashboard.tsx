@@ -1,25 +1,32 @@
-// Dashboard.tsx — the macOS window. No gray title bar: the native bar is overlaid and this header IS the top edge.
-// Cmd+1..4 tabs · arrows on the tablist · Cmd+K composer · two-step kill switch.
+// Dashboard.tsx — the macOS window. Rail (navigation) · top strip (live instruments) · view.
+// The dither is the brand: a 3px ordered-dither rule under the strip, dithered card crowns,
+// one halftone sphere in the empty states. Nothing is rounded, nothing glows.
+// Cmd+1..4 tabs · Up/Down on the rail · Cmd+K composer · two-step kill switch.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import { DistortionWave, type PaletteName } from '../vendor/distortion-waves/src';
 import { useSnapshot } from '../lib/use-snapshot';
 import { send, submitTask } from '../lib/bridge';
 import type { Supervisor } from '../lib/bridge';
+import { topStatus, normalizeEps, workingCount } from '../lib/format';
 import { TreeTab, type Selection } from './dashboard/TreeTab';
 import { MultiplexerTab } from './dashboard/MultiplexerTab';
 import { CommsTab } from './dashboard/CommsTab';
 import { EscalationsTab } from './dashboard/EscalationsTab';
-import { TrashIcon } from './Icons';
+import { AlertIcon, BubbleIcon, GridIcon, OrchestratorMark, TrashIcon } from './Icons';
 import { Sym } from './Symbol';
-import { SPRING_REACT } from '../lib/tokens';
 import { useWhiteHot } from '../lib/hot';
+import { PixelWordmark } from './pixel/PixelWordmark';
+import { PixelMeter } from './pixel/PixelMeter';
+import { DitherField } from './pixel/DitherField';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'tree', label: 'Tree' },
-  { id: 'multiplexer', label: 'Multiplexer' },
-  { id: 'comms', label: 'Comms' },
-  { id: 'escalations', label: 'Escalations' },
+
+const TABS: { id: Tab; label: string; title: string; Icon: typeof OrchestratorMark }[] = [
+  { id: 'tree', label: 'Tree', title: 'Control plane', Icon: OrchestratorMark },
+  { id: 'multiplexer', label: 'Mux', title: 'Session array', Icon: GridIcon },
+  { id: 'comms', label: 'Comms', title: 'The wire', Icon: BubbleIcon },
+  { id: 'escalations', label: 'Alarms', title: 'Alarms', Icon: AlertIcon },
 ];
 
 function readStorage<T>(key: string): T | null {
@@ -37,6 +44,8 @@ export function Dashboard() {
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
+  const [fired, setFired] = useState(false);
+  const [killBtn, setKillBtn] = useState<HTMLButtonElement | null>(null);
   const armTimer = useRef(0);
   const initialPicked = useRef(false);
   const dashRef = useRef<HTMLDivElement>(null);
@@ -45,6 +54,9 @@ export function Dashboard() {
   const sessions = snapshot?.sessions ?? [];
   const supervisors = snapshot?.supervisors ?? [];
   const escalations = snapshot?.escalations ?? [];
+  const top = topStatus(sessions);
+  const active = workingCount(sessions);
+  const load = normalizeEps(snapshot?.eps ?? 0);
 
   // target handoff from the popover: consume once
   useEffect(() => {
@@ -91,7 +103,7 @@ export function Dashboard() {
   }, [sessions]);
   const openHerdr = useCallback((id: string) => send({ cmd: 'focus', id }), []);
 
-  // kill switch: first click arms (2.6 s), second click fires
+  // kill switch: first click arms (2.6 s), second click fires the one-shot wave
   const killSwitch = useCallback(() => {
     if (!armed) {
       setArmed(true);
@@ -100,6 +112,7 @@ export function Dashboard() {
     }
     window.clearTimeout(armTimer.current);
     setArmed(false);
+    setFired(true);
     send({ cmd: 'kill_switch' });
   }, [armed]);
 
@@ -114,99 +127,165 @@ export function Dashboard() {
     return res.ok ? (res.sessionId ?? 'assigned') : null;
   }, []);
 
+  const view = TABS.find((t) => t.id === tab) ?? TABS[0]!;
+  const sub = snapshot
+    ? `${supervisors.length} supervisor${supervisors.length === 1 ? '' : 's'} · ${sessions.length} session${sessions.length === 1 ? '' : 's'} · ${snapshot.eps.toFixed(1)} ev/s`
+    : 'Connecting to notchd…';
+
   return (
     <MotionConfig reducedMotion="user">
       <div className="dash" ref={dashRef}>
-        <header className="dash-head" data-tauri-drag-region>
-          <div className="seg" role="tablist" aria-label="Dashboard tabs">
+        {/* ---------- rail ---------- */}
+        <nav className="rail" aria-label="Dashboard">
+          <div className="rail-mark"><PixelWordmark scale={2} /></div>
+          <div className="rail-nav" role="tablist" aria-label="Dashboard tabs" aria-orientation="vertical">
             {TABS.map((t) => {
-              const active = tab === t.id;
+              const isActive = tab === t.id;
               const isEsc = t.id === 'escalations' && escalations.length > 0;
               return (
                 <button
                   key={t.id}
                   role="tab"
-                  aria-selected={active}
-                  tabIndex={active ? 0 : -1}
-                  className={`seg-item${active ? ' is-active' : ''}`}
+                  aria-selected={isActive}
+                  tabIndex={isActive ? 0 : -1}
+                  className={`rail-item${isActive ? ' is-active' : ''}`}
                   onClick={() => switchTab(t.id)}
+                  title={t.label}
                   onKeyDown={(e) => {
                     const order = TABS.map((x) => x.id);
                     const i = order.indexOf(tab);
-                    if (e.key === 'ArrowRight') { e.preventDefault(); switchTab(order[(i + 1) % order.length]!); }
-                    if (e.key === 'ArrowLeft') { e.preventDefault(); switchTab(order[(i - 1 + order.length) % order.length]!); }
+                    if (e.key === 'ArrowDown') { e.preventDefault(); switchTab(order[(i + 1) % order.length]!); }
+                    if (e.key === 'ArrowUp') { e.preventDefault(); switchTab(order[(i - 1 + order.length) % order.length]!); }
                   }}
                 >
-                  {active && <motion.span layoutId="seg-pill" className="seg-pill" transition={{ type: 'spring', ...SPRING_REACT.hover }} />}
-                  <span className="seg-label">{t.label}</span>
-                  {isEsc && (
-                    <span className="seg-badge" aria-label={`${escalations.length} unresolved`}>
-                      <i className="live-dot live-dot--failed" />{escalations.length}
-                    </span>
-                  )}
+                  <span className="rail-glyph"><t.Icon size={17} /></span>
+                  <span>{t.label}</span>
+                  {isEsc && <span className="rail-badge" aria-label={`${escalations.length} unresolved escalations`}>{escalations.length}</span>}
                 </button>
               );
             })}
           </div>
-          <div className="dash-spacer" data-tauri-drag-region />
-          <div className="dash-head-right">
-            <span className="dash-eps">{snapshot?.eps.toFixed(1) ?? '0.0'} ev/s</span>
-            <button className="killswitch" data-armed={armed ? '' : undefined} onClick={killSwitch}
-              title="Close every managed pane, mark all sessions failed, clean up">
-              <Sym name="trash" pt={14} fallback={TrashIcon} />
-              <span>{armed ? 'Click again to kill all' : 'Kill switch'}</span>
-            </button>
+          <div className="rail-foot">
+            <i className={`dot dot--${top}`} aria-hidden="true" />
+            <span className="rail-live">{top}</span>
+            <span className="rail-rate">{snapshot?.eps.toFixed(1) ?? '0.0'}</span>
           </div>
-        </header>
+        </nav>
 
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.main
-            key={tab}
-            className="dash-body"
-            role="tabpanel"
-            aria-label={`${TABS.find((t) => t.id === tab)?.label} tab`}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-          >
-            {tab === 'tree' && (
-              <TreeTab
-                snapshot={snapshot}
-                selection={selection}
-                onSelect={select}
-                onTogglePause={togglePause}
-                onKillSupervisor={killSupervisor}
-                onKillSession={killSession}
-                onOpenHerdr={openHerdr}
-                onFocusComposerRequest={() => setComposerFocusSignal((n) => n + 1)}
-                composerPrefill={composerPrefill}
-                composerFocusSignal={composerFocusSignal}
-                flashId={flashId}
-              />
-            )}
-            {tab === 'multiplexer' && <MultiplexerTab snapshot={snapshot} onJumpToTree={(id) => jumpToSession(id)} />}
-            {tab === 'comms' && (
-              <CommsTab snapshot={snapshot} onJumpToTree={(id) => {
-                const toFlash = sessions.find((s) => s.id === id)?.sup;
-                jumpToSession(id, toFlash ? id : undefined);
-              }} />
-            )}
-            {tab === 'escalations' && (
-              <EscalationsTab
-                snapshot={snapshot}
-                onRepromptFresh={(sessionId, goal) => {
-                  switchTab('tree');
-                  select({ kind: 'session', id: sessionId });
-                  setComposerPrefill({ text: `Fresh take on the goal: ${goal}`, at: Date.now() });
-                  setComposerFocusSignal((n) => n + 1);
-                }}
-                onReassign={onReassign}
-                onKill={killSession}
-              />
-            )}
-          </motion.main>
-        </AnimatePresence>
+        {/* ---------- stage ---------- */}
+        <div className="stage">
+          <header className="topbar" data-tauri-drag-region>
+            <div className="topbar-titles">
+              <div className="topbar-title">
+                <h1>{view.title}</h1>
+                <span className="label">{view.label}</span>
+              </div>
+              <div className="topbar-sub">{sub}</div>
+            </div>
+            <div className="topbar-spacer" data-tauri-drag-region />
+
+            <div className="stats" aria-label="Live counters">
+              <div className="stat">
+                <span className="label">In flight</span>
+                <span className="stat-v">{String(active).padStart(2, '0')}</span>
+              </div>
+              <div className="stat stat--meter">
+                <span className="label">Events / sec</span>
+                <span className="stat-v">
+                  {snapshot?.eps.toFixed(1) ?? '0.0'}
+                  <PixelMeter value={load} cells={14} tone="hot" label="Event rate" />
+                </span>
+              </div>
+              <div className="stat stat--optional">
+                <span className="label">Supervisors</span>
+                <span className="stat-v">{supervisors.length}</span>
+              </div>
+              <div className="stat stat--optional">
+                <span className="label">Sessions</span>
+                <span className="stat-v">{sessions.length}</span>
+              </div>
+            </div>
+
+            <DistortionWave
+              className="kill-wave"
+              revealed={fired}
+              type="center"
+              palette={'sunset' as PaletteName}
+              scale="auto"
+              cornerRadius={0}
+              prewarm={false}
+              source={killBtn}
+              overlay={
+                <button
+                  ref={setKillBtn}
+                  className="killswitch"
+                  data-armed={armed ? '' : undefined}
+                  onClick={killSwitch}
+                  title="Close every managed pane, mark all sessions failed, clean up"
+                >
+                  <Sym name="trash" pt={13} fallback={TrashIcon} />
+                  <span>{armed ? 'Confirm — kill all' : 'Kill switch'}</span>
+                </button>
+              }
+              revealedContent={<div className="kill-done" role="status">All sessions stopped</div>}
+            >
+              <span className="killswitch killswitch--ghost">
+                <Sym name="trash" pt={13} fallback={TrashIcon} />
+                <span>Kill switch</span>
+              </span>
+            </DistortionWave>
+            <DitherField className="topbar-rule" mode="linear" angle={90} cell={2} floor={0.42} />
+          </header>
+
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.main
+              key={tab}
+              className="view"
+              role="tabpanel"
+              aria-label={`${view.label} view`}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -3 }}
+              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {tab === 'tree' && (
+                <TreeTab
+                  snapshot={snapshot}
+                  selection={selection}
+                  onSelect={select}
+                  onTogglePause={togglePause}
+                  onKillSupervisor={killSupervisor}
+                  onKillSession={killSession}
+                  onOpenHerdr={openHerdr}
+                  onFocusComposerRequest={() => setComposerFocusSignal((n) => n + 1)}
+                  composerPrefill={composerPrefill}
+                  composerFocusSignal={composerFocusSignal}
+                  flashId={flashId}
+                />
+              )}
+              {tab === 'multiplexer' && <MultiplexerTab snapshot={snapshot} onJumpToTree={(id) => jumpToSession(id)} />}
+              {tab === 'comms' && (
+                <CommsTab snapshot={snapshot} onJumpToTree={(id) => {
+                  const toFlash = sessions.find((s) => s.id === id)?.sup;
+                  jumpToSession(id, toFlash ? id : undefined);
+                }} />
+              )}
+              {tab === 'escalations' && (
+                <EscalationsTab
+                  snapshot={snapshot}
+                  onRepromptFresh={(sessionId, goal) => {
+                    switchTab('tree');
+                    select({ kind: 'session', id: sessionId });
+                    setComposerPrefill({ text: `Fresh take on the goal: ${goal}`, at: Date.now() });
+                    setComposerFocusSignal((n) => n + 1);
+                  }}
+                  onReassign={onReassign}
+                  onKill={killSession}
+                />
+              )}
+            </motion.main>
+          </AnimatePresence>
+        </div>
       </div>
     </MotionConfig>
   );

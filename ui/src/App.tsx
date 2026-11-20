@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Shell } from './components/Shell';
 import { Panel } from './components/Panel';
 import { LogsPanel } from './components/LogsPanel';
-import { VoiceBeam, type VoiceBeamColorVariant } from './vendor/voice-glow/src';
 import type { DistortionWaveHandle } from './vendor/distortion-waves/src';
+import { DitherField } from './components/pixel/DitherField';
 import { send, logs as fetchLogs } from './lib/bridge';
 import type { Session, LogsPayload } from './lib/bridge';
 import { topStatus, workingCount, normalizeEps, pad2, fmtEps } from './lib/format';
@@ -14,8 +14,6 @@ import { useWhiteHot } from './lib/hot';
 import { reduced } from './lib/motion';
 import { frameFor, type Mode } from './lib/shell-geometry';
 import type { Status } from './lib/tokens';
-
-const BEAM: Record<Status, VoiceBeamColorVariant> = { working: 'colorful', idle: 'mono', failed: 'sunset', done: 'ice' };
 
 export default function App() {
   const snapshot = useSnapshot();
@@ -28,7 +26,6 @@ export default function App() {
   const shellRef = useRef<HTMLDivElement>(null);
   const waveRef = useRef<DistortionWaveHandle>(null);
   const epsRef = useRef(0);
-  const levelRef = useRef(0);
   const modeRef = useRef<Mode>('rest');
   const intentTimer = useRef(0);
   const prevTopRef = useRef<Status | null>(null);
@@ -38,9 +35,7 @@ export default function App() {
   const eps = snapshot?.eps ?? 0;
   useEffect(() => {
     epsRef.current = eps;
-    levelRef.current = Math.sqrt(normalizeEps(eps)); // sqrt: low event rates still lift the dither visibly
   }, [eps]);
-  const getLevel = useCallback(() => levelRef.current, []);
 
   const top = useMemo(() => (snapshot ? topStatus(sessions) : 'idle'), [snapshot, sessions]);
   const wcount = useMemo(() => workingCount(sessions), [sessions]);
@@ -139,21 +134,13 @@ export default function App() {
         <span className="label">In flight</span>
       </div>
 
-      {/* open: the dither is the load instrument; the panel sits above it */}
-      <VoiceBeam
-        type="mobile"
-        look="dither"
-        theme="dark"
-        colorVariant={BEAM[top]}
-        level={getLevel}
-        active={open}
-        idle={top === 'idle' ? 0.04 : 0.12}
-        strength={top === 'idle' ? 0.55 : 1}
-        borderRadius={36}
-        aria-hidden={!open}
-        style={{ position: 'absolute', inset: 0 }}
-      >
-        <Panel
+      {/* open: the brand dither is the only backdrop; the panel sits above it */}
+      {open && (
+        <div className="open-dither" aria-hidden="true">
+          <DitherField mode="radial" cx={0.5} cy={1.18} cell={3} floor={0.62} animate period={11000} />
+        </div>
+      )}
+      <Panel
           open={open}
           top={top}
           wcount={wcount}
@@ -179,7 +166,6 @@ export default function App() {
           onKillSupervisor={onKillSupervisor}
           onOpenTarget={openDashboardTarget}
         />
-      </VoiceBeam>
 
       <LogsPanel open={logsOpen} payload={logsPayload} onClose={() => setLogsOpen(false)} />
     </Shell>

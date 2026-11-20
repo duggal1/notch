@@ -1,6 +1,8 @@
-// Composer.tsx — the assignment surface. Enter sends; Shift+Enter newlines; Cmd+K always focuses;
-// the goal→definitionOfDone contract from the autonomous supervisor, exposed honestly.
-import { useEffect, useMemo, useRef, useState } from 'react';
+// Composer.tsx — the assignment surface. Enter sends; Shift+Enter newlines; Cmd+K focuses.
+// A prompt gutter and a hard 1px well: this is a terminal you type work into, not a chat box.
+// The dither appears only during `sending`: pixels leave the Assign button and fly into the beam.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { VoiceBeam } from '../../vendor/voice-glow/src';
 import { submitTask, listModels, type Session } from '../../lib/bridge';
 import { CheckIcon, ChevronDownIcon, CloseIcon } from '../Icons';
 
@@ -22,11 +24,15 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   const [model, setModel] = useState(() => { try { return localStorage.getItem('notch.model') ?? 'opencode/hy4-flash-free'; } catch { return 'opencode/hy4-flash-free'; } });
   const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
   const [modelOpen, setModelOpen] = useState(false);
-  const [state, setState] = useState<'idle' | 'sending' | { ok: boolean; error?: string }>('idle');
+  const [state, setState] = useState<'idle' | 'sending' | { ok: boolean; error?: string; id?: string; ms?: number }>('idle');
   const [targetSession, setTargetSession] = useState<string | null>(selection?.kind === 'session' ? selection.id : null);
+  const [assignBtn, setAssignBtn] = useState<HTMLButtonElement | null>(null);
 
   const taRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const sendingRef = useRef(false);
+  sendingRef.current = state === 'sending';
+  const getLevel = useCallback(() => (sendingRef.current ? 0.35 : 0), []);
 
   // follow explicit selection: clicking a session targets it; clicking a supervisor retargets to it
   useEffect(() => {
@@ -82,6 +88,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     if (!text || state === 'sending') return;
     const cwdClean = cwd.trim();
     if (cwdClean && !cwdClean.startsWith('/')) { setCwdHint(true); return; }
+    const t0 = performance.now();
     setState('sending');
     try { localStorage.setItem('notch.cwd', cwdClean); localStorage.setItem('notch.model', model); } catch { /* storage may be unavailable */ }
     const res = await submitTask({
@@ -91,13 +98,14 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
       model: model || undefined,
       supervisorId: targetSupervisorId,
     });
+    const ms = Math.round(performance.now() - t0);
     if (res.ok) {
       setTask(''); setDod(''); setCwdHint(false);
-      setState({ ok: true });
-      window.setTimeout(() => setState('idle'), 1500);
+      setState({ ok: true, id: res.sessionId, ms });
       window.setTimeout(autosize, 0);
+      window.setTimeout(() => setState('idle'), 2400);
     } else {
-      setState({ ok: false, error: res.error ?? 'submit_task failed — see logs' });
+      setState({ ok: false, error: res.error ?? 'submit_task failed — see logs', ms });
     }
   };
 
@@ -107,72 +115,90 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); }
   };
 
-  const assigned = state !== 'idle' && state !== 'sending' && state.ok;
+  const done = state !== 'idle' && state !== 'sending' && state.ok;
   const error = state !== 'idle' && state !== 'sending' && !state.ok ? state.error : null;
+  const roundtrip = state !== 'idle' && state !== 'sending' ? state.ms : undefined;
 
   return (
     <div className="composer">
-      {targetChipLabel && (
-        <div className="composer-target">
-          <span className="mono text-[10.5px]" style={{ color: 'rgba(255,255,255,.5)' }}>→ {targetChipLabel}</span>
-          <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
-            onClick={() => setTargetSession(null)}>
-            <CloseIcon size={10} />
-          </button>
-        </div>
-      )}
-      <textarea
-        ref={taRef}
-        className="composer-input"
-        rows={1}
-        placeholder="Assign work — Enter to assign, Shift+Enter for a new line"
-        value={task}
-        onChange={(e) => { setTask(e.target.value); autosize(); }}
-        onKeyDown={onKeyDown}
-        aria-label="Assign work to a session"
-      />
-      <div className="composer-dod">
-        <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
-          <ChevronDownIcon size={10} className={dodOpen ? 'rotate-180' : ''} />
-          Done when…
-        </button>
-        {dodOpen && (
-          <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
-            placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
+      <VoiceBeam
+        className="composer-beam"
+        look="dither"
+        type="default"
+        theme="dark"
+        colorVariant={error ? 'sunset' : 'ice'}
+        level={getLevel}
+        strength={0.25}
+        pixelGlow={0.08}
+        active={state === 'sending'}
+        pixelExitTarget={error ? null : assignBtn}
+        idle={0}
+      >
+        {targetChipLabel && (
+          <div className="composer-target">
+            <span>→ {targetChipLabel}</span>
+            <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
+              onClick={() => setTargetSession(null)}>
+              <CloseIcon size={9} />
+            </button>
+          </div>
         )}
-      </div>
-      <div className="composer-row">
-        <label className="cwd-field">
-          <span className="mono" style={{ color: 'rgba(255,255,255,.34)' }}>cwd</span>
-          <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
-            onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
-            spellCheck={false} aria-label="Working directory" />
-        </label>
-        <div ref={menuRef} className="model-picker">
-          <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
-            <span className="mono">{model}</span>
-            <ChevronDownIcon size={11} />
+        <div className="composer-box">
+          <span className="composer-prompt" aria-hidden="true">›</span>
+          <textarea
+            ref={taRef}
+            className="composer-input"
+            rows={1}
+            placeholder="Assign work — Enter to assign, Shift+Enter for a new line"
+            value={task}
+            onChange={(e) => { setTask(e.target.value); autosize(); }}
+            onKeyDown={onKeyDown}
+            aria-label="Assign work to a session"
+          />
+        </div>
+        <div className="composer-dod">
+          <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
+            <ChevronDownIcon size={9} className={dodOpen ? 'rotate-180' : ''} />
+            Done when…
           </button>
-          {modelOpen && (
-            <ul className="model-menu" role="listbox" aria-label="Model">
-              {models.map((m) => (
-                <li key={m} role="option" aria-selected={m === model}>
-                  <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
-                    <span className="mono">{m}</span>
-                    {m === model && <CheckIcon size={11} />}
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {dodOpen && (
+            <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
+              placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
           )}
         </div>
-        <button className="assign-btn" onClick={send} disabled={state === 'sending' || !task.trim()}>
-          {state === 'sending' ? 'Assigning…' : 'Assign'}
-        </button>
-      </div>
+        <div className="composer-row">
+          <label className="cwd-field">
+            <span>cwd</span>
+            <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
+              onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
+              spellCheck={false} aria-label="Working directory" />
+          </label>
+          <div ref={menuRef} className="model-picker">
+            <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
+              <span className="tabular-nums">{model}</span>
+              <ChevronDownIcon size={10} />
+            </button>
+            {modelOpen && (
+              <ul className="model-menu" role="listbox" aria-label="Model">
+                {models.map((m) => (
+                  <li key={m} role="option" aria-selected={m === model}>
+                    <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
+                      <span className="tabular-nums">{m}</span>
+                      {m === model && <CheckIcon size={10} />}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button ref={setAssignBtn} className="assign-btn" onClick={send} disabled={state === 'sending' || !task.trim()}>
+            {state === 'sending' ? 'Assigning…' : 'Assign'}
+          </button>
+        </div>
+      </VoiceBeam>
       {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
-      {error && <div className="composer-error" role="alert">{error}</div>}
-      {assigned && <div className="composer-ok"><CheckIcon size={12} /> Assigned — supervisor is on it</div>}
+      {error && <div className="composer-error" role="alert">{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
+      {done && state.id && <div className="composer-ok"><CheckIcon size={11} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
     </div>
   );
 }
