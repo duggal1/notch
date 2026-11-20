@@ -1,16 +1,16 @@
 // MultiplexerTab.tsx — the session array. Grid or flat list; every card is a live tile with
 // a dithered crown, an iteration meter and the last three log lines. Click → Tree + select.
 import { useMemo, useState } from 'react';
-import type { Snapshot } from '../../lib/bridge';
+import { send, type Snapshot } from '../../lib/bridge';
 import { useLogsPoller } from '../../lib/use-logs';
 import { GridIcon, ListIcon } from '../Icons';
 import { DitherField } from '../pixel/DitherField';
 import { PixelMeter } from '../pixel/PixelMeter';
-import { PixelSphere } from '../pixel/PixelSphere';
 
-export function MultiplexerTab({ snapshot, onJumpToTree }: {
+export function MultiplexerTab({ snapshot, onJumpToTree, onAssign }: {
   snapshot: Snapshot | null;
   onJumpToTree: (sessionId: string) => void;
+  onAssign: () => void;
 }) {
   const [layout, setLayout] = useState<'grid' | 'list'>('grid');
   const sessions = snapshot?.sessions ?? [];
@@ -46,18 +46,19 @@ export function MultiplexerTab({ snapshot, onJumpToTree }: {
 
       {sessions.length === 0 ? (
         <div className="empty-state">
-          <PixelSphere size={112} cell={4} live />
-          <span className="empty-title">Nothing assigned</span>
+          <span className="display">The array is empty.</span>
           <p className="empty-line">
-            The array is empty. Assign work from the Tree view and every session appears here as a live tile.
+            Assign work and every session appears here as a live tile with its own iteration budget.
           </p>
+          <button className="esc-btn esc-btn--primary ripple" onClick={onAssign}>Assign the first task</button>
         </div>
       ) : (
         <div className={layout === 'grid' ? 'session-grid' : 'session-list'}>
-          {sessions.map((s) => {
+          {sessions.map((s, i) => {
             const b = badge(s);
             const it = s.iterations ?? 0, max = s.maxIterations ?? 8;
-            const tail = logs[s.id]?.lines?.slice(-3) ?? [];
+            const tail = logs[s.id]?.lines?.slice(-6) ?? [];
+            const sub = s.goal && s.goal !== s.title ? s.goal : null;
             const card = (
               <>
                 <div className="mux-crown"><DitherField mode="linear" angle={0} cell={2} floor={0.22} /></div>
@@ -68,15 +69,17 @@ export function MultiplexerTab({ snapshot, onJumpToTree }: {
                     {b && <span className={`badge ${b.cls}`}>{b.text}</span>}
                   </div>
                   <div className="mux-title">{s.title}</div>
-                  {s.goal && <div className="mux-goal">{s.goal}</div>}
+                  {sub && <div className="mux-goal">{sub}</div>}
                   <PixelMeter value={it / max} cells={12} tone={s.status === 'failed' ? 'pale' : 'hot'} label={`Iteration ${it} of ${max}`} />
                   <div className="mux-foot">
                     <span className="label">Iter {it}/{max}</span>
                     {s.lastSupervisorAction && <span className="mux-action">{s.lastSupervisorAction}</span>}
                   </div>
                 </div>
-                {tail.length > 0 && (
+                {tail.length > 0 ? (
                   <pre className="mux-tail">{tail.join('\n')}</pre>
+                ) : (
+                  <div className="mux-tail mux-tail--empty"><span>no output yet</span></div>
                 )}
               </>
             );
@@ -85,9 +88,10 @@ export function MultiplexerTab({ snapshot, onJumpToTree }: {
                 key={s.id}
                 role="button"
                 tabIndex={0}
+                style={{ animationDelay: `${Math.min(i, 8) * 32}ms` }}
                 className={layout === 'grid' ? 'mux-card' : 'mux-row'}
-                onClick={() => onJumpToTree(s.id)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onJumpToTree(s.id); } }}
+                onClick={() => { onJumpToTree(s.id); send({ cmd: 'focus', id: s.id }); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onJumpToTree(s.id); send({ cmd: 'focus', id: s.id }); } }}
                 aria-label={`${s.id} — ${s.status} — ${s.title}`}
               >
                 {card}

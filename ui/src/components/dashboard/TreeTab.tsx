@@ -14,7 +14,7 @@ import { PixelMeter } from '../pixel/PixelMeter';
 
 export type Selection = ComposerTarget;
 
-export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSupervisor, onKillSession, onOpenHerdr, onFocusComposerRequest, composerPrefill, composerFocusSignal, flashId }: {
+export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSupervisor, onKillSession, onOpenHerdr, onFocusComposerRequest, onPrefill, composerPrefill, composerFocusSignal, flashId }: {
   snapshot: Snapshot | null;
   selection: Selection;
   onSelect: (sel: Selection) => void;
@@ -23,6 +23,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   onKillSession: (id: string) => void;
   onOpenHerdr: (id: string) => void;
   onFocusComposerRequest: () => void;
+  onPrefill: (text: string) => void;
   composerPrefill: { text: string; at: number } | null;
   composerFocusSignal: number;
   flashId?: string | null;
@@ -107,7 +108,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
               <div className="sidebar-group">
                 <span className="label">Matching sessions</span>
                 {matchedSessions.map((s) => (
-                  <button key={s.id} className="inspector-session-row" onClick={() => onSelect({ kind: 'session', id: s.id })}>
+                  <button key={s.id} className="inspector-session-row ripple" onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
                     <i className={`dot dot--${s.status}`} />
                     <span className="tabular-nums">{s.id}</span>
                     <span className="truncate">{s.title}</span>
@@ -123,7 +124,14 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
                     onMessage={() => { onSelect({ kind: 'supervisor', id: sv.id }); onFocusComposerRequest(); }}
                     onTogglePause={onTogglePause}
                     onKill={onKillSupervisor}
-                    onSelect={(id) => onSelect({ kind: 'supervisor', id })} />
+                    onSelect={(id) => {
+                      // Plain click = select + focus: selection is set synchronously before the
+                      // fire-and-forget send; herdr focus is idempotent and opens no window.
+                      onSelect({ kind: 'supervisor', id });
+                      const target = sessions.find((s) => s.sup === id && s.status === 'working')
+                        ?? sessions.find((s) => s.sup === id);
+                      if (target) onOpenHerdr(target.id);
+                    }} />
                 </div>
               ))}
             </div>
@@ -133,10 +141,10 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
           </div>
         </div>
         <div className="sidebar-actions">
-          <button className="sidebar-btn" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
+          <button className="sidebar-btn ripple" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
             <PlusIcon size={11} /><span>New supervisor</span>
           </button>
-          <button className="sidebar-btn" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
+          <button className="sidebar-btn ripple" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
             <PlusIcon size={11} /><span>New session</span>
           </button>
         </div>
@@ -167,14 +175,21 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
 
             {sessions.length === 0 && supervisors.length === 0 ? (
               <div className="empty-state">
-                <PixelSphere size={112} cell={4} live />
-                <span className="empty-title">Nothing running</span>
+                <span className="display">Nothing running.</span>
                 <p className="empty-line">
-                  No supervisors, no sessions. Write the work below — Enter assigns it to a new supervisor.
+                  No supervisors, no sessions. Start from a shape, or write your own task in the composer.
                 </p>
-                <button className="esc-btn esc-btn--primary empty-action" onClick={onFocusComposerRequest}>
-                  <PlusIcon size={11} /> Assign the first task
-                </button>
+                <div className="empty-templates">
+                  {[
+                    { kind: 'build', text: 'Fix the failing test in ui/ and run the suite' },
+                    { kind: 'audit', text: 'Review src for duplicated logic and propose a patch' },
+                    { kind: 'docs', text: 'Write the missing bridge section of the README' },
+                  ].map((t) => (
+                    <button key={t.kind} className="template-pill ripple" onClick={() => onPrefill(t.text)}>
+                      <span>{t.kind}</span>{t.text}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : (
               <Transcript session={selectedSession} logs={logs} revisionChangedAt={revAtRef.current} />

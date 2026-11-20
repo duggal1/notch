@@ -62,7 +62,7 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
       <header className="p-head">
         <span className="p-brand">
           <span className="p-mark" aria-hidden="true">
-            <DitherField mode="radial" cell={2} floor={0.26} ceil={0.9} />
+            <DitherField mode="linear" angle={135} cell={2} floor={0.08} ceil={0.62} />
             <img className="brand-logo" src="/logo.svg" alt="" />
           </span>
           <span className="p-status">
@@ -92,10 +92,11 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
         palette={WAVE_PAL[top]}
         cornerRadius={0}
         prewarm={false}
-        style={{ height: 168, flex: 'none' }}
+        style={{ height: 150, flex: 'none' }}
       >
         <div className="state">
           <div className="card state-num">
+            <DitherField className="state-num-crown" mode="linear" angle={0} cell={2} floor={0.22} />
             <PixelSphere size={40} cell={2} live={open} className="state-num-mark" />
             <div className="state-num-read">
               <NumberRoll value={wcount} format={(n) => pad2(Math.round(n))} className="num-xl" />
@@ -132,7 +133,12 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
               onMessage={onMessageSupervisor}
               onTogglePause={onTogglePause}
               onKill={onKillSupervisor}
-              onSelect={(id) => onOpenTarget('supervisor', id)} />
+              onSelect={(id) => {
+                onOpenTarget('supervisor', id);
+                const target = sessions.find((s) => s.sup === id && s.status === 'working')
+                  ?? sessions.find((s) => s.sup === id);
+                if (target) focus(target.id);
+              }} />
           ))}
         </div>
       </section>

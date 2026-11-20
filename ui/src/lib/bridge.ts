@@ -4,6 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Status } from './tokens';
+import { connectWs, credentialsFromQuery, buildWsUrl, FLEET_EVENT, type WsCredentials } from './ws-transport';
 
 export interface Session {
   id: string;
@@ -106,6 +107,10 @@ export type UiAction =
 
 /** Fire-and-forget send — errors are logged, never thrown into the render path. */
 export function send(a: UiAction): void {
+  // Headless interaction probe: records the command only when a harness installs
+  // window.__notchActions. No array → no work, no allocation in the shipped app.
+  const log = (window as unknown as { __notchActions?: unknown[] }).__notchActions;
+  if (Array.isArray(log)) log.push({ ...a, at: Date.now() });
   invokeInner(a).catch((err) => console.warn('[notch] invoke failed', a.cmd, err));
 }
 
@@ -137,15 +142,61 @@ export const listModels = () =>
 let demoInvoke: ((a: UiAction) => unknown) | null = null;
 export function registerDemoInvoke(fn: (a: UiAction) => unknown) { demoInvoke = fn; }
 
-type Handlers = { onSnapshot: (s: Snapshot) => void };
+type Handlers = { onSnapshot: (s: Snapshot) => void; onFleet?: (s: Snapshot) => void };
 
-/** Subscribe to snapshots. Tauri: listen('snapshot') + one invoke('snapshot'). Browser: demo provider. */
-export async function subscribe({ onSnapshot }: Handlers): Promise<() => void> {
+// Optional bridge-supplied daemon state-dir credential. app/ can inject
+// `window.__NOTCH_WS__ = { port, token }` or register a provider; WS is then added
+// on top of the Tauri transport. Without it the Tauri `listen('snapshot')` path is
+// the sole app transport, unchanged.
+let wsCredentialProvider: (() => WsCredentials | null) | null = null;
+export function registerWsCredentials(fn: () => WsCredentials | null) { wsCredentialProvider = fn; }
+function bridgeCredentials(): WsCredentials | null {
+  try {
+    const injected = (window as unknown as { __NOTCH_WS__?: { port?: unknown; token?: unknown } }).__NOTCH_WS__;
+    if (injected && typeof injected.token === 'string') {
+      const port = Number(injected.port);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) return { port, token: injected.token };
+    }
+    return wsCredentialProvider?.() ?? null;
+  } catch { return null; }
+}
+
+/** One normalized fleet delivery path: existing callback, optional callback, then the single `fleet` event. */
+function emitFleet(s: Snapshot, onSnapshot: (s: Snapshot) => void, onFleet?: (s: Snapshot) => void) {
+  onSnapshot(s);
+  onFleet?.(s);
+  try {
+    (window as unknown as { dispatchEvent?: (e: Event) => void }).dispatchEvent?.(
+      new CustomEvent(FLEET_EVENT, { detail: s }));
+  } catch { /* non-DOM test host: the callbacks above still fire */ }
+}
+
+/**
+ * THE transport switch (one place). Tauri keeps `listen('snapshot')` primary and adds
+ * WS only when the bridge supplies the state-dir token. Browser uses WS with `?token=`
+ * or falls back to the original demo provider, so screenshots are unaffected.
+ */
+export async function subscribe({ onSnapshot, onFleet }: Handlers): Promise<() => void> {
+  const deliver = (s: Snapshot) => emitFleet(s, onSnapshot, onFleet);
+  const disposers: (() => void)[] = [];
+  const w = window as unknown as { __push?: (s: Snapshot) => void };
+  if (typeof w.__push !== 'function') w.__push = (s) => { if (s) deliver(s); };
+
   if (isTauri()) {
-    const un = await listen<Snapshot>('snapshot', (e) => onSnapshot(e.payload));
-    invoke<Snapshot>('snapshot').then((s) => { if (s) onSnapshot(s); }).catch(() => undefined);
-    return () => un();
+    const un = await listen<Snapshot>('snapshot', (e) => deliver(e.payload));
+    invoke<Snapshot>('snapshot').then((s) => { if (s) deliver(s); }).catch(() => undefined);
+    disposers.push(() => un());
+    const creds = bridgeCredentials();
+    if (creds) disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
+    return () => { for (const d of disposers) d(); };
+  }
+
+  const creds = credentialsFromQuery();
+  if (creds) {
+    disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
+    return () => { for (const d of disposers) d(); };
   }
   const { installDemo } = await import('./demos');
-  return installDemo({ onSnapshot });
+  const stopDemo = await installDemo({ onSnapshot: deliver });
+  return () => { stopDemo(); for (const d of disposers) d(); };
 }

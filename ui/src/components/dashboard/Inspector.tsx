@@ -6,7 +6,6 @@ import type { Session, Supervisor, Snapshot } from '../../lib/bridge';
 import { middleTruncate, fmtElapsed } from '../../lib/format';
 import { RepromptIcon, PauseIcon, PlayIcon, KillIcon, FocusIcon, BubbleIcon } from '../Icons';
 import { PixelMeter } from '../pixel/PixelMeter';
-import { PixelSphere } from '../pixel/PixelSphere';
 
 const STATUS_PALETTE: Record<string, PaletteName> = {
   working: 'ocean', idle: 'mono', failed: 'sunset', done: 'green',
@@ -59,8 +58,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
           <span className="label">Nothing selected</span>
         </div>
         <div className="empty-state empty-state--start">
-          <PixelSphere size={72} cell={3} live={false} />
-          <span className="empty-title">No target</span>
+          <span className="display">No target.</span>
           <p className="empty-line">Pick a session or supervisor. Its anatomy — model, cwd, budget, definition of done, files — lands here.</p>
         </div>
       </aside>
@@ -83,7 +81,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
               <span>{supervisor.status}</span>
             </div>
           </div>
-          <div className="meta-grid">
+          <div className="anatomy meta-grid">
             <div className="meta-row"><span>sessions</span><b>{own.length}</b></div>
             <div className="meta-row"><span>working</span><b>{supervisor.working}</b></div>
             <div className="meta-row"><span>idle</span><b>{supervisor.idle}</b></div>
@@ -94,14 +92,14 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
             <PixelMeter value={own.length ? supervisor.working / own.length : 0} cells={16} tone="hot" label="Working sessions" />
           </div>
           <div className="control-row">
-            <button className="ctl" onClick={onFocusComposer} title="Message this supervisor">
+            <button className="ctl ripple" onClick={onFocusComposer} title="Message this supervisor">
               <BubbleIcon size={12} /><span>Message</span>
             </button>
-            <button className="ctl" onClick={() => onTogglePause(supervisor)} title={supervisor.paused ? 'Resume supervisor' : 'Pause supervisor'}>
+            <button className="ctl ripple" onClick={() => onTogglePause(supervisor)} title={supervisor.paused ? 'Resume supervisor' : 'Pause supervisor'}>
               {supervisor.paused ? <PlayIcon size={11} /> : <PauseIcon size={11} />}
               <span>{supervisor.paused ? 'Resume' : 'Pause'}</span>
             </button>
-            <button className="ctl ctl--kill" onClick={() => onKill(supervisor.id)} title="Kill every session under this supervisor">
+            <button className="ctl ctl--kill ripple" onClick={() => onKill(supervisor.id)} title="Kill every session under this supervisor">
               <KillIcon size={12} /><span>Kill all</span>
             </button>
           </div>
@@ -109,7 +107,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
             <span className="label">Sessions under {supervisor.id}</span>
             {own.length === 0 && <span className="inspector-empty">None yet.</span>}
             {own.map((s) => (
-              <button key={s.id} className="inspector-session-row" onClick={() => onSelectSession(s.id)}>
+              <button key={s.id} className="inspector-session-row ripple" onClick={() => { onSelectSession(s.id); onOpenHerdr(s.id); }}>
                 <i className={`dot dot--${s.status}`} />
                 <span className="tabular-nums">{s.id}</span>
                 <span className="truncate">{s.title}</span>
@@ -156,7 +154,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
         >
           {statusBlock(s.status)}
         </DistortionWave>
-        <div className="meta-grid">
+        <div className="anatomy meta-grid">
           <div className="meta-row"><span>model</span><b title={s.model ?? undefined}>{s.model ?? '—'}</b></div>
           <div className="meta-row"><span>supervisor</span><b>{s.sup}</b></div>
           <div className="meta-row"><span>cwd</span><b title={s.cwd}>{middleTruncate(s.cwd, 28)}</b></div>
@@ -198,17 +196,17 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
         )}
 
         <div className="control-row">
-          <button className="ctl" onClick={() => onReprompt(s.id)} title="Re-prompt this session">
+          <button className="ctl ripple" onClick={() => onReprompt(s.id)} title="Re-prompt this session">
             <RepromptIcon size={12} /><span>Re-prompt</span>
           </button>
-          <button className="ctl" onClick={() => onTogglePause(ownSup!)} disabled={!ownSup} title={ownSup?.paused ? 'Resume supervisor' : 'Pause supervisor'}>
+          <button className="ctl ripple" onClick={() => onTogglePause(ownSup!)} disabled={!ownSup} title={ownSup?.paused ? 'Resume supervisor' : 'Pause supervisor'}>
             {ownSup?.paused ? <PlayIcon size={11} /> : <PauseIcon size={11} />}
             <span>{ownSup?.paused ? 'Resume' : 'Pause'}</span>
           </button>
-          <button className="ctl ctl--kill" onClick={() => onKill(s.id)} title="Kill session">
+          <button className="ctl ctl--kill ripple" onClick={() => onKill(s.id)} title="Kill session">
             <KillIcon size={12} /><span>Kill</span>
           </button>
-          <button className="ctl" onClick={() => onOpenHerdr(s.id)} title="Open this session in herdr">
+          <button className="ctl ripple" onClick={() => onOpenHerdr(s.id)} title="Open this session in herdr">
             <FocusIcon size={12} /><span>Herdr</span>
           </button>
         </div>
