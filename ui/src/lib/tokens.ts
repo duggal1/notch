@@ -1,19 +1,21 @@
-// tokens.ts — DESIGN.md §3, single source of truth. CSS variables in base.css mirror this.
-// v2 brand: fuchsia-purple, square pixels, hard edges. No blur. No shadow. No rounding.
+// tokens.ts — the single source of truth for the v3 skin. CSS variables mirror this file.
+// v3 brand: fuchsia-purple, square-pixel dither, and soft continuous chrome. The texture is
+// hard-edged; the chrome is pill and large-radius. Dither never touches a border or a text area.
 export const C = {
   void: '#000000', // the only ground
   ink: '#000000', // text on a hot fill
   panel: '#0B0210', // card body: near-black violet, never pure black on black
   ground: '#12041A', // raised row / input well
-  line: '#2A0A33', // the 1px rule family
-  line2: '#4A1157', // stronger rule / hover
+  well: '#08010D', // input floor, one step below panel
+  line: '#2A0A33', // the hairline family
+  line2: '#4A1157', // stronger hairline / hover
   f1: '#2A0A33', // deepest fuchsia
   f2: '#701A75', // dark fuchsia
   f3: '#A21CAF', // mid fuchsia
   f4: '#D946EF', // hot fuchsia — the action colour
   f5: '#F5D0FE', // pale lilac — the reading colour
   white: '#FFFFFF',
-  // aliases kept for call sites that predate v2
+  // aliases kept for call sites that predate v3
   lilac: '#F5D0FE',
   peri: '#D946EF',
   blue: '#A21CAF',
@@ -27,8 +29,8 @@ export const C = {
   mist: '#F5D0FE',
 } as const;
 
-/** Radii are zero. The scale exists only so nothing can smuggle a curve back in. */
-export const R = { s: 0, m: 0, l: 0, xl: 0, pill: 0 } as const;
+/** Radii — chrome is pill and large-radius. Nothing in the UI is square except the dither cells. */
+export const R = { xs: 8, s: 12, m: 16, l: 22, xl: 28, pill: 999 } as const;
 export const S = (n: number) => n * 4;
 
 export type Status = 'working' | 'idle' | 'failed' | 'done';
@@ -43,7 +45,7 @@ export const STATUS_COLOR: Record<Status, string> = {
 
 export interface GlowPreset { rim: string; mid: string; core: string; width: number; level: number }
 
-// Legacy shape consumed by glow-orb; values are the v2 ramp.
+// Legacy shape consumed by glow-orb; values are the v3 ramp.
 export const GLOW: Record<Status, GlowPreset> = {
   working: { rim: C.f5, mid: C.f4, core: C.f2, width: 34, level: 1.0 },
   idle: { rim: C.f2, mid: C.f1, core: C.void, width: 16, level: 0.5 },
@@ -57,11 +59,13 @@ export const PAL: Record<Exclude<Status, 'idle'>, string[]> = {
   done: [C.f3, C.f4, C.f5, C.f3, C.f4, C.f5],
 };
 
+/** Eased motion only. `release` is the overshooting spring a pressed element lets go with. */
 export const EASE = {
-  out: 'cubic-bezier(.16, 1, .3, 1)', // expo-out: default for anything that arrives
+  out: 'cubic-bezier(.16, 1, .3, 1)', // expo-out: anything that arrives
   inOut: 'cubic-bezier(.65, 0, .35, 1)',
   snap: 'cubic-bezier(.2, .9, .1, 1)',
-  step: 'steps(4, end)', // pixel-quantised motion: no interpolation
+  release: 'cubic-bezier(.34, 1.56, .64, 1)', // spring back from a press
+  step: 'steps(4, end)', // reserved for the dither wipe only
 } as const;
 
 export const SPRING_REACT = {
@@ -71,7 +75,7 @@ export const SPRING_REACT = {
   digit: { stiffness: 260, damping: 26 },
 } as const;
 
-export const MS = { press: 80, hover: 140, wipe: 220, state: 320, open: 420 } as const;
+export const MS = { press: 90, hover: 180, wipe: 220, state: 280, enter: 380 } as const;
 export const WAVE = { lean: 0.30, cross: 0.62, settle: 1.15 } as const;
 
 export const SPRING = {
