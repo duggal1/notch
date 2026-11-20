@@ -125,7 +125,7 @@ pub struct ParkedWrite {
     pub epoch: Option<u64>,
     pub reason: String,
     pub op: Op,
-    /// Set when read back from disk; `None` while in flight.
+    /// Location of a successfully parked or collected payload.
     #[serde(default)]
     pub file: Option<PathBuf>,
 }
@@ -420,7 +420,6 @@ impl Ledger {
         let _guard = ledger_guard();
         self.refresh();
         let current = self.epochs.get(target).copied().unwrap_or(0);
-        let refused = epoch < current;
         let line = Line {
             seq: self.last_seq + 1,
             ts,
@@ -429,27 +428,18 @@ impl Ledger {
             epoch: Some(epoch),
             target: target.to_string(),
             op,
-            refused: if refused {
-                Some("stale_epoch".to_string())
-            } else {
-                None
-            },
+            refused: (epoch < current).then(|| "stale_epoch".to_string()),
         };
-        self.append_locked(line.clone()).map_err(|e| {
-            Box::new(ParkedWrite {
-                seq: line.seq,
-                ts: line.ts,
-                target: line.target.clone(),
-                holder: line.holder.clone(),
-                epoch: line.epoch,
-                reason: format!("append failed: {e}"),
-                op: line.op.clone(),
-                file: None,
-            })
-        })?;
-        if refused {
-            let parked = parked_from_line(&line, "stale_epoch");
-            let _ = park(&self.dir, &parked);
+        self.append_locked(line.clone())
+            .map_err(|e| Box::new(parked_from_line(&line, &format!("append failed: {e}"))))?;
+        if let Some(reason) = &line.refused {
+            let mut parked = parked_from_line(&line, reason);
+            // AgentBox main/store/pending-writes.mts:59-84 returns a receipt so
+            // the refused writer can find its payload after reclaiming.
+            match park(&self.dir, &parked) {
+                Ok(path) => parked.file = Some(path),
+                Err(error) => parked.reason = format!("{reason}: parking failed: {error}"),
+            }
             return Err(Box::new(parked));
         }
         Ok(line.seq)
@@ -784,16 +774,26 @@ pub fn replay(base: StateFile, lines: &[Line]) -> ReplayResult {
 /// Replay a state dir's ledger over a checkpoint, parking any refused lines.
 pub fn replay_over_checkpoint(state_dir: &Path, base: StateFile) -> io::Result<ReplayResult> {
     let mut result = replay(base, &read_lines(&state_dir.join(LEDGER_FILE))?);
-    for parked in &result.refused {
-        let _ = park(state_dir, parked);
+    let mut failures = 0;
+    let mut first_error = None;
+    for parked in &mut result.refused {
+        match park(state_dir, parked) {
+            Ok(path) => parked.file = Some(path),
+            Err(error) => {
+                failures += 1;
+                first_error.get_or_insert((parked.seq, error));
+            }
+        }
     }
-    // Only a refused write is worth surfacing into snapshot.warnings: a clean
-    // replay must not add noise to a fresh state dir or change legacy warning
-    // assertions. The full count stays in `ReplayResult` for tests/ops.
-    if !result.refused.is_empty() {
+    let parked = result.refused.len() - failures;
+    if parked > 0 {
+        result
+            .warnings
+            .push(format!("ledger: {parked} stale writes parked or collected"));
+    }
+    if let Some((seq, error)) = first_error {
         result.warnings.push(format!(
-            "ledger: {} stale writes parked for the next holder",
-            result.refused.len()
+            "ledger: parking failed for {failures} refused writes (first seq {seq}: {error})"
         ));
     }
     Ok(result)
