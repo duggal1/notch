@@ -57,4 +57,26 @@ impl Daemon {
         self.save_state(&inner);
         esc_id
     }
+
+    // W2-3 RED STUBS — implemented in the GREEN commit.
+    pub fn issue_approval(&self, _id: &str, _session: &str, _kind: &str, _reason: &str) -> Result<String, String> {
+        todo!("RED: issue_approval unimplemented")
+    }
+    pub fn answer_approval(
+        &self,
+        _id: &str,
+        _allow: bool,
+        _note: Option<String>,
+        _at: u64,
+        _card: &str,
+        _mode: &str,
+    ) -> Result<crate::approvals::SignedAnswer, String> {
+        todo!("RED: answer_approval unimplemented")
+    }
+    pub fn pending_approvals(&self) -> Vec<crate::approvals::ApprovalCard> {
+        todo!("RED: pending_approvals unimplemented")
+    }
+    pub fn approval_grant(&self, _session: &str) -> Option<crate::approvals::AnswerMode> {
+        todo!("RED: approval_grant unimplemented")
+    }
 }

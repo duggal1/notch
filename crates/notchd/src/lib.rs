@@ -8,11 +8,14 @@
 //! status vocabulary is exactly `working|idle|failed|done`; IDs are
 //! `S<sup>-OC<nn>` / `SV-<n>` / `ORCH`, allocated only by the registry.
 
+pub mod approvals;
 pub mod attribution;
 pub mod bus;
 pub mod decider;
+pub mod mcp_bridge;
 mod durable;
 pub mod error;
+pub mod eventsource;
 pub mod opencode;
 pub mod cleanup;
 pub mod cli;

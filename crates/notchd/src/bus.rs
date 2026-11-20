@@ -31,6 +31,7 @@ pub struct BusMessage {
 
 /// Send side handed to a supervisor. The only thing it can do is enqueue
 /// into the orchestrator's inbox. No method exists to reach another mailbox.
+#[derive(Clone)]
 pub struct SupervisorSink {
     from: String,
     tx: Sender<BusMessage>,
@@ -112,6 +113,14 @@ impl OrchestratorBus {
         )
     }
 
+    /// Clone of the orchestrator inbox sender — the ONLY handle a controlled
+    /// worker bridge is allowed to hold. It can enqueue into the inbox but has
+    /// no route table and no mailbox receivers, so it cannot deliver directly
+    /// to a session or supervisor. Delivery happens only in `drain`.
+    pub fn inbox_sender(&self) -> mpsc::Sender<BusMessage> {
+        self.inbox_tx.clone()
+    }
+
     /// Is this supervisor id registered? Used to validate bus sends.
     pub fn is_registered(&self, supervisor: &str) -> bool {
         self.routes
@@ -158,6 +167,44 @@ impl OrchestratorBus {
 impl Default for OrchestratorBus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W2-3: controlled worker A2A ingress. RED STUB — implemented in GREEN commit.
+// ---------------------------------------------------------------------------
+
+/// A narrow, read-only-plus-enqueue surface for a worker MCP bridge. It holds
+/// ONLY the orchestrator inbox sender (no mailbox receiver, no route table it
+/// can write), so a worker can ask the orchestrator to route a message but can
+/// never deliver to, read, or mutate another session directly.
+pub struct A2aBridgeIngress {
+    _clock: Arc<dyn Clock>,
+    _tx: mpsc::Sender<BusMessage>,
+}
+
+impl A2aBridgeIngress {
+    pub fn new(clock: Arc<dyn Clock>, tx: mpsc::Sender<BusMessage>) -> Self {
+        Self { _clock: clock, _tx: tx }
+    }
+    pub fn set_routes(&self, _routes: HashMap<String, String>) {
+        todo!("RED: set_routes unimplemented")
+    }
+    pub fn set_known(&self, _known: HashSet<String>) {
+        todo!("RED: set_known unimplemented")
+    }
+    pub fn submit(
+        &self,
+        _id: &str,
+        _from: &str,
+        _to: &str,
+        _kind: &str,
+        _body: &str,
+    ) -> Result<(), NotchError> {
+        todo!("RED: submit unimplemented")
+    }
+    pub fn submitted_count(&self) -> u64 {
+        todo!("RED: submitted_count unimplemented")
     }
 }
 
