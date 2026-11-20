@@ -5,10 +5,7 @@
 //! method presence, decline-before-side-effect, and unknown-engine rejection.
 //! Everything here is headless: no window, no multiplexer, no subprocess.
 
-#[path = "../src/harness_registry.rs"]
-mod harness_registry;
-
-use harness_registry::*;
+use notchd::harness_registry::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

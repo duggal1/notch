@@ -4,10 +4,7 @@
 //! process: every command line is built from a definition's `RunFlags`, and an
 //! engine that did not declare pane capability cannot reach a spawn operation.
 
-#[path = "../src/harness_registry.rs"]
-mod harness_registry;
-
-use harness_registry::*;
+use notchd::harness_registry::*;
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -177,6 +174,6 @@ fn engine_ids_are_validated_as_literal_lowercase_names() {
     ] {
         assert!(!is_valid_engine_id(bad), "{bad:?} must be rejected");
     }
-    let long = "a".repeat(crate::harness_registry::MAX_ENGINE_ID_LEN + 1);
+    let long = "a".repeat(notchd::harness_registry::MAX_ENGINE_ID_LEN + 1);
     assert!(!is_valid_engine_id(&long));
 }
