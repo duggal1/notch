@@ -174,7 +174,11 @@ fn t6_64x200_allocations_then_restart_no_duplicate_ids() {
     let live = live_ids.lock().unwrap().clone();
     assert_eq!(live.len(), SPAWN_THREADS * SPAWN_PER_THREAD);
     let live_unique: HashSet<&String> = live.iter().collect();
-    assert_eq!(live_unique.len(), live.len(), "duplicate id in live submit_task");
+    assert_eq!(
+        live_unique.len(),
+        live.len(),
+        "duplicate id in live submit_task"
+    );
     for id in &live {
         assert!(!all.contains(id), "live spawn reused a Phase A id: {id}");
     }
@@ -183,17 +187,23 @@ fn t6_64x200_allocations_then_restart_no_duplicate_ids() {
     let restart_root = tmp_root("t6restart");
     copy_dir_all(&cfg.state_dir, &restart_root.join("state"));
     std::fs::create_dir_all(restart_root.join("tmp")).unwrap();
-    let _ = Daemon::open(config(&restart_root), fake_herdr(), Arc::new(FakeClock::new(T0))).unwrap();
-    let after = allocate_session_at(&restart_root.join("state/registry.json"), 1);
-    assert!(!all.contains(&after), "restart repeated an id: {after}");
-    assert!(!live.contains(&after), "restart repeated a live id: {after}");
-    let restart_reg: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(restart_root.join("state/registry.json")).unwrap(),
+    let _ = Daemon::open(
+        config(&restart_root),
+        fake_herdr(),
+        Arc::new(FakeClock::new(T0)),
     )
     .unwrap();
+    let after = allocate_session_at(&restart_root.join("state/registry.json"), 1);
+    assert!(!all.contains(&after), "restart repeated an id: {after}");
     assert!(
-        restart_reg["sessionCounts"]["1"].as_u64()
-            >= Some((THREADS * PER_THREAD + 1) as u64),
+        !live.contains(&after),
+        "restart repeated a live id: {after}"
+    );
+    let restart_reg: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(restart_root.join("state/registry.json")).unwrap())
+            .unwrap();
+    assert!(
+        restart_reg["sessionCounts"]["1"].as_u64() >= Some((THREADS * PER_THREAD + 1) as u64),
         "post-restart registry did not advance"
     );
 

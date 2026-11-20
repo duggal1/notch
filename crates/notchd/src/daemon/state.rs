@@ -90,7 +90,10 @@ fn writer_for(path: &Path) -> Arc<StateWriter> {
     });
     let thread_path = path.to_path_buf();
     let thread_writer = writer.clone();
-    let name = format!("notch-state-writer:{}", path.file_name().unwrap_or_default().to_string_lossy());
+    let name = format!(
+        "notch-state-writer:{}",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
     let built = std::thread::Builder::new().name(name).spawn(move || {
         writer_loop(thread_path, thread_writer);
     });
@@ -123,8 +126,7 @@ fn writer_loop(path: PathBuf, writer: Arc<StateWriter>) {
             break;
         }
 
-        let due = timed_out.timed_out()
-            || lock(&writer.last_write).elapsed() >= WRITE_INTERVAL;
+        let due = timed_out.timed_out() || lock(&writer.last_write).elapsed() >= WRITE_INTERVAL;
         if due && guard.is_some() && lock(&writer.last_write).elapsed() >= WRITE_INTERVAL {
             if let Some(bytes) = guard.take() {
                 let _ = durable::write_atomic(&path, &bytes);
@@ -247,9 +249,7 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
             }
         }
     }
-    if before.get("esc_seq") != now.get("esc_seq")
-        || before.get("msg_seq") != now.get("msg_seq")
-    {
+    if before.get("esc_seq") != now.get("esc_seq") || before.get("msg_seq") != now.get("msg_seq") {
         ops.push((
             "ORCH".to_string(),
             LedgerOp::SetSeq {
@@ -259,7 +259,9 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
         ));
     }
 
-    let state_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let state_dir = state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     if let Ok(mut ledger) = ledger::Ledger::open(state_dir) {
         // ONE append (one O_APPEND write + one fsync) for the entire delta.
         // Per-entity appends made a 20-session soak poll take >5 s.
@@ -292,12 +294,7 @@ pub(crate) struct Recovered {
 }
 
 fn rank_state(s: &StateFile) -> (usize, usize, u64, u64) {
-    (
-        s.sessions.len(),
-        s.supervisors.len(),
-        s.esc_seq,
-        s.msg_seq,
-    )
+    (s.sessions.len(), s.supervisors.len(), s.esc_seq, s.msg_seq)
 }
 
 fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<StateFile> {
@@ -306,7 +303,10 @@ fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<S
         if let Ok(bytes) = std::fs::read(&candidate) {
             match serde_json::from_slice::<StateFile>(&bytes) {
                 Ok(state) => {
-                    if best.as_ref().is_none_or(|b| rank_state(&state) > rank_state(b)) {
+                    if best
+                        .as_ref()
+                        .is_none_or(|b| rank_state(&state) > rank_state(b))
+                    {
                         best = Some(state);
                     }
                 }
@@ -539,8 +539,8 @@ mod a4_tests {
     fn test_dir(tag: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir()
-            .join(format!("notch-state-load-{tag}-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("notch-state-load-{tag}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

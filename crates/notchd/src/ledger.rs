@@ -79,7 +79,11 @@ pub enum Op {
     Release,
     /// Full-entity assignment. `entity` names a `StateFile` vector and is
     /// validated on replay: an unknown name is dropped, never stored.
-    Upsert { entity: String, id: String, value: Value },
+    Upsert {
+        entity: String,
+        id: String,
+        value: Value,
+    },
     /// Tombstone for a full-entity assignment.
     Remove { entity: String, id: String },
     /// Scalar high-water marks kept outside the entity vectors.
@@ -146,7 +150,10 @@ fn encode(line: &Line) -> io::Result<Vec<u8>> {
     if buf.len() > MAX_LINE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("ledger line too large ({} bytes, max {MAX_LINE_BYTES})", buf.len()),
+            format!(
+                "ledger line too large ({} bytes, max {MAX_LINE_BYTES})",
+                buf.len()
+            ),
         ));
     }
     buf.push(b'\n');
@@ -330,11 +337,7 @@ impl Ledger {
     fn append_locked(&mut self, line: Line) -> io::Result<u64> {
         if crate::events::rotate_if_oversized(&self.path, MAX_LEDGER_BYTES)? {
             let anchor = Op::EpochAnchor {
-                epochs: self
-                    .epochs
-                    .iter()
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect(),
+                epochs: self.epochs.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             };
             let first = Line {
                 seq: self.last_seq + 1,
@@ -432,19 +435,18 @@ impl Ledger {
                 None
             },
         };
-        self.append_locked(line.clone())
-            .map_err(|e| {
-                Box::new(ParkedWrite {
-                    seq: line.seq,
-                    ts: line.ts,
-                    target: line.target.clone(),
-                    holder: line.holder.clone(),
-                    epoch: line.epoch,
-                    reason: format!("append failed: {e}"),
-                    op: line.op.clone(),
-                    file: None,
-                })
-            })?;
+        self.append_locked(line.clone()).map_err(|e| {
+            Box::new(ParkedWrite {
+                seq: line.seq,
+                ts: line.ts,
+                target: line.target.clone(),
+                holder: line.holder.clone(),
+                epoch: line.epoch,
+                reason: format!("append failed: {e}"),
+                op: line.op.clone(),
+                file: None,
+            })
+        })?;
         if refused {
             let parked = parked_from_line(&line, "stale_epoch");
             let _ = park(&self.dir, &parked);
@@ -472,7 +474,13 @@ fn parked_from_line(line: &Line, reason: &str) -> ParkedWrite {
 fn safe_component(value: &str, max: usize) -> String {
     let cleaned: String = value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_matches('.');
     if trimmed.is_empty() {
@@ -498,7 +506,11 @@ pub fn park(state_dir: &Path, parked: &ParkedWrite) -> io::Result<PathBuf> {
     }
     fs::create_dir_all(&dir)?;
     let existing = fs::read_dir(&dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false)).count())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .count()
+        })
         .unwrap_or(0);
     if existing >= MAX_PENDING_PER_TARGET {
         // Bounded parking. Oldest-first by filename (seq is zero-padded) so a
@@ -631,7 +643,9 @@ fn upsert_entity(state: &mut StateFile, entity: &str, value: &Value, warnings: &
             return;
         }
     };
-    let arr = root[key].as_array_mut().expect("StateFile serializes every vector");
+    let arr = root[key]
+        .as_array_mut()
+        .expect("StateFile serializes every vector");
     if let Some(pos) = arr
         .iter()
         .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))

@@ -84,7 +84,10 @@ impl Daemon {
         // The card digest is what the signed answer must match.
         if kind == "needs_you" {
             if let Err(e) = self.issue_approval(&esc_id, id, kind, reason) {
-                push_warning(&mut lock(&self.inner), format!("{esc_id}: approval card failed: {e}"));
+                push_warning(
+                    &mut lock(&self.inner),
+                    format!("{esc_id}: approval card failed: {e}"),
+                );
             }
         }
         esc_id
@@ -92,7 +95,13 @@ impl Daemon {
 
     /// Issue an answerable card. Refuses every kind except `needs_you` and any
     /// malformed id/session/reason (no injected instructions in a card).
-    pub fn issue_approval(&self, id: &str, session: &str, kind: &str, reason: &str) -> Result<String, String> {
+    pub fn issue_approval(
+        &self,
+        id: &str,
+        session: &str,
+        kind: &str,
+        reason: &str,
+    ) -> Result<String, String> {
         if kind != "needs_you" {
             return Err("only needs_you escalations are answerable".to_string());
         }
@@ -101,7 +110,9 @@ impl Daemon {
         let trimmed = reason.trim();
         if trimmed.is_empty()
             || trimmed.chars().count() > 240
-            || trimmed.chars().any(|c| c == '\n' || c == '\r' || c.is_control())
+            || trimmed
+                .chars()
+                .any(|c| c == '\n' || c == '\r' || c.is_control())
         {
             return Err("invalid approval reason".to_string());
         }
@@ -116,7 +127,10 @@ impl Daemon {
         let _ = self.event_log.append(
             Some(session.to_string()),
             "approval",
-            &format!("{id}: needs_you card issued; digest {}...", &digest[..8.min(digest.len())]),
+            &format!(
+                "{id}: needs_you card issued; digest {}...",
+                &digest[..8.min(digest.len())]
+            ),
         );
         self.notify_change();
         Ok(digest)
@@ -142,7 +156,9 @@ impl Daemon {
             .find(|c| c.id == id)
             .map(|c| c.session)
             .ok_or_else(|| "no pending approval with that id".to_string())?;
-        inbox.answer(id, allow, note, at, card, mode).map_err(String::from)?;
+        inbox
+            .answer(id, allow, note, at, card, mode)
+            .map_err(String::from)?;
         // Consume exactly once; a replay of these bytes cannot verify again.
         let taken = inbox
             .take_answer(id)
@@ -151,10 +167,10 @@ impl Daemon {
             .ok_or_else(|| "answer mode outside the whitelist".to_string())?;
         if answer_mode.is_permission_grant() {
             let grants = GRANTS.get_or_init(|| Mutex::new(HashMap::new()));
-            grants
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert((self.config.state_dir.clone(), session.clone()), answer_mode);
+            grants.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                (self.config.state_dir.clone(), session.clone()),
+                answer_mode,
+            );
         }
         {
             let mut inner = lock(&self.inner);
@@ -189,10 +205,10 @@ impl Daemon {
 
     /// Standing permission grant for one session, set only by a signed answer.
     pub fn approval_grant(&self, session: &str) -> Option<AnswerMode> {
-        GRANTS
-            .get()
-            .and_then(|g| g.lock().ok())
-            .and_then(|g| g.get(&(self.config.state_dir.clone(), session.to_string())).copied())
+        GRANTS.get().and_then(|g| g.lock().ok()).and_then(|g| {
+            g.get(&(self.config.state_dir.clone(), session.to_string()))
+                .copied()
+        })
     }
 
     /// Direct signature check, exposed for the control-plane glue/tests. This

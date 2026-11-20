@@ -132,7 +132,10 @@ impl WsDaemon {
         // Readiness: a real client must get a real hello.
         let mut probe = server.connect();
         let hello = probe.read_value_within(Duration::from_secs(5));
-        assert_eq!(hello.as_ref().and_then(|v| v["event"].as_str()), Some("hello"));
+        assert_eq!(
+            hello.as_ref().and_then(|v| v["event"].as_str()),
+            Some("hello")
+        );
         server
     }
 
@@ -174,8 +177,12 @@ impl WsDaemon {
             match connect(request) {
                 Ok((mut ws, _)) => {
                     if let MaybeTlsStream::Plain(stream) = ws.get_mut() {
-                        stream.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
-                        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_millis(20)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
                     }
                     return WsClient { ws };
                 }
@@ -236,10 +243,15 @@ impl WsClient {
         let mut got = 0usize;
         while got < n && Instant::now() < deadline {
             match self.ws.read() {
-                Ok(Message::Text(_) | Message::Binary(_) | Message::Ping(_) | Message::Pong(_)) => got += 1,
+                Ok(Message::Text(_) | Message::Binary(_) | Message::Ping(_) | Message::Pong(_)) => {
+                    got += 1
+                }
                 Ok(Message::Close(_)) => break,
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(_) => break,
                 Ok(Message::Frame(_)) => {}
             }
@@ -267,7 +279,10 @@ impl WsClient {
                 Ok(Message::Pong(_) | Message::Binary(_) | Message::Frame(_)) => {}
                 Ok(Message::Close(_)) => return None,
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
                 {
                     continue
                 }

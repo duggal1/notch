@@ -124,8 +124,7 @@ impl JudgePool {
                 } else {
                     Some(Path::new(&session_cwd))
                 };
-                let (raw, path, ms) =
-                    judge(oc.as_ref(), &job.model, &job.prompt, &session_id, cwd);
+                let (raw, path, ms) = judge(oc.as_ref(), &job.model, &job.prompt, &session_id, cwd);
                 let finished = Finished {
                     session: job.session,
                     kind: job.kind,
@@ -494,7 +493,12 @@ impl Daemon {
             match decider::evaluate_local_dod(seed.dod.as_deref(), &seed.cwd, &tail) {
                 decider::LocalCheckOutcome::Satisfied { evidence } => {
                     decider::record_decision(DecisionPath::Fast, 0);
-                    self.log_path(&seed.id, DecisionPath::Fast, 0, &format!("evidence={}", decider::log_head(&evidence, 120)));
+                    self.log_path(
+                        &seed.id,
+                        DecisionPath::Fast,
+                        0,
+                        &format!("evidence={}", decider::log_head(&evidence, 120)),
+                    );
                     let mut inner = lock(&self.inner);
                     if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
                         s.status = Status::Done;
@@ -519,7 +523,12 @@ impl Daemon {
                 }
                 decider::LocalCheckOutcome::Missing { reason } => {
                     decider::record_decision(DecisionPath::Fast, 0);
-                    self.log_path(&seed.id, DecisionPath::Fast, 0, &format!("missing={}", decider::log_head(&reason, 120)));
+                    self.log_path(
+                        &seed.id,
+                        DecisionPath::Fast,
+                        0,
+                        &format!("missing={}", decider::log_head(&reason, 120)),
+                    );
                     self.reprompt_session(
                         &seed.id,
                         &decider::reprompt_text_missing_evidence(&reason),
@@ -551,7 +560,12 @@ impl Daemon {
                 .wall_clock_deadline
                 .map(|d| d.saturating_sub(now) / 1000)
                 .unwrap_or(3600);
-            prepared.push(Prepared { seed, tail, model, remaining });
+            prepared.push(Prepared {
+                seed,
+                tail,
+                model,
+                remaining,
+            });
         }
 
         // ---- Phase B: non-blocking submit to the long-lived workers ----
@@ -578,7 +592,12 @@ impl Daemon {
     /// Commit a background spawn's result to the session tree. The ack was
     /// already returned; failures land here as warnings + failed status.
     fn apply_spawn_outcome(&self, outcome: super::lifecycle::SpawnOutcome) {
-        let super::lifecycle::SpawnOutcome { session, warnings, error, pane } = outcome;
+        let super::lifecycle::SpawnOutcome {
+            session,
+            warnings,
+            error,
+            pane,
+        } = outcome;
         let cwd = session.cwd.clone();
         {
             let mut inner = lock(&self.inner);
@@ -600,7 +619,9 @@ impl Daemon {
             self.save_state(&inner);
         }
         if let Some(e) = error {
-            let _ = self.event_log.append(None, "escalate", &format!("spawn_failed: {e}"));
+            let _ = self
+                .event_log
+                .append(None, "escalate", &format!("spawn_failed: {e}"));
         } else if let Some(pane) = pane {
             let _ = self.event_log.append(
                 Some(session.id.clone()),
@@ -614,8 +635,15 @@ impl Daemon {
     /// semantics: loop detection, stuck strikes, budget accounting, verifier
     /// evidence checks, and "never re-prompt a working session".
     fn apply_judgment(&self, f: Finished, now: u64, pool: &Arc<JudgePool>) {
-        let Finished { ctx, raw, path, ms, .. } = f;
-        let JobCtx { seed, tail, model, remaining } = ctx;
+        let Finished {
+            ctx, raw, path, ms, ..
+        } = f;
+        let JobCtx {
+            seed,
+            tail,
+            model,
+            remaining,
+        } = ctx;
         self.log_path(&seed.id, path, ms, "judgment");
 
         // Persist the new tail for loop detection across calls.
@@ -788,10 +816,7 @@ impl Daemon {
                             );
                             return;
                         }
-                        self.reprompt_session(
-                            &seed.id,
-                            &decider::reprompt_text_stuck(&blocker),
-                        );
+                        self.reprompt_session(&seed.id, &decider::reprompt_text_stuck(&blocker));
                         if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
                             s.iterations = s.iterations.saturating_add(1);
                             s.status = Status::Working;
@@ -855,7 +880,13 @@ impl Daemon {
     /// Apply a verifier answer. This is the ONLY path (besides the local-DoD
     /// fast path) allowed to log `decision{action:"done"}` and set Done.
     fn apply_verify(&self, f: Finished, now: u64) {
-        let Finished { session, raw, path, ms, .. } = f;
+        let Finished {
+            session,
+            raw,
+            path,
+            ms,
+            ..
+        } = f;
         let Some(pending) = self
             .judge_pool()
             .pending
@@ -891,10 +922,7 @@ impl Daemon {
                 let _ = cleanup::cleanup_session(&self.config.tmp_dir, &seed.id);
             }
             Some(decider::VerifierVerdict::No { missing }) => {
-                self.reprompt_session(
-                    &seed.id,
-                    &decider::reprompt_text_missing_evidence(&missing),
-                );
+                self.reprompt_session(&seed.id, &decider::reprompt_text_missing_evidence(&missing));
                 self.advance_after_failed_verify(&seed, now);
                 self.log_decision(
                     &mut lock(&self.inner),
@@ -984,7 +1012,12 @@ impl Daemon {
                 );
             }
             self.save_state(&lock(&self.inner));
-            if pool.in_flight.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
+            if pool
+                .in_flight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&id)
+            {
                 continue; // one judgment per session, no spin
             }
             let (goal, dod, model, iterations, max_iterations, session_cwd) = {
@@ -995,14 +1028,19 @@ impl Daemon {
                 (
                     s.goal.clone(),
                     s.definition_of_done.clone(),
-                    s.model.clone().unwrap_or_else(|| decider::DECIDER_MODEL.to_string()),
+                    s.model
+                        .clone()
+                        .unwrap_or_else(|| decider::DECIDER_MODEL.to_string()),
                     s.iterations,
                     s.max_iterations,
                     s.cwd.clone(),
                 )
             };
             // herdr IO happens with no locks held.
-            let tail = self.herdr.agent_read(&agent_target(&id), 200).unwrap_or_default();
+            let tail = self
+                .herdr
+                .agent_read(&agent_target(&id), 200)
+                .unwrap_or_default();
             let remaining = 3600;
             let prompt = decider::decider_prompt(
                 goal.as_deref().unwrap_or(""),

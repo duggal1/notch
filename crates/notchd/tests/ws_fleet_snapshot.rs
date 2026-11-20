@@ -238,10 +238,18 @@ fn seed_fleet(d: &RealDaemon) -> [String; 4] {
         if ready {
             break;
         }
-        assert!(Instant::now() < deadline, "pane ids never published: {snap}");
+        assert!(
+            Instant::now() < deadline,
+            "pane ids never published: {snap}"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
-    [ids[0].clone(), ids[1].clone(), ids[2].clone(), ids[3].clone()]
+    [
+        ids[0].clone(),
+        ids[1].clone(),
+        ids[2].clone(),
+        ids[3].clone(),
+    ]
 }
 
 // ---------- real WS client ----------
@@ -282,14 +290,19 @@ impl Client {
             }
             match self.ws.read() {
                 Ok(Message::Text(t)) => {
-                    return Some(serde_json::from_str(&t).unwrap_or_else(|e| panic!("bad WS JSON {t}: {e}")))
+                    return Some(
+                        serde_json::from_str(&t).unwrap_or_else(|e| panic!("bad WS JSON {t}: {e}")),
+                    )
                 }
                 Ok(Message::Ping(_)) => {
                     let _ = self.ws.flush();
                 }
                 Ok(_) => {}
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(_) => return None,
             }
         }
@@ -329,13 +342,17 @@ fn real_serve_hello_then_fleet_frame_carries_live_fleet() {
     let units = fleet["units"]
         .as_array()
         .unwrap_or_else(|| panic!("no fleet.units in frame: {fleet}"));
-    let unit = |id: &str| -> Option<&Value> {
-        units.iter().find(|u| u["id"].as_str() == Some(id))
-    };
+    let unit = |id: &str| -> Option<&Value> { units.iter().find(|u| u["id"].as_str() == Some(id)) };
 
     let orch = unit("ORCH").unwrap_or_else(|| panic!("fleet missing ORCH: {fleet}"));
-    assert!(orch["status"].as_str().is_some(), "orchestrator status: {orch}");
-    assert!(orch["topStatus"].as_str().is_some(), "orchestrator topStatus: {orch}");
+    assert!(
+        orch["status"].as_str().is_some(),
+        "orchestrator status: {orch}"
+    );
+    assert!(
+        orch["topStatus"].as_str().is_some(),
+        "orchestrator topStatus: {orch}"
+    );
     assert!(orch["kind"].as_str().is_some(), "orchestrator kind: {orch}");
     assert_eq!(
         fleet["topStatus"], hello["snapshot"]["orchestrator"]["status"],
@@ -344,33 +361,58 @@ fn real_serve_hello_then_fleet_frame_carries_live_fleet() {
 
     let sup_ids: Vec<&str> = units
         .iter()
-        .filter(|u| u["id"].as_str().map(|id| id.starts_with("SV-")).unwrap_or(false))
+        .filter(|u| {
+            u["id"]
+                .as_str()
+                .map(|id| id.starts_with("SV-"))
+                .unwrap_or(false)
+        })
         .filter_map(|u| u["id"].as_str())
         .collect();
     assert_eq!(sup_ids, ["SV-1", "SV-2"], "fleet supervisors: {fleet}");
     for sid in ["SV-1", "SV-2"] {
         let s = unit(sid).unwrap();
         assert!(s["status"].as_str().is_some(), "supervisor status: {s}");
-        assert!(s["topStatus"].as_str().is_some(), "supervisor topStatus: {s}");
+        assert!(
+            s["topStatus"].as_str().is_some(),
+            "supervisor topStatus: {s}"
+        );
         assert!(s["kind"].as_str().is_some(), "supervisor kind: {s}");
     }
 
     // Sessions: real, ordered ids plus the required pane/workspace fields.
     let session_units: Vec<&Value> = units
         .iter()
-        .filter(|u| u["id"].as_str().map(|id| id.contains("-OC")).unwrap_or(false))
+        .filter(|u| {
+            u["id"]
+                .as_str()
+                .map(|id| id.contains("-OC"))
+                .unwrap_or(false)
+        })
         .collect();
-    let got: Vec<&str> = session_units.iter().map(|s| s["id"].as_str().unwrap_or("")).collect();
-    assert_eq!(got, ids, "fleet session ids must be real, ordered ids: {fleet}");
+    let got: Vec<&str> = session_units
+        .iter()
+        .map(|s| s["id"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        got, ids,
+        "fleet session ids must be real, ordered ids: {fleet}"
+    );
 
     for s in &session_units {
         assert!(s["status"].as_str().is_some(), "session status: {s}");
         assert!(s["topStatus"].as_str().is_some(), "session topStatus: {s}");
         assert!(s["kind"].as_str().is_some(), "session kind: {s}");
         let pane = s["paneId"].as_str().unwrap_or("");
-        assert!(!pane.is_empty() && pane.starts_with('w'), "session paneId must be a real pane: {s}");
+        assert!(
+            !pane.is_empty() && pane.starts_with('w'),
+            "session paneId must be a real pane: {s}"
+        );
         let workspace = s["workspace"].as_str().unwrap_or("");
-        assert!(!workspace.is_empty(), "session workspace must be present: {s}");
+        assert!(
+            !workspace.is_empty(),
+            "session workspace must be present: {s}"
+        );
         // lastAction / revision are best-effort projections of lastAction and
         // lastRevision; they are legitimately null until a poll has sampled a
         // pane tail/heartbeat. When present they must have the documented type.

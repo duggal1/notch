@@ -35,7 +35,6 @@ struct SpawnChannel {
 /// Per-state-dir channels, so test daemons never cross-talk.
 static SPAWN_CHANNELS: OnceLock<Mutex<HashMap<PathBuf, SpawnChannel>>> = OnceLock::new();
 
-
 impl Daemon {
     /// Open the daemon: load registry + state (missing/corrupt -> defaults),
     /// register bus endpoints for known supervisors. NO herdr calls here —

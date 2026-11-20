@@ -101,7 +101,10 @@ fn t8_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
         delivered += c.drain_frames(1000, Duration::from_secs(10));
     }
     let flood_ms = t0.elapsed().as_millis();
-    assert_eq!(delivered, 100_000, "every frame must get a reply, got {delivered} in {flood_ms}ms");
+    assert_eq!(
+        delivered, 100_000,
+        "every frame must get a reply, got {delivered} in {flood_ms}ms"
+    );
 
     // Exactly at the 256 KiB frame cap: server answers (invalid_json ack).
     let at_cap = "x".repeat(256 * 1024);
@@ -121,7 +124,10 @@ fn t8_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
     // Fresh authenticated client proves the daemon never wedged.
     let mut fresh = server.connect();
     let hello = fresh.read_value_within(Duration::from_secs(5));
-    assert_eq!(hello.as_ref().and_then(|v| v["event"].as_str()), Some("hello"));
+    assert_eq!(
+        hello.as_ref().and_then(|v| v["event"].as_str()),
+        Some("hello")
+    );
     let pong = fresh.rpc_ack("ping", &json!({"cmd": "ping"}));
     assert_eq!(pong["ok"], true);
 

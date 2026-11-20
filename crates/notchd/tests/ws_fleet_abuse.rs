@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use tungstenite::Message;
 
 fn count_fds() -> usize {
-    std::fs::read_dir("/dev/fd").map(|it| it.count()).unwrap_or(0)
+    std::fs::read_dir("/dev/fd")
+        .map(|it| it.count())
+        .unwrap_or(0)
 }
 
 fn count_threads() -> usize {
@@ -63,16 +65,51 @@ fn fleet_ws_rejects_origin_token_and_host_but_accepts_valid_bearer() {
     let good_auth = format!("Bearer {}", server.token);
 
     let valid = raw_upgrade(server.port, None, Some(&good_auth), &good_host);
-    assert_eq!(valid, Some(101), "valid Bearer + loopback Host must upgrade; got {valid:?}");
+    assert_eq!(
+        valid,
+        Some(101),
+        "valid Bearer + loopback Host must upgrade; got {valid:?}"
+    );
 
     let cases: Vec<(&str, Option<u16>)> = vec![
-        ("Origin: null", raw_upgrade(server.port, Some("null"), Some(&good_auth), &good_host)),
-        ("Origin: evil", raw_upgrade(server.port, Some("http://evil.example"), Some(&good_auth), &good_host)),
-        ("wrong token", raw_upgrade(server.port, None, Some("Bearer 0000000000000000000000000000000000000000000000000000000000000000"), &good_host)),
-        ("missing token", raw_upgrade(server.port, None, None, &good_host)),
-        ("bad scheme", raw_upgrade(server.port, None, Some(&server.token), &good_host)),
-        ("wrong host", raw_upgrade(server.port, None, Some(&good_auth), "127.0.0.1:1")),
-        ("localhost host", raw_upgrade(server.port, None, Some(&good_auth), "localhost:7407")),
+        (
+            "Origin: null",
+            raw_upgrade(server.port, Some("null"), Some(&good_auth), &good_host),
+        ),
+        (
+            "Origin: evil",
+            raw_upgrade(
+                server.port,
+                Some("http://evil.example"),
+                Some(&good_auth),
+                &good_host,
+            ),
+        ),
+        (
+            "wrong token",
+            raw_upgrade(
+                server.port,
+                None,
+                Some("Bearer 0000000000000000000000000000000000000000000000000000000000000000"),
+                &good_host,
+            ),
+        ),
+        (
+            "missing token",
+            raw_upgrade(server.port, None, None, &good_host),
+        ),
+        (
+            "bad scheme",
+            raw_upgrade(server.port, None, Some(&server.token), &good_host),
+        ),
+        (
+            "wrong host",
+            raw_upgrade(server.port, None, Some(&good_auth), "127.0.0.1:1"),
+        ),
+        (
+            "localhost host",
+            raw_upgrade(server.port, None, Some(&good_auth), "localhost:7407"),
+        ),
     ];
     for (name, got) in cases {
         assert!(
@@ -95,22 +132,40 @@ fn fleet_ws_100_client_storm_caps_at_16_and_daemon_stays_alive() {
     for _ in 0..100 {
         match server.connect_raw_with_auth() {
             Ok(mut ws) => match ws.read() {
-                Ok(Message::Text(t)) if serde_json::from_str::<Value>(&t)
-                    .map(|v| v["event"] == "hello")
-                    .unwrap_or(false) => admitted.push(ws),
+                Ok(Message::Text(t))
+                    if serde_json::from_str::<Value>(&t)
+                        .map(|v| v["event"] == "hello")
+                        .unwrap_or(false) =>
+                {
+                    admitted.push(ws)
+                }
                 Ok(Message::Close(_)) => rejected += 1,
                 other => panic!("unexpected first frame from authenticated client: {other:?}"),
             },
             Err(e) => panic!("authenticated client could not upgrade during storm: {e}"),
         }
     }
-    assert_eq!(admitted.len(), MAX_CLIENTS, "exactly 16 clients admitted: {}", admitted.len());
-    assert_eq!(rejected, 100 - MAX_CLIENTS, "84 over-capacity clients closed: {rejected}");
-    assert_eq!(server.active(), MAX_CLIENTS, "over-capacity clients must not consume slots");
+    assert_eq!(
+        admitted.len(),
+        MAX_CLIENTS,
+        "exactly 16 clients admitted: {}",
+        admitted.len()
+    );
+    assert_eq!(
+        rejected,
+        100 - MAX_CLIENTS,
+        "84 over-capacity clients closed: {rejected}"
+    );
+    assert_eq!(
+        server.active(),
+        MAX_CLIENTS,
+        "over-capacity clients must not consume slots"
+    );
 
     // Every admitted client still talks to the daemon after the storm.
     let c = &mut admitted[0];
-    c.send(Message::Text(json!({"cmd":"ping"}).to_string().into())).unwrap();
+    c.send(Message::Text(json!({"cmd":"ping"}).to_string().into()))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut ok = false;
     while Instant::now() < deadline {
@@ -137,9 +192,12 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
     // real session so the post-flood fleet assertion is meaningful.
     let work = server.root.join("work");
     std::fs::create_dir_all(&work).unwrap();
-    let seed = c.rpc_ack("submit_task", &json!({
-        "cmd":"submit_task", "task":"flood seed", "cwd": work.to_string_lossy()
-    }));
+    let seed = c.rpc_ack(
+        "submit_task",
+        &json!({
+            "cmd":"submit_task", "task":"flood seed", "cwd": work.to_string_lossy()
+        }),
+    );
     assert_eq!(seed["ok"], true, "seed failed: {seed}");
 
     // 100,000 randomized valid frames; every one must be acked inline.
@@ -154,7 +212,9 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
         // buffers moving under heavy parallel load while still delivering a
         // real 100,000-frame flood with every frame acked inline.
         for i in acked..end {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let pad = format!("{:016x}", seed ^ (i as u64));
             c.send(&json!({"cmd":"ping","pad":pad}));
         }
@@ -162,7 +222,8 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
             // The connect-time `fleet` frame (and any change push) can
             // interleave; a command's reply is the ack frame, so skip non-acks.
             let v = loop {
-                let x = c.read_value_within(Duration::from_secs(10))
+                let x = c
+                    .read_value_within(Duration::from_secs(10))
                     .unwrap_or_else(|| panic!("missing ack {i}/{n} after 100k-frame flood"));
                 if x["event"] == "ack" {
                     break x;
@@ -176,19 +237,39 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
     }
     assert_eq!(acked, n);
     let elapsed = t0.elapsed();
-    eprintln!("fleet 100k text frames fully acked in {} ms", elapsed.as_millis());
+    eprintln!(
+        "fleet 100k text frames fully acked in {} ms",
+        elapsed.as_millis()
+    );
 
     // Exact 256 KiB MESSAGE (JSON braces + pad included) is accepted;
     // 256 KiB + 1 is rejected by the WS config's max_message_size.
     let overhead = "{\"cmd\":\"ping\",\"pad\":\"\"}".len();
-    let ok = format!("{{\"cmd\":\"ping\",\"pad\":\"{}\"}}", "x".repeat(256 * 1024 - overhead));
-    assert_eq!(ok.len(), 256 * 1024, "boundary frame must be exactly 256 KiB");
+    let ok = format!(
+        "{{\"cmd\":\"ping\",\"pad\":\"{}\"}}",
+        "x".repeat(256 * 1024 - overhead)
+    );
+    assert_eq!(
+        ok.len(),
+        256 * 1024,
+        "boundary frame must be exactly 256 KiB"
+    );
     c.send_text(&ok);
     let resp = c.read_value_within(Duration::from_secs(5));
-    assert!(resp.is_some(), "256 KiB boundary frame must not kill the connection");
+    assert!(
+        resp.is_some(),
+        "256 KiB boundary frame must not kill the connection"
+    );
 
-    let big = format!("{{\"cmd\":\"ping\",\"pad\":\"{}\"}}", "x".repeat(256 * 1024 + 1 - overhead));
-    assert_eq!(big.len(), 256 * 1024 + 1, "oversize frame must be 256 KiB + 1");
+    let big = format!(
+        "{{\"cmd\":\"ping\",\"pad\":\"{}\"}}",
+        "x".repeat(256 * 1024 + 1 - overhead)
+    );
+    assert_eq!(
+        big.len(),
+        256 * 1024 + 1,
+        "oversize frame must be 256 KiB + 1"
+    );
     c.send_text(&big);
     // The oversize frame closes the connection; either EOF or an error is fine.
     let _ = c.read_value_within(Duration::from_secs(3));
@@ -205,7 +286,10 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
         .wait_for_event("fleet", Duration::from_secs(15))
         .expect("fleet stream dead after 100k + boundary frames");
     let units = fleet["fleet"]["units"].as_array().unwrap();
-    assert!(units.iter().any(|u| u["id"] == "ORCH"), "fleet lost ORCH after abuse: {units:?}");
+    assert!(
+        units.iter().any(|u| u["id"] == "ORCH"),
+        "fleet lost ORCH after abuse: {units:?}"
+    );
     fresh.send(&json!({"cmd":"ping"}));
     let ping_deadline = Instant::now() + Duration::from_secs(15);
     let mut pong_ok = false;
@@ -223,7 +307,10 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
 #[test]
 fn fleet_ws_no_fd_or_thread_leak_across_200_connect_disconnect_cycles() {
     let server = WsDaemon::start("fleet-leak");
-    assert!(server.wait_for_active(0, Duration::from_secs(5)), "readiness slot stuck");
+    assert!(
+        server.wait_for_active(0, Duration::from_secs(5)),
+        "readiness slot stuck"
+    );
 
     let fds_before = count_fds();
     let threads_before = count_threads();
@@ -231,7 +318,11 @@ fn fleet_ws_no_fd_or_thread_leak_across_200_connect_disconnect_cycles() {
     for i in 0..200 {
         let mut c = server.connect();
         let h = c.read_value_within(Duration::from_secs(5));
-        assert_eq!(h.as_ref().and_then(|v| v["event"].as_str()), Some("hello"), "cycle {i}");
+        assert_eq!(
+            h.as_ref().and_then(|v| v["event"].as_str()),
+            Some("hello"),
+            "cycle {i}"
+        );
         c.close();
         assert!(
             server.wait_for_active(0, Duration::from_secs(5)),

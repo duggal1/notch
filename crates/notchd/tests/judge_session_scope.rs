@@ -55,7 +55,8 @@ fn idle_herdr() -> Herdr {
                 "agent":"opencode", "agent_status":"idle",
                 "pane_id":"wJ:p1", "revision":1,
                 "terminal_title":"OC | j", "focused":false, "name":"j"
-            }]}}).to_string()),
+            }]}})
+            .to_string()),
             ("agent", "read") => Ok("idle tail\n".to_string()),
             _ => Ok(r#"{"result":{"type":"ok"}}"#.to_string()),
         }
@@ -100,7 +101,9 @@ fn judge_uses_per_notch_session_id_and_real_cwd() {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         daemon.poll_once();
-        if read_log(&log).iter().any(|(_, argv)| argv.contains("--session"))
+        if read_log(&log)
+            .iter()
+            .any(|(_, argv)| argv.contains("--session"))
             || Instant::now() >= deadline
         {
             break;
@@ -108,9 +111,16 @@ fn judge_uses_per_notch_session_id_and_real_cwd() {
         std::thread::sleep(Duration::from_millis(25));
     }
     let calls = read_log(&log);
-    assert!(!calls.is_empty(), "decoder judge never ran; snapshot={}", serde_json::to_value(daemon.snapshot()).unwrap());
+    assert!(
+        !calls.is_empty(),
+        "decoder judge never ran; snapshot={}",
+        serde_json::to_value(daemon.snapshot()).unwrap()
+    );
 
-    let session_cwd = std::fs::canonicalize(&cwd).unwrap().to_string_lossy().into_owned();
+    let session_cwd = std::fs::canonicalize(&cwd)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let mut saw_scoped = false;
     for (call_cwd, argv) in &calls {
         if argv.contains("--session") {

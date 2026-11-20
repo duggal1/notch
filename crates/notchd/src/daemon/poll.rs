@@ -294,7 +294,8 @@ impl Daemon {
             match mapped {
                 Status::Failed => {
                     let tail = self.herdr.agent_read(&agent_target(&seed.id), 20).ok();
-                    match decide_on_failure_with_reason(reason.as_deref(), seed.failure_count, tail) {
+                    match decide_on_failure_with_reason(reason.as_deref(), seed.failure_count, tail)
+                    {
                         FailureAction::Reprompt { tail } => {
                             // Fleet admission gate (steal #5). Purely additive:
                             // a held/preempted start leaves session state and
@@ -573,7 +574,8 @@ impl Daemon {
                                 Liveness::Suspect => {
                                     let quiet = mono.saturating_sub(s.revision_changed_at_ms);
                                     if lock(&self.watchdog).take_suspect_action(&id, mono) {
-                                        pending_nudges.push((id.clone(), SUSPECT_NUDGE.to_string()));
+                                        pending_nudges
+                                            .push((id.clone(), SUSPECT_NUDGE.to_string()));
                                         pending_escalations.push((
                                             id.clone(),
                                             "stuck_suspect".to_string(),
@@ -582,7 +584,9 @@ impl Daemon {
                                         let _ = self.event_log.append(
                                             Some(id.clone()),
                                             "watchdog",
-                                            &format!("suspect: quiet {quiet}ms; nudge + escalation"),
+                                            &format!(
+                                                "suspect: quiet {quiet}ms; nudge + escalation"
+                                            ),
                                         );
                                     }
                                 }
@@ -601,7 +605,11 @@ impl Daemon {
                                         );
                                     }
                                     if lock(&self.watchdog).should_close_pane(Liveness::Stuck) {
-                                        pending_kills.push((id.clone(), pane_id.clone(), cwd.clone()));
+                                        pending_kills.push((
+                                            id.clone(),
+                                            pane_id.clone(),
+                                            cwd.clone(),
+                                        ));
                                     } else {
                                         pending_warnings.push(format!(
                                             "{id} stuck; kill_on_stuck is OFF — pane kept, escalation only"
@@ -644,7 +652,9 @@ impl Daemon {
                             Ok(()) => {
                                 push_warning(
                                     &mut inner,
-                                    format!("{id} stuck (no revision change); pane {pane_id} closed"),
+                                    format!(
+                                        "{id} stuck (no revision change); pane {pane_id} closed"
+                                    ),
                                 );
                                 if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
                                     s.status = Status::Failed;

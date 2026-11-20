@@ -389,7 +389,12 @@ impl Daemon {
             sessions,
             None,
         );
-        let SpawnOutcome { session: updated, warnings, error, pane } = outcome;
+        let SpawnOutcome {
+            session: updated,
+            warnings,
+            error,
+            pane,
+        } = outcome;
         *session = updated;
         {
             let mut inner = lock(&self.inner);
@@ -830,11 +835,23 @@ mod busy_retry_tests {
             Vec::new(),
             None,
         );
-        assert!(outcome.error.is_none(), "transient busy must be retried: {:?}", outcome.error);
+        assert!(
+            outcome.error.is_none(),
+            "transient busy must be retried: {:?}",
+            outcome.error
+        );
         assert_eq!(outcome.session.id, "S2-OC02", "allocated ID must survive");
-        assert_eq!(outcome.session.status, Status::Working, "session must end working");
+        assert_eq!(
+            outcome.session.status,
+            Status::Working,
+            "session must end working"
+        );
         assert_eq!(outcome.session.pane_id, "w9:p1");
-        assert_eq!(*busy.split_calls.lock().unwrap(), 2, "one busy response then success");
+        assert_eq!(
+            *busy.split_calls.lock().unwrap(),
+            2,
+            "one busy response then success"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -856,16 +873,28 @@ mod busy_retry_tests {
             None,
         );
         let err = outcome.error.expect("permanent busy must fail honestly");
-        assert!(err.contains("busy"), "error must name the busy cause: {err}");
-        assert_eq!(outcome.session.id, "S2-OC02", "failed spawn must not drop the ID");
+        assert!(
+            err.contains("busy"),
+            "error must name the busy cause: {err}"
+        );
+        assert_eq!(
+            outcome.session.id, "S2-OC02",
+            "failed spawn must not drop the ID"
+        );
         assert!(outcome.session.pane_id.is_empty());
         assert!(
-            outcome.warnings.iter().any(|w| w.contains("busy") && w.contains("S2-OC02")),
+            outcome
+                .warnings
+                .iter()
+                .any(|w| w.contains("busy") && w.contains("S2-OC02")),
             "warning must carry the honest reason: {:?}",
             outcome.warnings
         );
         let calls = *busy.split_calls.lock().unwrap();
-        assert!(calls > 1 && calls <= 4, "retry must be bounded (initial + 3): {calls}");
+        assert!(
+            calls > 1 && calls <= 4,
+            "retry must be bounded (initial + 3): {calls}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

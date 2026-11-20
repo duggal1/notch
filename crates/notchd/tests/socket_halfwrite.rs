@@ -51,7 +51,11 @@ fn socket_halfwrite_close_mid_frame() {
 
     // Clients behind the same flood reconnect fine, immediately after.
     for i in 0..20 {
-        let mut c = TestConn::connect_with_timeouts(&d.sock, Duration::from_secs(2), Duration::from_secs(2));
+        let mut c = TestConn::connect_with_timeouts(
+            &d.sock,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        );
         let _hello = c.hello();
         let ack = c.rpc(&json!({"cmd":"ping"}));
         assert_eq!(ack["ok"], true, "reconnect #{i} failed");
@@ -69,27 +73,40 @@ fn socket_halfwrite_close_mid_frame() {
     }
     let hit = sub.wait_for_line(deadline_in(2000), |v| {
         v["event"] == "snapshot"
-            && v["snapshot"]["sessions"].as_array().map(|ss| {
-                ss.iter().any(|s| s["failureReason"] == "halfwrite-after")
-            }).unwrap_or(false)
+            && v["snapshot"]["sessions"]
+                .as_array()
+                .map(|ss| ss.iter().any(|s| s["failureReason"] == "halfwrite-after"))
+                .unwrap_or(false)
     });
-    assert!(hit.is_some(), "subscriber behind the half-write flood never saw the push");
+    assert!(
+        hit.is_some(),
+        "subscriber behind the half-write flood never saw the push"
+    );
 
     // No error-log storm: the daemon logs nothing about parse failures or
     // half-frames (it never logged them to begin with) — assert that no such
     // lines exist, and stderr is not full of repeated complaints.
     let log = d.events_log().to_ascii_lowercase();
-    for needle in ["invalid_json", "parse error", "half-frame", "half frame", "malformed"] {
+    for needle in [
+        "invalid_json",
+        "parse error",
+        "half-frame",
+        "half frame",
+        "malformed",
+    ] {
         assert!(
             !log.contains(needle),
             "events.jsonl contains {needle:?} — error-log storm after half-writes:\n{log}"
         );
     }
     let stderr = d.stderr_log();
-    let repeat_count = stderr.lines().filter(|l| {
-        let l = l.to_ascii_lowercase();
-        l.contains("error") || l.contains("panic")
-    }).count();
+    let repeat_count = stderr
+        .lines()
+        .filter(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("error") || l.contains("panic")
+        })
+        .count();
     eprintln!("socket_halfwrite_close_mid_frame: error-ish stderr lines after 3 half-writes: {repeat_count}");
     assert!(
         repeat_count < 4,
@@ -106,7 +123,9 @@ fn socket_halfwrite_close_mid_frame() {
 fn socket_halfwrite_shutdown_write_side_only() {
     let d = TestDaemon::start("half-shutdown");
     let stream = std::os::unix::net::UnixStream::connect(&d.sock).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
     let mut w = stream.try_clone().unwrap();
     w.write_all(b"{\"cmd\":\"ping\"}\n{\"cmd\":\"p").unwrap();
     w.flush().unwrap();
@@ -117,7 +136,10 @@ fn socket_halfwrite_shutdown_write_side_only() {
     let mut reader = std::io::BufReader::new(stream);
     let mut l0 = String::new();
     std::io::BufRead::read_line(&mut reader, &mut l0).expect("read hello");
-    assert_eq!(serde_json::from_str::<serde_json::Value>(l0.trim_end()).unwrap()["event"], "hello");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(l0.trim_end()).unwrap()["event"],
+        "hello"
+    );
 
     // First frame line: the complete ping frame acks ok.
     let mut l1 = String::new();
@@ -135,8 +157,12 @@ fn socket_halfwrite_shutdown_write_side_only() {
             eprintln!("socket_halfwrite_shutdown_write_side_only: server closed at EOF after partial frame (no ack)");
         }
         Ok(_) => {
-            let v2: serde_json::Value = serde_json::from_str(l2.trim_end()).unwrap_or_else(|e| panic!("partial-frame reply not JSON: {e}: {l2:?}"));
-            eprintln!("socket_halfwrite_shutdown_write_side_only: partial frame got reply: {}", l2.trim_end());
+            let v2: serde_json::Value = serde_json::from_str(l2.trim_end())
+                .unwrap_or_else(|e| panic!("partial-frame reply not JSON: {e}: {l2:?}"));
+            eprintln!(
+                "socket_halfwrite_shutdown_write_side_only: partial frame got reply: {}",
+                l2.trim_end()
+            );
             assert_eq!(v2["event"], "ack");
             assert_eq!(v2["ok"], false);
         }

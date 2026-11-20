@@ -29,17 +29,25 @@ fn socket_concurrency_200_ping() {
                 // the excess of an instantaneous >128-connect burst;
                 // well-behaved clients behind a flood retry immediately
                 // (same reconnect story as the half-write flood, §6).
-                let (mut c, refusals) = TestConn::connect_retry(&sock, std::time::Duration::from_secs(5));
+                let (mut c, refusals) =
+                    TestConn::connect_retry(&sock, std::time::Duration::from_secs(5));
                 let _hello = c.hello();
                 let ack = c.rpc(&json!({"cmd":"ping"}));
-                (ack["ok"].as_bool() == Some(true), ack["pong"].as_u64().is_some(), refusals)
+                (
+                    ack["ok"].as_bool() == Some(true),
+                    ack["pong"].as_u64().is_some(),
+                    refusals,
+                )
             }) {
                 Ok((ok, pong, refusals)) => {
                     refusal_total.fetch_add(refusals, Ordering::SeqCst);
                     if ok && pong {
                         ok_count.fetch_add(1, Ordering::SeqCst);
                     } else {
-                        errors.lock().unwrap().push("ack not ok/pong missing".to_string());
+                        errors
+                            .lock()
+                            .unwrap()
+                            .push("ack not ok/pong missing".to_string());
                     }
                 }
                 Err(_) => errors.lock().unwrap().push("thread panicked".to_string()),
@@ -55,7 +63,10 @@ fn socket_concurrency_200_ping() {
     let errs = errors.lock().unwrap();
     eprintln!("socket_concurrency_200_ping: {ok}/200 acks in {elapsed:?}; total connect refusals absorbed by retry: {refusals}; errors: {errs:?}");
     assert!(errs.is_empty(), "errors from concurrent clients: {errs:?}");
-    assert_eq!(ok, 200, "every one of the 200 simultaneous clients must get an ok ping ack");
+    assert_eq!(
+        ok, 200,
+        "every one of the 200 simultaneous clients must get an ok ping ack"
+    );
 }
 
 #[test]
@@ -153,7 +164,10 @@ fn socket_concurrency_kill_with_20_subscribers() {
     let ack = killer.join().expect("killer thread");
     assert_eq!(ack["event"], "ack");
     assert_eq!(ack["cmd"], "kill");
-    assert_eq!(ack["ok"], true, "kill of already-failed session must ack ok");
+    assert_eq!(
+        ack["ok"], true,
+        "kill of already-failed session must ack ok"
+    );
     assert_eq!(ack["reason"], "kill-storm");
 
     // Every subscriber must receive a snapshot containing the kill.
@@ -165,13 +179,16 @@ fn socket_concurrency_kill_with_20_subscribers() {
             let deadline = deadline_in(2000);
             let hit = c.wait_for_line(deadline, |v| {
                 v["event"] == "snapshot"
-                    && v["snapshot"]["sessions"].as_array().map(|ss| {
-                        ss.iter().any(|s| {
-                            s["id"] == "S1-OC01"
-                                && s["status"] == "failed"
-                                && s["failureReason"] == "kill-storm"
+                    && v["snapshot"]["sessions"]
+                        .as_array()
+                        .map(|ss| {
+                            ss.iter().any(|s| {
+                                s["id"] == "S1-OC01"
+                                    && s["status"] == "failed"
+                                    && s["failureReason"] == "kill-storm"
+                            })
                         })
-                    }).unwrap_or(false)
+                        .unwrap_or(false)
             });
             (i, hit)
         }));
@@ -185,7 +202,9 @@ fn socket_concurrency_kill_with_20_subscribers() {
                 max_latency = max_latency.max(elapsed);
                 received += 1;
             }
-            (i, None) => panic!("subscriber {i} never received a snapshot containing the kill (2 s deadline)"),
+            (i, None) => panic!(
+                "subscriber {i} never received a snapshot containing the kill (2 s deadline)"
+            ),
         }
     }
     eprintln!("socket_concurrency_kill_with_20_subscribers: 20/20 subscribers saw the kill; worst latency {max_latency:?}");

@@ -46,15 +46,25 @@ use std::time::{Duration, Instant};
 static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
 }
 
 fn herdr_shim() -> String {
-    fixtures_dir().join("shims").join("herdr").to_string_lossy().into_owned()
+    fixtures_dir()
+        .join("shims")
+        .join("herdr")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn opencode_shim() -> String {
-    fixtures_dir().join("shims").join("opencode").to_string_lossy().into_owned()
+    fixtures_dir()
+        .join("shims")
+        .join("opencode")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// One running daemon under test. Killed on drop (SIGKILL) no matter how the
@@ -75,7 +85,8 @@ impl TestDaemon {
     /// (e.g. dynamic-mode files, `api_state`).
     fn spawn(tag: &str, env_extra: &[(&str, &str)], files: &[(&str, &str)]) -> TestDaemon {
         let n = FIXTURE_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("notchd-fault-{tag}-{}-{n}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("notchd-fault-{tag}-{}-{n}", std::process::id()));
         let state_dir = root.join("state");
         let shim_dir = root.join("shim");
         let cwd = root.join("cwd");
@@ -104,7 +115,9 @@ impl TestDaemon {
         for (k, v) in env_extra {
             cmd.env(k, v);
         }
-        let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn notchd serve: {e}"));
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("spawn notchd serve: {e}"));
         // Drain stdout/stderr so the child never blocks on a full pipe; keep
         // the tail in memory for debugging.
         macro_rules! drain {
@@ -144,11 +157,23 @@ impl TestDaemon {
                 break;
             }
             if Instant::now() > deadline {
-                panic!("daemon did not bind {} within 10s; logs: {}", sock.display(), logs.lock().unwrap());
+                panic!(
+                    "daemon did not bind {} within 10s; logs: {}",
+                    sock.display(),
+                    logs.lock().unwrap()
+                );
             }
             std::thread::sleep(Duration::from_millis(40));
         }
-        TestDaemon { child, root, state_dir, shim_dir, sock, cwd, logs }
+        TestDaemon {
+            child,
+            root,
+            state_dir,
+            shim_dir,
+            sock,
+            cwd,
+            logs,
+        }
     }
 
     fn logs(&self) -> String {
@@ -192,7 +217,11 @@ impl TestDaemon {
     /// Returns (hello, reply).
     fn request(&self, cmd: Value) -> (Value, Value) {
         socket_request(&self.sock, cmd).unwrap_or_else(|e| {
-            panic!("socket request failed against {}: {e}\ndaemon logs: {}", self.sock.display(), self.logs())
+            panic!(
+                "socket request failed against {}: {e}\ndaemon logs: {}",
+                self.sock.display(),
+                self.logs()
+            )
         })
     }
 
@@ -209,7 +238,8 @@ impl TestDaemon {
 
     fn snapshot(&self) -> Value {
         let (_hello, reply) = self.request(json!({"cmd": "snapshot"}));
-        reply.get("snapshot")
+        reply
+            .get("snapshot")
             .cloned()
             .unwrap_or_else(|| panic!("snapshot reply had no snapshot object: {reply}"))
     }
@@ -264,9 +294,16 @@ fn socket_request(sock: &Path, cmd: Value) -> std::io::Result<(Value, Value)> {
 fn read_json_line(reader: &mut BufReader<UnixStream>) -> std::io::Result<Value> {
     let mut buf = String::new();
     match reader.read_line(&mut buf) {
-        Ok(0) => Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "daemon closed the socket")),
-        Ok(_) => serde_json::from_str(buf.trim())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("bad JSON line: {e}: {buf}"))),
+        Ok(0) => Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "daemon closed the socket",
+        )),
+        Ok(_) => serde_json::from_str(buf.trim()).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("bad JSON line: {e}: {buf}"),
+            )
+        }),
         Err(e) => Err(e),
     }
 }
@@ -274,7 +311,11 @@ fn read_json_line(reader: &mut BufReader<UnixStream>) -> std::io::Result<Value> 
 fn read_events(state_dir: &Path) -> Vec<Value> {
     let path = state_dir.join("events.jsonl");
     std::fs::read_to_string(&path)
-        .map(|s| s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -299,7 +340,9 @@ fn session<'a>(snap: &'a Value, id: &str) -> &'a Value {
 }
 
 fn sessions(snap: &Value) -> &Vec<Value> {
-    snap["sessions"].as_array().unwrap_or_else(|| panic!("snapshot.sessions missing: {snap}"))
+    snap["sessions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("snapshot.sessions missing: {snap}"))
 }
 
 fn decisions(snap: &Value) -> Vec<Value> {
@@ -313,7 +356,11 @@ fn escalations(snap: &Value) -> Vec<Value> {
 fn warnings(snap: &Value) -> Vec<String> {
     snap["warnings"]
         .as_array()
-        .map(|a| a.iter().filter_map(|w| w.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|w| w.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -326,7 +373,10 @@ fn ping_loop(sock: &Path, count: usize, step: Duration) -> Vec<(bool, u128)> {
         let t = Instant::now();
         match socket_request(sock, json!({"cmd": "ping"})) {
             Ok((_h, ack)) => {
-                out.push((ack.get("ok").and_then(Value::as_bool).unwrap_or(false), t.elapsed().as_millis()));
+                out.push((
+                    ack.get("ok").and_then(Value::as_bool).unwrap_or(false),
+                    t.elapsed().as_millis(),
+                ));
             }
             Err(_) => out.push((false, t.elapsed().as_millis())),
         }
@@ -352,7 +402,10 @@ fn fault_1_opencode_exit1_poll_survives_and_recovers() {
 
     let (ok, latency) = d.ping();
     assert!(ok, "ping must succeed during opencode exit1");
-    assert!(latency < 2000, "ping latency {latency}ms exceeds 2000ms during fault");
+    assert!(
+        latency < 2000,
+        "ping latency {latency}ms exceeds 2000ms during fault"
+    );
 
     // The session is untouched: still a live, working session. (The probe
     // failure has no session-level effect by design.)
@@ -383,10 +436,18 @@ fn fault_1_opencode_exit1_poll_survives_and_recovers() {
             .iter()
             .any(|dec| dec["action"] == json!("reprompt"))
     });
-    assert!(decider_ran, "after recovery, the decider path should act (reprompt decision)");
+    assert!(
+        decider_ran,
+        "after recovery, the decider path should act (reprompt decision)"
+    );
     let snap = d.snapshot();
-    let iter = session(&snap, "S1-OC01")["iterations"].as_u64().unwrap_or(0);
-    assert!(iter >= 1, "recovery re-prompts must consume an iteration, got {iter}");
+    let iter = session(&snap, "S1-OC01")["iterations"]
+        .as_u64()
+        .unwrap_or(0);
+    assert!(
+        iter >= 1,
+        "recovery re-prompts must consume an iteration, got {iter}"
+    );
 }
 
 /// KNOWN GAP (ignored): a failed /api/session probe produces NO entry in
@@ -454,9 +515,19 @@ fn fault_2a_opencode_hang_ping_responsive_and_watchdog_fires() {
     let pings = pinger.join().expect("ping thread panicked");
     let max_latency = pings.iter().map(|(_, ms)| *ms).max().unwrap_or(0);
     let ok_count = pings.iter().filter(|(ok, _)| *ok).count();
-    println!("fault_2a: {ok_count}/{} pings ok during hang, max latency {max_latency}ms", pings.len());
-    assert_eq!(ok_count, pings.len(), "every ping must succeed during the opencode hang");
-    assert!(max_latency < 2000, "ping latency {max_latency}ms exceeds 2000ms during hang");
+    println!(
+        "fault_2a: {ok_count}/{} pings ok during hang, max latency {max_latency}ms",
+        pings.len()
+    );
+    assert_eq!(
+        ok_count,
+        pings.len(),
+        "every ping must succeed during the opencode hang"
+    );
+    assert!(
+        max_latency < 2000,
+        "ping latency {max_latency}ms exceeds 2000ms during hang"
+    );
 
     // The hang has served its purpose (socket responsiveness proven above).
     // Swap the hang for a FAST failure (exit1): the probe then returns
@@ -478,7 +549,10 @@ fn fault_2a_opencode_hang_ping_responsive_and_watchdog_fires() {
     // We observe the state change; nothing here sleeps as synchronization.
     let recovered = wait_until(Duration::from_secs(150), || {
         let snap = d.snapshot();
-        snap["sessions"].as_array().map(|_| session(&snap, "S1-OC01")["failureReason"] == json!("stuck")).unwrap_or(false)
+        snap["sessions"]
+            .as_array()
+            .map(|_| session(&snap, "S1-OC01")["failureReason"] == json!("stuck"))
+            .unwrap_or(false)
     });
     let blocked_ms = t_hang.elapsed().as_millis();
     println!("fault_2a: poll path unblocked and watchdog fired after {blocked_ms}ms");
@@ -490,7 +564,10 @@ fn fault_2a_opencode_hang_ping_responsive_and_watchdog_fires() {
     );
 
     let (ok, latency) = d.ping();
-    assert!(ok && latency < 2000, "daemon must be pingable after recovery (ok={ok}, {latency}ms)");
+    assert!(
+        ok && latency < 2000,
+        "daemon must be pingable after recovery (ok={ok}, {latency}ms)"
+    );
 }
 
 /// KNOWN GAP (ignored): the task brief demands the poll cycle complete
@@ -538,9 +615,10 @@ fn fault_3_opencode_bad_json_decider_unparseable_then_escalation() {
     d.shim_write("run.mode", "bad_json");
 
     let escalated = wait_until(Duration::from_secs(12), || {
-        escalations(&d.snapshot())
-            .iter()
-            .any(|e| e["kind"] == json!("loop_detected") && e["reason"].as_str().unwrap_or("").contains("unparseable"))
+        escalations(&d.snapshot()).iter().any(|e| {
+            e["kind"] == json!("loop_detected")
+                && e["reason"].as_str().unwrap_or("").contains("unparseable")
+        })
     });
     assert!(
         escalated,
@@ -550,13 +628,26 @@ fn fault_3_opencode_bad_json_decider_unparseable_then_escalation() {
 
     let snap = d.snapshot();
     let s = session(&snap, "S1-OC01");
-    assert_ne!(s["status"], json!("failed"), "decider path never marks the session failed");
-    assert_eq!(s["iterations"], json!(3), "each unparseable answer consumes exactly one iteration");
+    assert_ne!(
+        s["status"],
+        json!("failed"),
+        "decider path never marks the session failed"
+    );
+    assert_eq!(
+        s["iterations"],
+        json!(3),
+        "each unparseable answer consumes exactly one iteration"
+    );
 
     let decs = decisions(&snap);
     let unparseable: Vec<&Value> = decs
         .iter()
-        .filter(|dec| dec["reason"].as_str().unwrap_or("").contains("decider unparseable"))
+        .filter(|dec| {
+            dec["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("decider unparseable")
+        })
         .collect();
     assert!(
         unparseable.len() >= 3,
@@ -564,7 +655,8 @@ fn fault_3_opencode_bad_json_decider_unparseable_then_escalation() {
         unparseable.len()
     );
     assert!(
-        decs.iter().all(|dec| dec["action"] != json!("escalate") || dec["reason"].as_str().unwrap_or("").contains("unparseable")),
+        decs.iter().all(|dec| dec["action"] != json!("escalate")
+            || dec["reason"].as_str().unwrap_or("").contains("unparseable")),
         "decisions should only mention unparseable causes: {decs:?}"
     );
 
@@ -572,7 +664,10 @@ fn fault_3_opencode_bad_json_decider_unparseable_then_escalation() {
     let events = d.events();
     assert!(
         events.iter().any(|e| e["kind"] == json!("decision")
-            && e["detail"].as_str().unwrap_or("").contains("decider unparseable")),
+            && e["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("decider unparseable")),
         "events.jsonl must contain the decider unparseable decisions: {events:?}"
     );
 
@@ -607,7 +702,8 @@ fn fault_4a_triage_429_tail_triggers_jittered_backoff_without_iterating() {
         decisions(&d.snapshot()).iter().any(|dec| {
             // decision action is exactly "backoff"; the reason carries the
             // 429/quota marker and the jittered duration.
-            dec["action"] == json!("backoff") && dec["reason"].as_str().unwrap_or("").contains("429")
+            dec["action"] == json!("backoff")
+                && dec["reason"].as_str().unwrap_or("").contains("429")
         })
     });
     assert!(
@@ -636,7 +732,11 @@ fn fault_4a_triage_429_tail_triggers_jittered_backoff_without_iterating() {
         1,
         "rate-limit backoff must NOT re-prompt the session (spawn prompt only)"
     );
-    assert_eq!(escalations(&snap).len(), 0, "a single rate-limit hit must not escalate yet");
+    assert_eq!(
+        escalations(&snap).len(),
+        0,
+        "a single rate-limit hit must not escalate yet"
+    );
     let decs = decisions(&snap);
     assert!(
         decs.iter().all(|dec| dec["action"] != json!("reprompt")),
@@ -667,9 +767,16 @@ fn fault_4b_opencode_decider_429_is_unparseable_not_rate_limit_backoff() {
     d.shim_write("run.mode", "http429"); // the decider's own stdout is the 429 text
 
     let consumed = wait_until(Duration::from_secs(10), || {
-        session(&d.snapshot(), "S1-OC01")["iterations"].as_u64().unwrap_or(0) >= 1
+        session(&d.snapshot(), "S1-OC01")["iterations"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
     });
-    assert!(consumed, "decider 429 currently consumes an iteration; daemon: {}", d.logs());
+    assert!(
+        consumed,
+        "decider 429 currently consumes an iteration; daemon: {}",
+        d.logs()
+    );
 
     let snap = d.snapshot();
     let decs = decisions(&snap);
@@ -683,7 +790,10 @@ fn fault_4b_opencode_decider_429_is_unparseable_not_rate_limit_backoff() {
         "documented finding: decider-side 429 never routes to the 'backoff' decision path: {decs:?}"
     );
     assert!(
-        decs.iter().any(|dec| dec["reason"].as_str().unwrap_or("").contains("decider unparseable")),
+        decs.iter().any(|dec| dec["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("decider unparseable")),
         "decider-side 429 is logged as an unparseable verdict: {decs:?}"
     );
     let (ok, _) = d.ping();
@@ -713,7 +823,11 @@ fn fault_5_herdr_exit1_mid_poll_reconcile_safe() {
         warns.iter().any(|w| w.contains("herdr unavailable")),
         "mid-poll agent-list failure must push an 'herdr unavailable' warning; got: {warns:?}"
     );
-    assert_eq!(sessions(&snap).len(), 1, "session must survive an agent-list fault: {snap}");
+    assert_eq!(
+        sessions(&snap).len(),
+        1,
+        "session must survive an agent-list fault: {snap}"
+    );
     let (ok, _) = d.ping();
     assert!(ok, "daemon must respond to ping during agent-list fault");
 
@@ -726,7 +840,10 @@ fn fault_5_herdr_exit1_mid_poll_reconcile_safe() {
     let logs = d.logs_cmd("S1-OC01", 5);
     assert_eq!(logs["event"], json!("logs"));
     assert!(
-        logs["lines"].as_array().map(|l| l.len() >= 2).unwrap_or(false),
+        logs["lines"]
+            .as_array()
+            .map(|l| l.len() >= 2)
+            .unwrap_or(false),
         "herdr agent read must work again after recovery: {logs}"
     );
     let (ok, _) = d.ping();
@@ -764,10 +881,21 @@ fn fault_5_herdr_exit1_mid_poll_reconcile_safe() {
         if sock.exists() && UnixStream::connect(&sock).is_ok() {
             break;
         }
-        assert!(Instant::now() < deadline, "respawned daemon did not bind socket");
+        assert!(
+            Instant::now() < deadline,
+            "respawned daemon did not bind socket"
+        );
         std::thread::sleep(Duration::from_millis(40));
     }
-    let d2 = TestDaemon { child, root, state_dir: state_dir.clone(), shim_dir, sock: sock.clone(), cwd, logs: Arc::new(Mutex::new(String::new())) };
+    let d2 = TestDaemon {
+        child,
+        root,
+        state_dir: state_dir.clone(),
+        shim_dir,
+        sock: sock.clone(),
+        cwd,
+        logs: Arc::new(Mutex::new(String::new())),
+    };
 
     let snap = d2.snapshot();
     let warns = warnings(&snap);
@@ -775,8 +903,16 @@ fn fault_5_herdr_exit1_mid_poll_reconcile_safe() {
         warns.iter().any(|w| w.contains("re-adoption skipped")),
         "reconcile with a failing agent list must warn 're-adoption skipped'; got: {warns:?}"
     );
-    assert_eq!(sessions(&snap).len(), 1, "reconcile must not drop or duplicate sessions: {snap}");
-    assert_eq!(session(&snap, "S1-OC01")["status"], json!("working"), "reconcile must not touch session status on herdr failure");
+    assert_eq!(
+        sessions(&snap).len(),
+        1,
+        "reconcile must not drop or duplicate sessions: {snap}"
+    );
+    assert_eq!(
+        session(&snap, "S1-OC01")["status"],
+        json!("working"),
+        "reconcile must not touch session status on herdr failure"
+    );
     let (ok, _) = d2.ping();
     assert!(ok, "respawned daemon must respond to ping");
 }
@@ -815,7 +951,11 @@ fn fault_6_herdr_wrong_schema_pane_split_spawn_failed_clean() {
 
     let snap = d.snapshot();
     let s = session(&snap, "S1-OC01");
-    assert_eq!(s["status"], json!("failed"), "failed spawn must mark the session failed");
+    assert_eq!(
+        s["status"],
+        json!("failed"),
+        "failed spawn must mark the session failed"
+    );
     assert_eq!(s["failureReason"], json!("spawn_failed"));
     // The async worker's warning names the session and the failing stage
     // ("S1-OC01: pane split failed after bounded busy retry: ..."). The old
@@ -823,7 +963,9 @@ fn fault_6_herdr_wrong_schema_pane_split_spawn_failed_clean() {
     // invariant — a warning attributing the failure to this session/stage —
     // is unchanged.
     assert!(
-        warnings(&snap).iter().any(|w| w.contains("S1-OC01") && w.contains("pane split")),
+        warnings(&snap)
+            .iter()
+            .any(|w| w.contains("S1-OC01") && w.contains("pane split")),
         "expected a warning naming S1-OC01 and the pane-split stage; warnings: {:?}",
         warnings(&snap)
     );
@@ -833,28 +975,50 @@ fn fault_6_herdr_wrong_schema_pane_split_spawn_failed_clean() {
     let ack2 = d.submit_task("fault six: good spawn two", Some("SV-1"));
     let ack3 = d.submit_task("fault six: good spawn three", Some("SV-1"));
     assert_eq!(ack2["ok"], json!(true), "spawn two should succeed: {ack2}");
-    assert_eq!(ack3["ok"], json!(true), "spawn three should succeed: {ack3}");
-    assert_eq!(ack2["sessionId"], json!("S1-OC02"), "ids are never reused, even for failed spawns");
-    assert_eq!(ack3["sessionId"], json!("S1-OC03"), "ids are never reused, even for failed spawns");
+    assert_eq!(
+        ack3["ok"],
+        json!(true),
+        "spawn three should succeed: {ack3}"
+    );
+    assert_eq!(
+        ack2["sessionId"],
+        json!("S1-OC02"),
+        "ids are never reused, even for failed spawns"
+    );
+    assert_eq!(
+        ack3["sessionId"],
+        json!("S1-OC03"),
+        "ids are never reused, even for failed spawns"
+    );
 
     let snap = d.snapshot();
     assert_eq!(session(&snap, "S1-OC01")["status"], json!("failed"));
     assert_eq!(session(&snap, "S1-OC02")["status"], json!("working"));
     assert_eq!(session(&snap, "S1-OC03")["status"], json!("working"));
-    assert_eq!(sessions(&snap).len(), 3, "S1-OC01 failed-but-present; no corruption: {snap}");
+    assert_eq!(
+        sessions(&snap).len(),
+        3,
+        "S1-OC01 failed-but-present; no corruption: {snap}"
+    );
 
     // Registry: every allocated id (including the failed spawn's) is retired,
     // monotonic, and appears exactly once.
     let raw = std::fs::read_to_string(d.state_dir.join("registry.json")).expect("registry.json");
     let reg: Value = serde_json::from_str(&raw).expect("registry.json must parse");
-    let ids: Vec<&str> = reg["ids"].as_array().expect("ids array").iter().filter_map(Value::as_str).collect();
+    let ids: Vec<&str> = reg["ids"]
+        .as_array()
+        .expect("ids array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
     assert_eq!(
         ids,
         vec!["SV-1", "S1-OC01", "S1-OC02", "S1-OC03"],
         "registry ids must be retired in allocation order and never reused"
     );
     assert_eq!(
-        reg["sessionCounts"]["1"], json!(3),
+        reg["sessionCounts"]["1"],
+        json!(3),
         "three S1-OCNN allocations were made; none recycled"
     );
 
@@ -899,27 +1063,49 @@ fn fault_7_opencode_empty_decider_unparseable_no_panic_no_overbudget() {
     d.shim_write("run.mode", "empty");
 
     let escalated = wait_until(Duration::from_secs(12), || {
-        escalations(&d.snapshot())
-            .iter()
-            .any(|e| e["kind"] == json!("loop_detected") && e["reason"].as_str().unwrap_or("").contains("unparseable"))
+        escalations(&d.snapshot()).iter().any(|e| {
+            e["kind"] == json!("loop_detected")
+                && e["reason"].as_str().unwrap_or("").contains("unparseable")
+        })
     });
-    assert!(escalated, "3 empty decider answers must escalate; snapshot: {}", d.snapshot());
+    assert!(
+        escalated,
+        "3 empty decider answers must escalate; snapshot: {}",
+        d.snapshot()
+    );
 
     let snap = d.snapshot();
-    assert_ne!(session(&snap, "S1-OC01")["status"], json!("failed"), "empty decider output never fails the session");
-    assert_eq!(session(&snap, "S1-OC01")["iterations"], json!(3), "one iteration per empty answer");
+    assert_ne!(
+        session(&snap, "S1-OC01")["status"],
+        json!("failed"),
+        "empty decider output never fails the session"
+    );
+    assert_eq!(
+        session(&snap, "S1-OC01")["iterations"],
+        json!(3),
+        "one iteration per empty answer"
+    );
 
     // events: kind=decision, detail contains "decider unparseable" with an empty head.
     let events = d.events();
     assert!(
-        events.iter().any(|e| e["kind"] == json!("decision") && e["detail"].as_str().unwrap_or("").contains("decider unparseable")),
+        events.iter().any(|e| e["kind"] == json!("decision")
+            && e["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("decider unparseable")),
         "events.jsonl must record the unparseable decisions: {events:?}"
     );
 
     // No re-prompts beyond the escalation: the decision loop is closed for
     // this session. Count must be stable.
     let prompts_at_escalation = d.shim_count_lines("prompts.tsv");
-    assert_eq!(prompts_at_escalation, 4, "spawn + 3 re-prompts; got {:?}", d.shim_read("prompts.tsv"));
+    assert_eq!(
+        prompts_at_escalation,
+        4,
+        "spawn + 3 re-prompts; got {:?}",
+        d.shim_read("prompts.tsv")
+    );
     std::thread::sleep(Duration::from_millis(1200));
     assert_eq!(
         d.shim_count_lines("prompts.tsv"),
@@ -930,10 +1116,16 @@ fn fault_7_opencode_empty_decider_unparseable_no_panic_no_overbudget() {
 
     // No decider calls either, despite the session being idle every poll.
     let decider_calls = d.shim_count_lines("decider_calls");
-    assert_eq!(decider_calls, 3, "decider must not be called after escalation: {decider_calls}");
+    assert_eq!(
+        decider_calls, 3,
+        "decider must not be called after escalation: {decider_calls}"
+    );
 
     let (ok, _) = d.ping();
-    assert!(ok, "daemon must stay pingable after empty-decider escalation");
+    assert!(
+        ok,
+        "daemon must stay pingable after empty-decider escalation"
+    );
 }
 
 /// Sibling fact for the fault matrix: a decider that fails by EXIT CODE
@@ -952,9 +1144,13 @@ fn fault_7b_decider_exit1_never_reprompts_budget_escalation() {
     d.shim_write("run.mode", "exit1");
 
     let escalated = wait_until(Duration::from_secs(12), || {
-        escalations(&d.snapshot())
-            .iter()
-            .any(|e| e["kind"] == json!("budget_exceeded") && e["reason"].as_str().unwrap_or("").contains("decider failed"))
+        escalations(&d.snapshot()).iter().any(|e| {
+            e["kind"] == json!("budget_exceeded")
+                && e["reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("decider failed")
+        })
     });
     assert!(
         escalated,
@@ -968,7 +1164,11 @@ fn fault_7b_decider_exit1_never_reprompts_budget_escalation() {
         "a failing decider call must never trigger a re-prompt: {:?}",
         d.shim_read("prompts.tsv")
     );
-    assert_eq!(session(&d.snapshot(), "S1-OC01")["iterations"], json!(0), "a failed call must not consume iterations");
+    assert_eq!(
+        session(&d.snapshot(), "S1-OC01")["iterations"],
+        json!(0),
+        "a failed call must not consume iterations"
+    );
     let snap = d.snapshot();
     assert_ne!(session(&snap, "S1-OC01")["status"], json!("failed"));
     let (ok, _) = d.ping();
@@ -987,16 +1187,35 @@ fn fault_8_every_shim_ping_responsive_during_fault() {
     assert_eq!(ack["ok"], json!(true), "spawn should succeed: {ack}");
     std::thread::sleep(Duration::from_millis(600));
 
-    for mode in ["healthy", "exit1", "bad_json", "http429", "http5xx", "empty", "wrong_schema", "hang"] {
+    for mode in [
+        "healthy",
+        "exit1",
+        "bad_json",
+        "http429",
+        "http5xx",
+        "empty",
+        "wrong_schema",
+        "hang",
+    ] {
         d.shim_write("mode", mode);
         let sock = d.sock.clone();
         let pinger = std::thread::spawn(move || ping_loop(&sock, 12, Duration::from_millis(120)));
         let pings = pinger.join().expect("ping thread panicked");
         let all_ok = pings.iter().all(|(ok, _)| *ok);
         let max_latency = pings.iter().map(|(_, ms)| *ms).max().unwrap_or(0);
-        println!("fault_8: mode={mode}: {}/{} pings ok, max latency {max_latency}ms", pings.iter().filter(|(o, _)| *o).count(), pings.len());
-        assert!(all_ok, "mode={mode}: every ping must succeed; got {pings:?}");
-        assert!(max_latency < 2000, "mode={mode}: ping latency {max_latency}ms >= 2000ms");
+        println!(
+            "fault_8: mode={mode}: {}/{} pings ok, max latency {max_latency}ms",
+            pings.iter().filter(|(o, _)| *o).count(),
+            pings.len()
+        );
+        assert!(
+            all_ok,
+            "mode={mode}: every ping must succeed; got {pings:?}"
+        );
+        assert!(
+            max_latency < 2000,
+            "mode={mode}: ping latency {max_latency}ms >= 2000ms"
+        );
         d.shim_write("mode", "healthy");
     }
 

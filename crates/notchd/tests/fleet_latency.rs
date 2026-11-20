@@ -42,7 +42,9 @@ struct TogglingHerdr {
 
 impl TogglingHerdr {
     fn new() -> Arc<Self> {
-        Arc::new(Self { revision: AtomicU64::new(1) })
+        Arc::new(Self {
+            revision: AtomicU64::new(1),
+        })
     }
     fn herdr(self: &Arc<Self>) -> Herdr {
         let fake = Arc::clone(self);
@@ -122,9 +124,14 @@ impl FleetClient {
                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
                         if v["event"].as_str() == Some("fleet") {
                             let units = v["fleet"]["units"].as_array();
-                            if units.map(|u| {
-                                u.iter().any(|x| x["id"] == "S1-OC01" && x["revision"].as_u64() == Some(rev))
-                            }).unwrap_or(false) {
+                            if units
+                                .map(|u| {
+                                    u.iter().any(|x| {
+                                        x["id"] == "S1-OC01" && x["revision"].as_u64() == Some(rev)
+                                    })
+                                })
+                                .unwrap_or(false)
+                            {
                                 return true;
                             }
                         }
@@ -135,7 +142,10 @@ impl FleetClient {
                 }
                 Ok(_) => {}
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(_) => return false,
             }
         }
@@ -197,7 +207,10 @@ fn fleet_frame_latency_p50_p95_over_100_real_status_mutations() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let s = daemon.snapshot();
-        if s.sessions.iter().any(|x| x.id == "S1-OC01" && !x.pane_id.is_empty()) {
+        if s.sessions
+            .iter()
+            .any(|x| x.id == "S1-OC01" && !x.pane_id.is_empty())
+        {
             break;
         }
         assert!(Instant::now() < deadline, "pane id never published");
@@ -237,7 +250,11 @@ fn fleet_frame_latency_p50_p95_over_100_real_status_mutations() {
         samples[0],
         samples[samples.len() - 1]
     );
-    assert!(samples.len() >= 100, "need >=100 samples, got {}", samples.len());
+    assert!(
+        samples.len() >= 100,
+        "need >=100 samples, got {}",
+        samples.len()
+    );
 
     // The stream must stay alive and responsive after the storm.
     assert!(client.ping_ok(), "daemon/WS wedged after latency storm");

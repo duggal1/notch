@@ -15,8 +15,8 @@ pub mod trayfmt;
 use std::sync::Arc;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::{LogicalPosition, LogicalSize, TitleBarStyle, WebviewUrl};
 use tauri::window::Color;
+use tauri::{LogicalPosition, LogicalSize, TitleBarStyle, WebviewUrl};
 
 use notchd::{Config, Daemon, Herdr, SystemClock};
 

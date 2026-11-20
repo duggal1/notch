@@ -36,7 +36,9 @@ struct RecordingHerdr {
 
 impl RecordingHerdr {
     fn new() -> Arc<Self> {
-        Arc::new(Self { calls: Mutex::new(Vec::new()) })
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+        })
     }
     fn herdr(self: &Arc<Self>) -> Herdr {
         let fake = Arc::clone(self);
@@ -107,21 +109,31 @@ impl Client {
             }
             match self.ws.read() {
                 Ok(Message::Text(t)) => {
-                    return Some(serde_json::from_str(&t).unwrap_or_else(|e| panic!("bad JSON {t}: {e}")))
+                    return Some(
+                        serde_json::from_str(&t).unwrap_or_else(|e| panic!("bad JSON {t}: {e}")),
+                    )
                 }
-                Ok(Message::Ping(_)) => { let _ = self.ws.flush(); }
+                Ok(Message::Ping(_)) => {
+                    let _ = self.ws.flush();
+                }
                 Ok(_) => {}
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(_) => return None,
             }
         }
     }
     fn ack(&mut self, cmd: &str, value: &Value) -> Value {
-        self.ws.send(Message::Text(value.to_string().into())).unwrap();
+        self.ws
+            .send(Message::Text(value.to_string().into()))
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let v = self.read(deadline.saturating_duration_since(Instant::now()))
+            let v = self
+                .read(deadline.saturating_duration_since(Instant::now()))
                 .unwrap_or_else(|| panic!("no ack for {cmd}"));
             if v["event"] == "ack" && v["cmd"] == cmd {
                 return v;
@@ -156,7 +168,10 @@ fn ws_focus_targets_only_the_requested_pane() {
     let a = daemon.submit_task(
         "focus target".to_string(),
         Some(work.to_string_lossy().to_string()),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     );
     assert!(a.ok, "seed failed: {:?}", a.error);
     let sid = a.session_id.clone().unwrap();
@@ -197,10 +212,16 @@ fn ws_focus_targets_only_the_requested_pane() {
     let calls = herdr.calls();
     let focus_calls: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent")
-            && c.get(2).map(String::as_str) == Some("focus"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("focus")
+        })
         .collect();
-    assert_eq!(focus_calls.len(), 1, "exactly one focus call, got {calls:?}");
+    assert_eq!(
+        focus_calls.len(),
+        1,
+        "exactly one focus call, got {calls:?}"
+    );
     // herdr agent targets are the lowercased notch session id (types.rs
     // `agent_target`); panes are never referenced by name. The single focus
     // call must carry exactly that target and nothing else.
@@ -214,9 +235,15 @@ fn ws_focus_targets_only_the_requested_pane() {
 
     // No pane was closed, split, prompted, or otherwise touched by focus.
     for c in &calls {
-        let pair = (c.get(1).map(String::as_str).unwrap_or(""), c.get(2).map(String::as_str).unwrap_or(""));
+        let pair = (
+            c.get(1).map(String::as_str).unwrap_or(""),
+            c.get(2).map(String::as_str).unwrap_or(""),
+        );
         assert!(
-            !matches!(pair, ("pane", "close") | ("pane", "split") | ("agent", "prompt") | ("agent", "start")),
+            !matches!(
+                pair,
+                ("pane", "close") | ("pane", "split") | ("agent", "prompt") | ("agent", "start")
+            ),
             "focus touched another pane/window: {c:?}"
         );
     }

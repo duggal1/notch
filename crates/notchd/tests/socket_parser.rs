@@ -12,7 +12,11 @@ use std::time::Duration;
 #[test]
 fn socket_parser_empty_lines() {
     let d = TestDaemon::start("parse-empty");
-    let mut c = TestConn::connect_with_timeouts(&d.sock, Duration::from_millis(400), Duration::from_secs(5));
+    let mut c = TestConn::connect_with_timeouts(
+        &d.sock,
+        Duration::from_millis(400),
+        Duration::from_secs(5),
+    );
     let _hello = c.hello();
     // Four bare newlines: the server must skip them silently (bridge.md §2 —
     // empty lines are not frames). Any reply here would mean extra acks.
@@ -27,7 +31,11 @@ fn socket_parser_empty_lines() {
 #[test]
 fn socket_parser_whitespace_only() {
     let d = TestDaemon::start("parse-ws");
-    let mut c = TestConn::connect_with_timeouts(&d.sock, Duration::from_millis(400), Duration::from_secs(5));
+    let mut c = TestConn::connect_with_timeouts(
+        &d.sock,
+        Duration::from_millis(400),
+        Duration::from_secs(5),
+    );
     let _hello = c.hello();
     c.send_raw(b"   \n\t\n \t \n\r\n");
     let ack = c.rpc(&json!({"cmd":"ping"}));
@@ -117,7 +125,8 @@ fn socket_parser_one_big_flush_large_frame() {
 #[test]
 fn socket_parser_single_line_5mb() {
     let d = TestDaemon::start("parse-5mb");
-    let mut c = TestConn::connect_with_timeouts(&d.sock, Duration::from_secs(10), Duration::from_secs(60));
+    let mut c =
+        TestConn::connect_with_timeouts(&d.sock, Duration::from_secs(10), Duration::from_secs(60));
     let _hello = c.hello();
     // A single NDJSON frame just over 5 MB — well beyond the daemon's
     // MAX_NDJSON_LINE (1 MiB, socket.rs). Under the hardening the capped
@@ -131,7 +140,10 @@ fn socket_parser_single_line_5mb() {
     c.send_raw(b"\n");
     // Oversize line: no ack for it; the server closes this connection.
     let buf = c.read_to_end();
-    assert!(buf.is_empty(), "over-cap line must be dropped without a reply, got {buf:?}");
+    assert!(
+        buf.is_empty(),
+        "over-cap line must be dropped without a reply, got {buf:?}"
+    );
     // A fresh connection still works — the daemon did not wedge or crash.
     let mut fresh = TestConn::connect(&d.sock);
     let _hello = fresh.hello();
@@ -207,7 +219,10 @@ fn socket_parser_high_bytes_0xff() {
     assert_eq!(ack["event"], "ack");
     assert_eq!(ack["ok"], false);
     assert_eq!(ack["error"], "unknown_command");
-    assert_ne!(ack["cmd"], "ping", "invalid bytes must not be accepted as a valid ping");
+    assert_ne!(
+        ack["cmd"], "ping",
+        "invalid bytes must not be accepted as a valid ping"
+    );
     // The same connection is still usable — invalid bytes did not wedge it.
     let ack = c.rpc(&json!({"cmd":"ping"}));
     assert_eq!(ack["cmd"], "ping");
@@ -397,7 +412,10 @@ fn socket_parser_emoji_title() {
     // The snapshot must carry the emoji title verbatim.
     let snap = d.snapshot();
     let sessions = snap["snapshot"]["sessions"].as_array().unwrap().clone();
-    let s = sessions.iter().find(|s| s["id"] == id).expect("spawned session in snapshot");
+    let s = sessions
+        .iter()
+        .find(|s| s["id"] == id)
+        .expect("spawned session in snapshot");
     assert_eq!(s["title"].as_str().unwrap(), title);
     assert_eq!(s["task"].as_str().unwrap(), "prompt with emoji 🎉 inside");
 }

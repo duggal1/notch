@@ -23,7 +23,10 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn fake_herdr() -> Herdr {
     Herdr::with_runner(|args: &[String]| {
-        match (args.get(1).map(String::as_str), args.get(2).map(String::as_str)) {
+        match (
+            args.get(1).map(String::as_str),
+            args.get(2).map(String::as_str),
+        ) {
             (Some("agent"), Some("list")) | (Some("pane"), Some("list")) => {
                 Ok(json!({"result":{"agents":[],"panes":[]}}).to_string())
             }
@@ -47,7 +50,10 @@ struct Server {
 impl Server {
     fn start(tag: &str, browser_mode: bool) -> Self {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("notchd-ws-browser-{tag}-{}-{n}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "notchd-ws-browser-{tag}-{}-{n}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let config = Config {
             state_dir: root.join("state"),
@@ -64,12 +70,29 @@ impl Server {
         let shutdown = Arc::new(AtomicBool::new(false));
         let s = Arc::clone(&shutdown);
         let handle = std::thread::spawn(move || {
-            let _ = ws::serve_with_mode(listener, daemon, s, Arc::new(AtomicUsize::new(0)), browser_mode);
+            let _ = ws::serve_with_mode(
+                listener,
+                daemon,
+                s,
+                Arc::new(AtomicUsize::new(0)),
+                browser_mode,
+            );
         });
-        let server = Self { root, port, token, shutdown, handle: Some(handle) };
+        let server = Self {
+            root,
+            port,
+            token,
+            shutdown,
+            handle: Some(handle),
+        };
         // Strict-mode readiness probe uses the existing Bearer path.
-        assert!(server.raw_status("", None, Some(&format!("Bearer {}", server.token))).is_some()
-            || browser_mode, "server did not come up");
+        assert!(
+            server
+                .raw_status("", None, Some(&format!("Bearer {}", server.token)))
+                .is_some()
+                || browser_mode,
+            "server did not come up"
+        );
         server
     }
 
@@ -83,9 +106,17 @@ impl Server {
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", self.port).parse().unwrap();
         let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
         s.set_read_timeout(Some(Duration::from_millis(600))).ok()?;
-        let h = if host.is_empty() { format!("127.0.0.1:{}", self.port) } else { host.to_string() };
-        let origin_line = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
-        let auth_line = bearer.map(|b| format!("Authorization: {b}\r\n")).unwrap_or_default();
+        let h = if host.is_empty() {
+            format!("127.0.0.1:{}", self.port)
+        } else {
+            host.to_string()
+        };
+        let origin_line = origin
+            .map(|o| format!("Origin: {o}\r\n"))
+            .unwrap_or_default();
+        let auth_line = bearer
+            .map(|b| format!("Authorization: {b}\r\n"))
+            .unwrap_or_default();
         let req = format!(
             "GET /?token={} HTTP/1.1\r\nHost: {h}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{origin_line}{auth_line}\r\n",
             self.token
@@ -101,15 +132,25 @@ impl Server {
         let addr: std::net::SocketAddr = format!("127.0.0.1:{}", self.port).parse().unwrap();
         let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).ok()?;
         s.set_read_timeout(Some(Duration::from_millis(600))).ok()?;
-        let h = if host.is_empty() { format!("127.0.0.1:{}", self.port) } else { host.to_string() };
-        let origin_line = origin.map(|o| format!("Origin: {o}\r\n")).unwrap_or_default();
+        let h = if host.is_empty() {
+            format!("127.0.0.1:{}", self.port)
+        } else {
+            host.to_string()
+        };
+        let origin_line = origin
+            .map(|o| format!("Origin: {o}\r\n"))
+            .unwrap_or_default();
         let req = format!(
             "GET {path} HTTP/1.1\r\nHost: {h}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{origin_line}\r\n"
         );
         s.write_all(req.as_bytes()).ok()?;
         let mut buf = [0u8; 256];
         let n = s.read(&mut buf).ok()?;
-        String::from_utf8_lossy(&buf[..n]).split_whitespace().nth(1)?.parse().ok()
+        String::from_utf8_lossy(&buf[..n])
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
     }
 }
 
@@ -127,12 +168,16 @@ impl Drop for Server {
 fn browser_connect(url: &str) -> Option<Value> {
     let req = ClientRequestBuilder::new(url.parse().unwrap())
         .with_header("Origin", "https://demo.example");
-    let (mut ws, _) = connect(req).map_err(|e| {
-        eprintln!("browser_connect failed for {url}: {e}");
-        e
-    }).ok()?;
+    let (mut ws, _) = connect(req)
+        .map_err(|e| {
+            eprintln!("browser_connect failed for {url}: {e}");
+            e
+        })
+        .ok()?;
     if let tungstenite::stream::MaybeTlsStream::Plain(stream) = ws.get_mut() {
-        stream.set_read_timeout(Some(Duration::from_millis(20))).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .ok()?;
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -146,7 +191,10 @@ fn browser_connect(url: &str) -> Option<Value> {
             }
             Ok(_) => {}
             Err(tungstenite::Error::Io(e))
-                if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) => {}
             Err(_) => return None,
         }
     }
@@ -167,20 +215,44 @@ fn browser_mode_rejects_hostile_no_token_wrong_token_and_wrong_host() {
     let server = Server::start("reject", true);
     // A hostile page sends Origin but has no token.
     let hostile = server.raw_path_status("/", "", Some("https://evil.example"));
-    assert!(matches!(hostile, Some(401 | 403)), "no-token Origin must be rejected, got {hostile:?}");
+    assert!(
+        matches!(hostile, Some(401 | 403)),
+        "no-token Origin must be rejected, got {hostile:?}"
+    );
     // A guessed token must not work.
-    let wrong = server.raw_path_status("/?token=0000000000000000000000000000000000000000000000000000000000000000", "", Some("https://evil.example"));
-    assert!(matches!(wrong, Some(401 | 403)), "wrong token must be rejected, got {wrong:?}");
+    let wrong = server.raw_path_status(
+        "/?token=0000000000000000000000000000000000000000000000000000000000000000",
+        "",
+        Some("https://evil.example"),
+    );
+    assert!(
+        matches!(wrong, Some(401 | 403)),
+        "wrong token must be rejected, got {wrong:?}"
+    );
     // Correct token with wrong Host (DNS rebinding) must not work.
-    let rebound = server.raw_path_status(&format!("/?token={}", server.token), "evil.example:7407", Some("https://evil.example"));
-    assert!(matches!(rebound, Some(401 | 403)), "wrong Host must be rejected, got {rebound:?}");
+    let rebound = server.raw_path_status(
+        &format!("/?token={}", server.token),
+        "evil.example:7407",
+        Some("https://evil.example"),
+    );
+    assert!(
+        matches!(rebound, Some(401 | 403)),
+        "wrong Host must be rejected, got {rebound:?}"
+    );
 }
 
 #[test]
 fn default_strict_mode_rejects_browser_style_and_keeps_bearer() {
     let server = Server::start("strict", false);
-    let browser = server.raw_path_status(&format!("/?token={}", server.token), "", Some("https://demo.example"));
-    assert!(matches!(browser, Some(401 | 403)), "strict mode rejects any Origin, got {browser:?}");
+    let browser = server.raw_path_status(
+        &format!("/?token={}", server.token),
+        "",
+        Some("https://demo.example"),
+    );
+    assert!(
+        matches!(browser, Some(401 | 403)),
+        "strict mode rejects any Origin, got {browser:?}"
+    );
     let legacy = server.raw_status("", None, Some(&format!("Bearer {}", server.token)));
     assert_eq!(legacy, Some(101), "strict Bearer handshake unchanged");
 }
@@ -191,9 +263,15 @@ fn token_is_unguessable_and_not_reusable_across_daemons() {
     let b = Server::start("token-b", true);
     assert_eq!(a.token.len(), 64);
     assert!(a.token.bytes().all(|x| x.is_ascii_hexdigit()));
-    assert_ne!(a.token, b.token, "independent daemons must not share a token");
+    assert_ne!(
+        a.token, b.token,
+        "independent daemons must not share a token"
+    );
     let reused = b.raw_path_status(&format!("/?token={}", a.token), "", None);
-    assert!(matches!(reused, Some(401 | 403)), "another daemon's token must not authenticate, got {reused:?}");
+    assert!(
+        matches!(reused, Some(401 | 403)),
+        "another daemon's token must not authenticate, got {reused:?}"
+    );
 }
 
 #[test]
@@ -210,8 +288,14 @@ fn browser_handshake_latency_p50_p95_under_100ms() {
     samples.sort_by(f64::total_cmp);
     let p50 = samples[samples.len() / 2];
     let p95 = samples[(samples.len() * 95 / 100).min(samples.len() - 1)];
-    eprintln!("browser handshake: p50={p50:.3}ms p95={p95:.3}ms n={}", samples.len());
-    assert!(p95 < 100.0, "browser handshake p95 {p95:.1}ms must be < 100ms");
+    eprintln!(
+        "browser handshake: p50={p50:.3}ms p95={p95:.3}ms n={}",
+        samples.len()
+    );
+    assert!(
+        p95 < 100.0,
+        "browser handshake p95 {p95:.1}ms must be < 100ms"
+    );
 }
 
 #[test]

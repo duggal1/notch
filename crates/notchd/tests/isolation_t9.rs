@@ -22,10 +22,7 @@ static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn tmp_root(tag: &str) -> PathBuf {
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let p = std::env::temp_dir().join(format!(
-        "notchd-t9-{tag}-{}-{n}",
-        std::process::id()
-    ));
+    let p = std::env::temp_dir().join(format!("notchd-t9-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
     p
@@ -68,7 +65,11 @@ fn init_repo(root: &Path) -> PathBuf {
 
 fn edit_line(wt: &Path, line: usize, text: &str) {
     let p = wt.join("shared.rs");
-    let mut lines: Vec<String> = std::fs::read_to_string(&p).unwrap().lines().map(str::to_string).collect();
+    let mut lines: Vec<String> = std::fs::read_to_string(&p)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
     lines[line] = text.to_string();
     std::fs::write(p, format!("{}\n", lines.join("\n"))).unwrap();
 }
@@ -90,7 +91,14 @@ fn real_merge_conflicts(repo: &Path, base_rev: &str, branch_a: &str, branch_b: &
     let _ = std::fs::remove_dir_all(&scratch);
     git_ok(
         repo,
-        &["worktree", "add", "-q", "-d", scratch.to_str().unwrap(), base_rev],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-d",
+            scratch.to_str().unwrap(),
+            base_rev,
+        ],
     );
     let mut conflicted = false;
     for branch in [branch_a, branch_b] {
@@ -101,7 +109,10 @@ fn real_merge_conflicts(repo: &Path, base_rev: &str, branch_a: &str, branch_b: &
             break;
         }
     }
-    git_ok(repo, &["worktree", "remove", "--force", scratch.to_str().unwrap()]);
+    git_ok(
+        repo,
+        &["worktree", "remove", "--force", scratch.to_str().unwrap()],
+    );
     conflicted
 }
 
@@ -120,10 +131,16 @@ fn six_agents_same_file_separate_worktrees_zero_false_attribution() {
     let mut wts = Vec::new();
     for i in 0..6 {
         let id = format!("S{}-OC01", i + 1);
-        let wt = worktree::create(&repo, &id, &tmp).unwrap().expect("git repo must get a worktree");
+        let wt = worktree::create(&repo, &id, &tmp)
+            .unwrap()
+            .expect("git repo must get a worktree");
         assert_eq!(wt.branch, format!("notch/{id}"));
         assert_eq!(wt.base_rev, base_rev);
-        assert!(wt.path.is_dir(), "worktree dir missing: {}", wt.path.display());
+        assert!(
+            wt.path.is_dir(),
+            "worktree dir missing: {}",
+            wt.path.display()
+        );
         assert!(wt.path.join("shared.rs").is_file());
         // The worktree is a real linked worktree (git file, not a clone).
         assert!(wt.path.join(".git").is_file());
@@ -145,15 +162,26 @@ fn six_agents_same_file_separate_worktrees_zero_false_attribution() {
     // Exact attribution: committed diff (base..HEAD) + porcelain of THIS worktree.
     for (i, wt) in wts.iter().enumerate() {
         let files = worktree::sample_files(wt);
-        assert_eq!(files, vec!["shared.rs".to_string()], "agent {i} exact files: {files:?}");
+        assert_eq!(
+            files,
+            vec!["shared.rs".to_string()],
+            "agent {i} exact files: {files:?}"
+        );
         let porcelain = sample_git(&wt.path);
         assert!(porcelain.is_empty() || porcelain == vec!["shared.rs".to_string()]);
         // The committed change is visible even though porcelain is clean.
-        assert_eq!(sample_git_at(&wt.path, Some(&wt.base_rev)), vec!["shared.rs".to_string()]);
+        assert_eq!(
+            sample_git_at(&wt.path, Some(&wt.base_rev)),
+            vec!["shared.rs".to_string()]
+        );
     }
 
     // No edit leaked into the main checkout: no false attribution there.
-    assert!(sample_git(&repo).is_empty(), "main checkout must stay clean: {:?}", sample_git(&repo));
+    assert!(
+        sample_git(&repo).is_empty(),
+        "main checkout must stay clean: {:?}",
+        sample_git(&repo)
+    );
 
     // Six agents touched the same path but in isolated worktrees; a filename
     // overlap is NOT a conflict. merge-tree is the only conflict oracle.
@@ -200,8 +228,14 @@ fn conflict_predicate_agrees_with_real_merge() {
     let ac = worktree::conflicts(&repo, &base_rev, &a.branch, &c.branch).unwrap();
     assert!(!ab, "disjoint edits must be clean");
     assert!(ac, "same-line edits must conflict (merge-tree exit 1)");
-    assert_eq!(ab, real_merge_conflicts(&repo, &base_rev, &a.branch, &b.branch));
-    assert_eq!(ac, real_merge_conflicts(&repo, &base_rev, &a.branch, &c.branch));
+    assert_eq!(
+        ab,
+        real_merge_conflicts(&repo, &base_rev, &a.branch, &b.branch)
+    );
+    assert_eq!(
+        ac,
+        real_merge_conflicts(&repo, &base_rev, &a.branch, &c.branch)
+    );
 
     // No auto-merge: the predicate only reads. Committed work is still
     // attributed exactly (commits since base), and neither worktree was
@@ -230,7 +264,10 @@ fn non_git_cwd_falls_back_with_loud_warning() {
     }
     // No branch/worktree side effects for a non-git cwd.
     assert!(!tmp.join("notch-S1-OC01").join("worktree").exists());
-    assert!(sample_git(&plain).is_empty(), "heuristic fallback stays silent on git signal");
+    assert!(
+        sample_git(&plain).is_empty(),
+        "heuristic fallback stays silent on git signal"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +284,18 @@ fn snapshot_commits_wip_and_dirty_removal_is_refused() {
 
     std::fs::write(wt.path.join("wip.rs"), "fn wip() {}\n").unwrap();
     assert!(worktree::is_dirty(&wt).unwrap());
-    let sha = worktree::snapshot(&wt.path, "S1-OC01", "kill").unwrap().expect("WIP committed");
+    let sha = worktree::snapshot(&wt.path, "S1-OC01", "kill")
+        .unwrap()
+        .expect("WIP committed");
     assert_eq!(sha.len(), 40, "sha must be a full object id: {sha}");
-    assert!(!worktree::is_dirty(&wt).unwrap(), "snapshot must leave the worktree clean");
-    assert_eq!(sample_git_at(&wt.path, Some(&wt.base_rev)), vec!["wip.rs".to_string()]);
+    assert!(
+        !worktree::is_dirty(&wt).unwrap(),
+        "snapshot must leave the worktree clean"
+    );
+    assert_eq!(
+        sample_git_at(&wt.path, Some(&wt.base_rev)),
+        vec!["wip.rs".to_string()]
+    );
 
     // New WIP, then removal must be REFUSED with data left intact.
     std::fs::write(wt.path.join("wip2.rs"), "fn wip2() {}\n").unwrap();
@@ -258,7 +303,10 @@ fn snapshot_commits_wip_and_dirty_removal_is_refused() {
         Err(WorktreeError::Dirty(_)) => {}
         other => panic!("dirty worktree removal must be refused: {other:?}"),
     }
-    assert!(wt.path.join("wip2.rs").is_file(), "refused removal must not delete WIP");
+    assert!(
+        wt.path.join("wip2.rs").is_file(),
+        "refused removal must not delete WIP"
+    );
     assert!(wt.path.is_dir());
 
     // Snapshot again -> clean -> removal allowed. Branch is kept so the
@@ -267,7 +315,10 @@ fn snapshot_commits_wip_and_dirty_removal_is_refused() {
     worktree::remove(&wt).unwrap();
     assert!(!wt.path.exists(), "clean worktree dir must be removed");
     let branches = git_ok(&repo, &["branch", "--list", "notch/S1-OC01"]);
-    assert!(branches.contains("notch/S1-OC01"), "snapshot branch must survive cleanup");
+    assert!(
+        branches.contains("notch/S1-OC01"),
+        "snapshot branch must survive cleanup"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +394,11 @@ impl Capture {
             } else if sub == "pane" && sub2 == "close" {
                 Ok(r#"{"id":"cli:pane:close","result":{"type":"ok"}}"#.to_string())
             } else {
-                Err(HerdrError::Failed { args: args.to_vec(), code: Some(2), stderr: "unexpected".into() })
+                Err(HerdrError::Failed {
+                    args: args.to_vec(),
+                    code: Some(2),
+                    stderr: "unexpected".into(),
+                })
             }
         })
     }
@@ -367,15 +422,31 @@ fn pane_env_has_tmpdir_and_isolated_build_target() {
     std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
     std::fs::create_dir_all(&cfg.state_dir).unwrap();
     let capture = Arc::new(Capture::default());
-    let daemon = Daemon::open(test_config(&root), capture.herdr(), Arc::new(notchd::FakeClock::new(1_700_000_000_000))).unwrap();
+    let daemon = Daemon::open(
+        test_config(&root),
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
 
     // Pure function first: both branches of the optional build isolation.
     let a = worktree::pane_env(&cfg.tmp_dir, "S1-OC01", false);
-    assert!(a.iter().any(|(k, v)| k == "TMPDIR" && v.as_str() == cfg.tmp_dir.join("notch-S1-OC01").to_string_lossy()));
-    assert!(a.iter().any(|(k, v)| k == "NOTCH_SESSION_ID" && v == "S1-OC01"));
+    assert!(a
+        .iter()
+        .any(|(k, v)| k == "TMPDIR"
+            && v.as_str() == cfg.tmp_dir.join("notch-S1-OC01").to_string_lossy()));
+    assert!(a
+        .iter()
+        .any(|(k, v)| k == "NOTCH_SESSION_ID" && v == "S1-OC01"));
     assert!(!a.iter().any(|(k, _)| k == "CARGO_TARGET_DIR"));
     let b = worktree::pane_env(&cfg.tmp_dir, "S1-OC01", true);
-    assert!(b.iter().any(|(k, v)| k == "CARGO_TARGET_DIR" && v.as_str() == cfg.tmp_dir.join("notch-S1-OC01").join("build").to_string_lossy()));
+    assert!(b.iter().any(|(k, v)| k == "CARGO_TARGET_DIR"
+        && v.as_str()
+            == cfg
+                .tmp_dir
+                .join("notch-S1-OC01")
+                .join("build")
+                .to_string_lossy()));
 
     std::env::set_var("NOTCH_ISOLATE_BUILD", "1");
     let ack = daemon.submit_task(
@@ -396,9 +467,21 @@ fn pane_env_has_tmpdir_and_isolated_build_target() {
     let splits = capture.split_args.lock().unwrap();
     assert!(!splits.is_empty(), "pane split must be invoked");
     let joined = splits[0].join(" ");
-    assert!(joined.contains("TMPDIR="), "pane env missing TMPDIR: {joined}");
-    assert!(joined.contains(&format!("TMPDIR={}", cfg.tmp_dir.join(format!("notch-{id}")).display())), "TMPDIR wrong: {joined}");
-    assert!(joined.contains("CARGO_TARGET_DIR="), "pane env missing CARGO_TARGET_DIR: {joined}");
+    assert!(
+        joined.contains("TMPDIR="),
+        "pane env missing TMPDIR: {joined}"
+    );
+    assert!(
+        joined.contains(&format!(
+            "TMPDIR={}",
+            cfg.tmp_dir.join(format!("notch-{id}")).display()
+        )),
+        "TMPDIR wrong: {joined}"
+    );
+    assert!(
+        joined.contains("CARGO_TARGET_DIR="),
+        "pane env missing CARGO_TARGET_DIR: {joined}"
+    );
     assert!(joined.contains(&format!("NOTCH_SESSION_ID={id}")));
     drop(splits);
 
@@ -478,11 +561,23 @@ fn disk_budget_evicts_dead_oldest_first_and_never_touches_dirty_or_live() {
     // 300 KiB total; budget 200 KiB => only the oldest 100 KiB dead dir is
     // evicted (remaining 200 KiB fits exactly).
     let (freed, warnings) = enforce_budget(&tmp, &sessions, 200 * 1024).unwrap();
-    assert!(freed >= 100 * 1024, "must free the oldest dead dir, freed={freed}");
+    assert!(
+        freed >= 100 * 1024,
+        "must free the oldest dead dir, freed={freed}"
+    );
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
-    assert!(!tmp.join("notch-S1-OC01").exists(), "oldest dead must be gone");
-    assert!(tmp.join("notch-S2-OC01").exists(), "newer dead must survive");
-    assert!(tmp.join("notch-S3-OC01").exists(), "live session must survive");
+    assert!(
+        !tmp.join("notch-S1-OC01").exists(),
+        "oldest dead must be gone"
+    );
+    assert!(
+        tmp.join("notch-S2-OC01").exists(),
+        "newer dead must survive"
+    );
+    assert!(
+        tmp.join("notch-S3-OC01").exists(),
+        "live session must survive"
+    );
 
     // A dirty worktree in a dead session is refused even under budget pressure.
     let repo = init_repo(&root);
@@ -494,8 +589,14 @@ fn disk_budget_evicts_dead_oldest_first_and_never_touches_dirty_or_live() {
     let mut sessions = vec![fake_session("S4-OC01", Status::Failed, 50, &dir)];
     let (freed, warnings) = enforce_budget(&base, &sessions, 0).unwrap();
     assert_eq!(freed, 0, "dirty worktree must not be freed");
-    assert!(warnings.iter().any(|w| w.contains("dirty")), "must warn about dirty refusal: {warnings:?}");
-    assert!(wt.path.join("dirty.rs").is_file(), "dirty file must survive");
+    assert!(
+        warnings.iter().any(|w| w.contains("dirty")),
+        "must warn about dirty refusal: {warnings:?}"
+    );
+    assert!(
+        wt.path.join("dirty.rs").is_file(),
+        "dirty file must survive"
+    );
     sessions.clear();
 }
 
@@ -511,7 +612,12 @@ fn kill_snapshots_wip_before_cleanup() {
     std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
     std::fs::create_dir_all(&cfg.state_dir).unwrap();
     let capture = Arc::new(Capture::default());
-    let daemon = Daemon::open(test_config(&root), capture.herdr(), Arc::new(notchd::FakeClock::new(1_700_000_000_000))).unwrap();
+    let daemon = Daemon::open(
+        test_config(&root),
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
     let ack = daemon.submit_task(
         "do work".to_string(),
         Some(repo.to_string_lossy().to_string()),
@@ -531,12 +637,18 @@ fn kill_snapshots_wip_before_cleanup() {
     daemon.kill(&id, Some("test kill".to_string())).unwrap();
 
     // WIP was committed to this session's branch before the dir was removed.
-    let msg = git_ok(meta.base_repo.as_path(), &["log", "-1", "--format=%s", &meta.branch]);
+    let msg = git_ok(
+        meta.base_repo.as_path(),
+        &["log", "-1", "--format=%s", &meta.branch],
+    );
     assert!(
         msg.starts_with("notch: WIP snapshot (") && msg.contains(&id),
         "canonical snapshot commit missing: {msg}"
     );
-    assert!(!meta.path.exists(), "clean worktree dir removed after snapshot");
+    assert!(
+        !meta.path.exists(),
+        "clean worktree dir removed after snapshot"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -551,14 +663,22 @@ fn daemon_conflicts_use_merge_tree_not_filenames() {
     std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
     std::fs::create_dir_all(&cfg.state_dir).unwrap();
     let capture = Arc::new(Capture::default());
-    let daemon = Daemon::open(test_config(&root), capture.herdr(), Arc::new(notchd::FakeClock::new(1_700_000_000_000))).unwrap();
+    let daemon = Daemon::open(
+        test_config(&root),
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
 
     let mut ids = Vec::new();
     for i in 0..3 {
         let ack = daemon.submit_task(
             format!("worker {i}"),
             Some(repo.to_string_lossy().to_string()),
-            None, None, None, None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(ack.ok, "{:?}", ack.error);
         ids.push(ack.session_id.unwrap());
@@ -590,8 +710,14 @@ fn daemon_conflicts_use_merge_tree_not_filenames() {
                 && c.sessions.iter().any(|s| s == b)
         })
     };
-    assert!(pair(&ids[0], &ids[1]).is_some(), "same-line pair must conflict: {conflicts:?}");
-    assert!(pair(&ids[0], &ids[2]).is_none(), "disjoint pair must NOT conflict: {conflicts:?}");
+    assert!(
+        pair(&ids[0], &ids[1]).is_some(),
+        "same-line pair must conflict: {conflicts:?}"
+    );
+    assert!(
+        pair(&ids[0], &ids[2]).is_none(),
+        "disjoint pair must NOT conflict: {conflicts:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +734,12 @@ fn non_git_spawn_warns_loudly() {
     std::fs::create_dir_all(&cfg.tmp_dir).unwrap();
     std::fs::create_dir_all(&cfg.state_dir).unwrap();
     let capture = Arc::new(Capture::default());
-    let daemon = Daemon::open(cfg, capture.herdr(), Arc::new(notchd::FakeClock::new(1_700_000_000_000))).unwrap();
+    let daemon = Daemon::open(
+        cfg,
+        capture.herdr(),
+        Arc::new(notchd::FakeClock::new(1_700_000_000_000)),
+    )
+    .unwrap();
     let ack = daemon.submit_task(
         "plain cwd".to_string(),
         Some(plain.to_string_lossy().to_string()),
@@ -622,7 +753,9 @@ fn non_git_spawn_warns_loudly() {
     daemon.poll_once(); // detached worker's warning is applied here
     let snap = daemon.snapshot();
     assert!(
-        snap.warnings.iter().any(|w| w.contains("not a git") && w.contains("heuristic")),
+        snap.warnings
+            .iter()
+            .any(|w| w.contains("not a git") && w.contains("heuristic")),
         "non-git cwd must produce a loud warning: {:?}",
         snap.warnings
     );
@@ -655,7 +788,10 @@ fn unborn_head_warns_about_missing_head_not_non_git() {
     let ack = daemon.submit_task(
         "unborn head".to_string(),
         Some(repo.to_string_lossy().to_string()),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     );
     assert!(ack.ok, "{:?}", ack.error);
     capture.wait_done();
@@ -697,7 +833,10 @@ fn pane_id_is_visible_in_snapshot_immediately_after_submit() {
         let ack = daemon.submit_task(
             "pane id probe".to_string(),
             Some(repo.to_string_lossy().to_string()),
-            None, None, None, None,
+            None,
+            None,
+            None,
+            None,
         );
         assert!(ack.ok, "{:?}", ack.error);
         ids.push(ack.session_id.unwrap());
@@ -716,9 +855,18 @@ fn pane_id_is_visible_in_snapshot_immediately_after_submit() {
                 .clone()
         })
         .collect();
-    assert!(!panes[0].is_empty(), "real pane id missing immediately after ack: {ids:?} -> {panes:?}");
-    assert!(!panes[1].is_empty(), "real pane id missing immediately after ack: {ids:?} -> {panes:?}");
-    assert_ne!(panes[0], panes[1], "each session must have its own pane id: {panes:?}");
+    assert!(
+        !panes[0].is_empty(),
+        "real pane id missing immediately after ack: {ids:?} -> {panes:?}"
+    );
+    assert!(
+        !panes[1].is_empty(),
+        "real pane id missing immediately after ack: {ids:?} -> {panes:?}"
+    );
+    assert_ne!(
+        panes[0], panes[1],
+        "each session must have its own pane id: {panes:?}"
+    );
     capture.wait_done(); // let the detached workers finish before teardown
 }
 
@@ -744,7 +892,10 @@ fn slow_successful_pane_split_still_publishes_pane_id_before_ack() {
     let ack = daemon.submit_task(
         "slow pane".to_string(),
         Some(repo.to_string_lossy().to_string()),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     );
     assert!(ack.ok, "{:?}", ack.error);
     let id = ack.session_id.unwrap();
@@ -755,6 +906,9 @@ fn slow_successful_pane_split_still_publishes_pane_id_before_ack() {
         .find(|s| s.id == id)
         .unwrap()
         .pane_id;
-    assert!(!pane.is_empty(), "slow-but-successful split must publish its real pane id before ack");
+    assert!(
+        !pane.is_empty(),
+        "slow-but-successful split must publish its real pane id before ack"
+    );
     capture.wait_done();
 }

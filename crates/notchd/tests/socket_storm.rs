@@ -24,10 +24,14 @@ impl Rng {
     }
     fn alnum(&mut self, len: usize) -> String {
         const A: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-        (0..len).map(|_| A[self.next() as usize % 36] as char).collect()
+        (0..len)
+            .map(|_| A[self.next() as usize % 36] as char)
+            .collect()
     }
     fn digits(&mut self, len: usize) -> String {
-        (0..len).map(|_| (b'0' + (self.next() % 10) as u8) as char).collect()
+        (0..len)
+            .map(|_| (b'0' + (self.next() % 10) as u8) as char)
+            .collect()
     }
     fn below(&mut self, n: u64) -> u64 {
         self.next() % n
@@ -167,7 +171,10 @@ fn socket_storm_10k_garbage() {
         rss_growth < 65_536,
         "daemon RSS grew by {rss_growth} KiB during the storm — memory is not sane"
     );
-    assert!(wall < std::time::Duration::from_secs(30), "storm took {wall:?}");
+    assert!(
+        wall < std::time::Duration::from_secs(30),
+        "storm took {wall:?}"
+    );
 
     // A valid ping still works afterwards.
     let ack = c.rpc(&json!({"cmd":"ping"}));

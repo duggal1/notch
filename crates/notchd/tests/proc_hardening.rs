@@ -10,8 +10,8 @@
 
 use notchd::herdr::Herdr;
 use notchd::proc::{
-    run, Out, ProcError, Spec, PIPE_EOF_GRACE, TIMEOUT_DECIDER, TIMEOUT_GIT,
-    TIMEOUT_HERDR_LIST, TIMEOUT_HERDR_MUTATE, TIMEOUT_HERDR_READ, TIMEOUT_OPENCODE_API,
+    run, Out, ProcError, Spec, PIPE_EOF_GRACE, TIMEOUT_DECIDER, TIMEOUT_GIT, TIMEOUT_HERDR_LIST,
+    TIMEOUT_HERDR_MUTATE, TIMEOUT_HERDR_READ, TIMEOUT_OPENCODE_API,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -54,13 +54,18 @@ fn proc_contract_signatures_and_timeouts() {
     // Construction must not require `'static` or owned data.
     assert_eq!(spec.max_out, 1024);
 
-    assert!(ProcError::Timeout { after: Duration::from_millis(250) }
-        .to_string()
-        .contains("250ms"));
+    assert!(ProcError::Timeout {
+        after: Duration::from_millis(250)
+    }
+    .to_string()
+    .contains("250ms"));
     assert!(ProcError::Spawn("nope".into()).to_string().contains("nope"));
-    assert!(ProcError::Failed { code: Some(7), stderr: "bad".into() }
-        .to_string()
-        .contains("bad"));
+    assert!(ProcError::Failed {
+        code: Some(7),
+        stderr: "bad".into()
+    }
+    .to_string()
+    .contains("bad"));
     let _ = Out::default();
 }
 
@@ -170,7 +175,10 @@ fn write_shim(root: &Path) -> PathBuf {
 fn env_for(root: &Path, mode: &str) -> Vec<(String, String)> {
     vec![
         ("PROC_SHIM_MODE".into(), mode.into()),
-        ("PROC_SHIM_STATE".into(), root.to_string_lossy().into_owned()),
+        (
+            "PROC_SHIM_STATE".into(),
+            root.to_string_lossy().into_owned(),
+        ),
     ]
 }
 
@@ -210,7 +218,10 @@ fn read_note(root: &Path, name: &str) -> Option<u32> {
 /// PIDs still alive in a process group. `pgrep -g` is the exact check the
 /// hardening plan asks for (no child may survive the group kill).
 fn group_survivors(pgid: u32) -> Vec<u32> {
-    let Ok(out) = StdCommand::new("pgrep").args(["-g", &pgid.to_string()]).output() else {
+    let Ok(out) = StdCommand::new("pgrep")
+        .args(["-g", &pgid.to_string()])
+        .output()
+    else {
         panic!("pgrep unavailable — cannot prove group reaping");
     };
     String::from_utf8_lossy(&out.stdout)
@@ -252,11 +263,17 @@ fn t2_fault_matrix_bounded_and_group_reaped() {
 
         let pgid = read_note(&root, "pgid").unwrap_or_else(|| panic!("{mode}: no pgid recorded"));
         let survivors = group_survivors(pgid);
-        assert!(survivors.is_empty(), "{mode}: pgrep -g {pgid} found survivors {survivors:?}");
+        assert!(
+            survivors.is_empty(),
+            "{mode}: pgrep -g {pgid} found survivors {survivors:?}"
+        );
         if mode == "grandchild" {
             let gpgid = read_note(&root, "grandchild_pgid")
                 .unwrap_or_else(|| panic!("grandchild: no pgid recorded"));
-            assert_eq!(gpgid, pgid, "grandchild must inherit the spawn process group");
+            assert_eq!(
+                gpgid, pgid,
+                "grandchild must inherit the spawn process group"
+            );
             assert!(
                 group_survivors(gpgid).is_empty(),
                 "grandchild in group {gpgid} survived the group kill"
@@ -276,7 +293,11 @@ fn t2_garbage_output_and_nonzero_exit_are_typed() {
     let env = env_for(&root, "garbage");
     let spec = spec_for(&shim, &args, &env, Duration::from_secs(2), 4096);
     let out = run(&spec).expect("exit 0 with garbage bytes must be Ok at proc level");
-    assert!(out.stdout.contains("not json {{{"), "stdout was {:?}", out.stdout);
+    assert!(
+        out.stdout.contains("not json {{{"),
+        "stdout was {:?}",
+        out.stdout
+    );
 
     let root = shim_root("exit7");
     let shim = write_shim(&root);
@@ -305,8 +326,16 @@ fn t2_large_output_is_drained_and_capped() {
     let t = Instant::now();
     match run(&spec) {
         Ok(out) => {
-            assert!(out.stdout.len() <= 1024, "captured {} bytes, cap is 1024", out.stdout.len());
-            println!("t2_large_output: drained 1 GiB in {:?}, kept {} bytes", t.elapsed(), out.stdout.len());
+            assert!(
+                out.stdout.len() <= 1024,
+                "captured {} bytes, cap is 1024",
+                out.stdout.len()
+            );
+            println!(
+                "t2_large_output: drained 1 GiB in {:?}, kept {} bytes",
+                t.elapsed(),
+                out.stdout.len()
+            );
         }
         Err(ProcError::Timeout { .. }) => {
             // A slow machine may not drain 1 GiB inside 12 s; the timeout
@@ -364,15 +393,23 @@ fn herdr_list_is_bounded_and_reaps_group() {
     let herdr = Herdr::from_env();
 
     let t = Instant::now();
-    let err = herdr.agent_list().expect_err("hung herdr list must time out");
+    let err = herdr
+        .agent_list()
+        .expect_err("hung herdr list must time out");
     let elapsed = t.elapsed();
     assert!(
         elapsed < TIMEOUT_HERDR_LIST + PIPE_EOF_GRACE,
         "herdr list took {elapsed:?}"
     );
-    assert!(err.to_string().contains("herdr timeout after 5000ms"), "got {err}");
+    assert!(
+        err.to_string().contains("herdr timeout after 5000ms"),
+        "got {err}"
+    );
     let pgid = read_note(&root, "pgid").unwrap();
-    assert!(group_survivors(pgid).is_empty(), "herdr left group survivors: {pgid}");
+    assert!(
+        group_survivors(pgid).is_empty(),
+        "herdr left group survivors: {pgid}"
+    );
     std::env::remove_var("NOTCH_HERDR_CMD");
     std::env::remove_var("PROC_SHIM_MODE");
     std::env::remove_var("PROC_SHIM_STATE");
@@ -410,12 +447,18 @@ fn t2_no_rss_or_fd_growth_across_repeated_kills() {
         let spec = spec_for(&shim, &args, &env, Duration::from_millis(1_500), 4096);
         assert!(matches!(run(&spec), Err(ProcError::Timeout { .. })));
         let pgid = read_note(&root, "pgid").unwrap();
-        assert!(group_survivors(pgid).is_empty(), "iteration {i} left group survivors");
+        assert!(
+            group_survivors(pgid).is_empty(),
+            "iteration {i} left group survivors"
+        );
     }
     let after_rss = self_rss_kb();
     let after_fd = self_fd_count();
     let growth_kb = after_rss.saturating_sub(before_rss);
     println!("t2_rss: {before_rss} KiB -> {after_rss} KiB (growth {growth_kb} KiB); fds {before_fd} -> {after_fd}");
     assert!(growth_kb < 20 * 1024, "RSS grew {growth_kb} KiB (> 20 MB)");
-    assert!(after_fd <= before_fd + 4, "fds leaked: {before_fd} -> {after_fd}");
+    assert!(
+        after_fd <= before_fd + 4,
+        "fds leaked: {before_fd} -> {after_fd}"
+    );
 }

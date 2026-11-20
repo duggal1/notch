@@ -44,7 +44,9 @@ fn timeout_or(default_ms: u64) -> u64 {
             default_ms
         }
         Err(e) => {
-            eprintln!("opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {default_ms}ms");
+            eprintln!(
+                "opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {default_ms}ms"
+            );
             default_ms
         }
     }
@@ -136,7 +138,12 @@ impl Opencode {
     }
 
     pub fn api_session_list(&self) -> Result<Vec<ApiSession>, HerdrError> {
-        let argv = vec![self.cmd.clone(), "api".into(), "GET".into(), "/api/session".into()];
+        let argv = vec![
+            self.cmd.clone(),
+            "api".into(),
+            "GET".into(),
+            "/api/session".into(),
+        ];
         let out = self.read_seam(&argv)?;
         parse_api_session_list(&out)
     }
@@ -144,7 +151,12 @@ impl Opencode {
     pub fn models(&self) -> Result<Vec<String>, HerdrError> {
         let argv = vec![self.cmd.clone(), "models".into()];
         let out = self.read_seam(&argv)?;
-        Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     /// One headless decider call, no session reuse. NOT on the control path.
@@ -279,10 +291,11 @@ pub fn parse_api_session_list(out: &str) -> Result<Vec<ApiSession>, HerdrError> 
                 _ => None,
             }
         });
-        let directory = w
-            .location
-            .as_ref()
-            .and_then(|l| l.get("directory").and_then(|d| d.as_str()).map(str::to_string));
+        let directory = w.location.as_ref().and_then(|l| {
+            l.get("directory")
+                .and_then(|d| d.as_str())
+                .map(str::to_string)
+        });
         sessions.push(ApiSession {
             id: w.id,
             busy: w.time.as_ref().and_then(|t| t.busy),

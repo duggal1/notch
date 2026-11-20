@@ -37,8 +37,8 @@ fn config(root: &Path) -> Config {
     Config {
         state_dir: root.join("state"),
         tmp_dir: root.join("tmp"),
-        stuck_after_secs: 2,      // stuck threshold 4 s
-        poll_interval_ms: 1000,   // stall gap > 3 s
+        stuck_after_secs: 2,    // stuck threshold 4 s
+        poll_interval_ms: 1000, // stall gap > 3 s
         opencode_decider: false,
     }
 }
@@ -55,7 +55,8 @@ fn frozen_working_herdr() -> Herdr {
                 "agent":"opencode", "agent_status":"working",
                 "pane_id":"wA:p1", "revision":7,
                 "terminal_title":"OC | frozen", "focused":false, "name":"frozen"
-            }]}}).to_string()),
+            }]}})
+            .to_string()),
             ("agent", "read") => Ok("no progress\n".to_string()),
             _ => Ok(r#"{"result":{"type":"ok"}}"#.to_string()),
         }
@@ -66,11 +67,7 @@ fn stuck_escalations(daemon: &Daemon) -> usize {
     let snap: Value = serde_json::to_value(daemon.snapshot()).unwrap();
     snap["escalations"]
         .as_array()
-        .map(|a| {
-            a.iter()
-                .filter(|e| e["kind"] == json!("stuck"))
-                .count()
-        })
+        .map(|a| a.iter().filter(|e| e["kind"] == json!("stuck")).count())
         .unwrap_or(0)
 }
 
@@ -99,10 +96,18 @@ fn a_long_stall_must_rearm_the_stuck_escalation() {
     loop {
         daemon.poll_once();
         let snap: Value = serde_json::to_value(daemon.snapshot()).unwrap();
-        if snap["sessions"].as_array().unwrap().iter().any(|s| s["paneId"] == json!("wA:p1")) {
+        if snap["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["paneId"] == json!("wA:p1"))
+        {
             break;
         }
-        assert!(std::time::Instant::now() < wait_deadline, "async spawn never attached pane");
+        assert!(
+            std::time::Instant::now() < wait_deadline,
+            "async spawn never attached pane"
+        );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(stuck_escalations(&daemon), 0, "no stuck verdict at T0");
@@ -114,7 +119,11 @@ fn a_long_stall_must_rearm_the_stuck_escalation() {
         daemon.poll_once();
     }
     let first = stuck_escalations(&daemon);
-    assert!(first >= 1, "episode 1 should escalate stuck; snapshot={}", serde_json::to_value(daemon.snapshot()).unwrap());
+    assert!(
+        first >= 1,
+        "episode 1 should escalate stuck; snapshot={}",
+        serde_json::to_value(daemon.snapshot()).unwrap()
+    );
 
     // The daemon stalls for 10 s (> 3× poll interval): grace, no kills.
     clock.advance_ms(10_000);
@@ -125,7 +134,10 @@ fn a_long_stall_must_rearm_the_stuck_escalation() {
     for _i in 0..6 {
         clock.advance_ms(1_000);
         daemon.poll_once();
-        println!("post-stall tick {_i}: stuck_escalations={}", stuck_escalations(&daemon));
+        println!(
+            "post-stall tick {_i}: stuck_escalations={}",
+            stuck_escalations(&daemon)
+        );
     }
     let second = stuck_escalations(&daemon);
     assert!(

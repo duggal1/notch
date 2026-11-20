@@ -81,7 +81,12 @@ fn worker_message_travels_only_through_the_orchestrator() {
     .unwrap();
     let text = peers["result"]["content"][0]["text"].as_str().unwrap();
     let peers_json: Value = serde_json::from_str(text).unwrap();
-    let ids: Vec<&str> = peers_json["peers"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let ids: Vec<&str> = peers_json["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert_eq!(ids, vec!["S1-OC01", "S2-OC01"]);
 
     // FROM is bound to this bridge's session; TO is the other supervisor.
@@ -91,7 +96,11 @@ fn worker_message_travels_only_through_the_orchestrator() {
         2,
     );
     assert!(resp.get("error").is_none(), "send failed: {resp}");
-    assert_ne!(resp["result"]["isError"], json!(true), "send failed: {resp}");
+    assert_ne!(
+        resp["result"]["isError"],
+        json!(true),
+        "send failed: {resp}"
+    );
 
     // The message is NOT in any mailbox until the orchestrator drains.
     assert!(d.mailbox_drain("SV-2").is_empty(), "no direct delivery");
@@ -103,7 +112,10 @@ fn worker_message_travels_only_through_the_orchestrator() {
     assert_eq!(delivered[0].session.as_deref(), Some("S2-OC01"));
     assert!(delivered[0].detail.contains("S1-OC01->S2-OC01"));
     assert!(delivered[0].detail.contains("verified evidence ready"));
-    assert!(d.mailbox_drain("SV-1").is_empty(), "source supervisor got nothing");
+    assert!(
+        d.mailbox_drain("SV-1").is_empty(),
+        "source supervisor got nothing"
+    );
     assert_eq!(d.bus_drain(), 0, "exactly-once routing");
 }
 

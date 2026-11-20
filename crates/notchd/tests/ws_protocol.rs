@@ -39,10 +39,13 @@ fn ws_commands_roundtrip_and_errors() {
     let _hello = c.read_value();
 
     // submit_task -> ack with ids
-    let ack = c.rpc_ack("submit_task", &json!({
-        "cmd": "submit_task", "task": "wire roundtrip", "cwd": cwd,
-        "title": "Roundtrip", "definitionOfDone": "tests pass"
-    }));
+    let ack = c.rpc_ack(
+        "submit_task",
+        &json!({
+            "cmd": "submit_task", "task": "wire roundtrip", "cwd": cwd,
+            "title": "Roundtrip", "definitionOfDone": "tests pass"
+        }),
+    );
     assert_eq!(ack["cmd"], "submit_task", "{ack}");
     assert_eq!(ack["ok"], true, "{ack}");
     let session = ack["sessionId"].as_str().unwrap().to_string();
@@ -51,7 +54,11 @@ fn ws_commands_roundtrip_and_errors() {
     // snapshot command replies with a snapshot frame containing the session.
     let snap = c.rpc(&json!({"cmd": "snapshot"}));
     assert_eq!(snap["event"], "snapshot", "{snap}");
-    assert!(snap["snapshot"]["sessions"].as_array().unwrap().iter().any(|s| s["id"] == session));
+    assert!(snap["snapshot"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == session));
 
     // focus / reprompt / pause / resume / cleanup / list_models all ack.
     for req in [
@@ -102,20 +109,29 @@ fn ws_bus_message_delta_is_pushed_as_a_real_event() {
 
     let mut sessions = Vec::new();
     for i in 0..2 {
-        let a = c.rpc_ack("submit_task", &json!({"cmd":"submit_task","task":format!("bus task {i}"),"cwd":cwd}));
+        let a = c.rpc_ack(
+            "submit_task",
+            &json!({"cmd":"submit_task","task":format!("bus task {i}"),"cwd":cwd}),
+        );
         assert_eq!(a["ok"], true, "{a}");
         sessions.push(a["sessionId"].as_str().unwrap().to_string());
     }
     // Drain the two snapshots so the bus_message test starts clean.
     let _ = c.wait_for(Duration::from_millis(600), |v| {
         v["event"] == "snapshot"
-            && v["snapshot"]["sessions"].as_array().map(|s| s.len() == 2).unwrap_or(false)
+            && v["snapshot"]["sessions"]
+                .as_array()
+                .map(|s| s.len() == 2)
+                .unwrap_or(false)
     });
 
-    let ack = c.rpc_ack("message", &json!({
-        "cmd": "message", "from": sessions[0], "to": sessions[1],
-        "type": "handoff", "body": "please take over the auth work"
-    }));
+    let ack = c.rpc_ack(
+        "message",
+        &json!({
+            "cmd": "message", "from": sessions[0], "to": sessions[1],
+            "type": "handoff", "body": "please take over the auth work"
+        }),
+    );
     assert_eq!(ack["ok"], true, "{ack}");
     let msg_id = ack["messageId"].as_str().unwrap().to_string();
 
@@ -126,7 +142,10 @@ fn ws_bus_message_delta_is_pushed_as_a_real_event() {
     assert_eq!(frame["busMessage"]["from"], sessions[0]);
     assert_eq!(frame["busMessage"]["to"], sessions[1]);
     assert_eq!(frame["busMessage"]["type"], "handoff");
-    assert_eq!(frame["busMessage"]["preview"], "please take over the auth work");
+    assert_eq!(
+        frame["busMessage"]["preview"],
+        "please take over the auth work"
+    );
 }
 
 #[test]
@@ -142,19 +161,27 @@ fn ws_snapshot_delta_latency_p50_p95_under_200ms() {
     // state (event log / eps) and calls notify_change without the heavy
     // durable state writes `submit_task` performs — so this measures the
     // command → subscriber-frame pipeline itself.
-    let seed = c.rpc_ack("submit_task", &json!({"cmd":"submit_task","task":"latency seed","cwd":cwd}));
+    let seed = c.rpc_ack(
+        "submit_task",
+        &json!({"cmd":"submit_task","task":"latency seed","cwd":cwd}),
+    );
     assert_eq!(seed["ok"], true, "{seed}");
     let sid = seed["sessionId"].as_str().unwrap().to_string();
     // Drain the seed snapshot so the clock starts from a quiet connection.
-    assert!(c.wait_for(Duration::from_secs(2), |v| v["event"] == "snapshot").is_some());
+    assert!(c
+        .wait_for(Duration::from_secs(2), |v| v["event"] == "snapshot")
+        .is_some());
     std::thread::sleep(Duration::from_millis(150));
 
     let mut samples = Vec::new();
     for i in 0..12 {
         let t0 = Instant::now();
-        let ack = c.rpc_ack("reprompt", &json!({
-            "cmd":"reprompt","id":sid,"text":format!("latency prompt {i}")
-        }));
+        let ack = c.rpc_ack(
+            "reprompt",
+            &json!({
+                "cmd":"reprompt","id":sid,"text":format!("latency prompt {i}")
+            }),
+        );
         assert_eq!(ack["ok"], true, "{ack}");
         let pushed = c.wait_for(Duration::from_millis(500), |v| v["event"] == "snapshot");
         assert!(pushed.is_some(), "no snapshot delta after reprompt {i}");
@@ -163,7 +190,9 @@ fn ws_snapshot_delta_latency_p50_p95_under_200ms() {
     samples.sort_by(f64::total_cmp);
     let p50 = samples[samples.len() / 2];
     let p95 = samples[(samples.len() * 95 / 100).min(samples.len() - 1)];
-    eprintln!("ws command→snapshot push latency: p50={p50:.1}ms p95={p95:.1}ms samples={samples:?}");
+    eprintln!(
+        "ws command→snapshot push latency: p50={p50:.1}ms p95={p95:.1}ms samples={samples:?}"
+    );
     assert!(p95 < 200.0, "snapshot push p95 {p95:.1}ms must be < 200ms");
 }
 
@@ -182,8 +211,14 @@ fn ws_snapshot_deltas_are_new_entries_only() {
     };
     let prev = mk(10);
     let mut cur = mk(20);
-    assert!(snapshot_deltas(None, &cur).is_empty(), "startup is never a delta");
-    assert!(snapshot_deltas(Some(&prev), &prev).is_empty(), "unchanged is not a delta");
+    assert!(
+        snapshot_deltas(None, &cur).is_empty(),
+        "startup is never a delta"
+    );
+    assert!(
+        snapshot_deltas(Some(&prev), &prev).is_empty(),
+        "unchanged is not a delta"
+    );
 
     cur["busMessages"].as_array_mut().unwrap().insert(
         0,
@@ -200,8 +235,14 @@ fn ws_snapshot_deltas_are_new_entries_only() {
     cur["sessions"][0]["lastAction"] = json!("new last action");
 
     let deltas = snapshot_deltas(Some(&prev), &cur);
-    let events: Vec<&str> = deltas.iter().map(|d| d["event"].as_str().unwrap()).collect();
-    assert_eq!(events, vec!["bus_message", "escalation", "decision", "session_output"]);
+    let events: Vec<&str> = deltas
+        .iter()
+        .map(|d| d["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        events,
+        vec!["bus_message", "escalation", "decision", "session_output"]
+    );
     assert_eq!(deltas[0]["busMessage"]["id"], "msg_2");
     assert_eq!(deltas[1]["escalation"]["id"], "esc_2");
     assert_eq!(deltas[2]["decision"]["action"], "reprompt");

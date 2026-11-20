@@ -105,15 +105,23 @@ fn adversarial_proc_kills_sigterm_ignoring_parent_and_grandchild_within_deadline
         elapsed,
         timeout + Duration::from_millis(500)
     );
-    assert!(matches!(result, Err(ProcError::Timeout { .. })), "expected timeout, got {result:?}");
+    assert!(
+        matches!(result, Err(ProcError::Timeout { .. })),
+        "expected timeout, got {result:?}"
+    );
 
     // Both the SIGTERM-ignoring parent and its same-group grandchild are gone.
     let live = live_pids(&marker);
-    assert!(live.is_empty(), "process group survived killpg: pids {live:?}");
+    assert!(
+        live.is_empty(),
+        "process group survived killpg: pids {live:?}"
+    );
 
     // Captured stdout stayed at the 1024-byte cap (no unbounded buffering).
-    let parent_pid = std::fs::read_to_string(format!("{}.parent", shim.display())).unwrap_or_default();
-    let child_pid = std::fs::read_to_string(format!("{}.child", shim.display())).unwrap_or_default();
+    let parent_pid =
+        std::fs::read_to_string(format!("{}.parent", shim.display())).unwrap_or_default();
+    let child_pid =
+        std::fs::read_to_string(format!("{}.child", shim.display())).unwrap_or_default();
     eprintln!(
         "A2 adversarial: elapsed={}ms parent={} child={} live={:?}",
         elapsed.as_millis(),

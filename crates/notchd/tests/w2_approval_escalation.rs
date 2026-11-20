@@ -45,13 +45,23 @@ fn only_needs_you_escalations_create_an_answerable_card() {
     let r = root("kinds");
     let d = daemon(&r);
 
-    for kind in ["stuck", "loop_detected", "budget_exceeded", "blocked", "stuck_suspect"] {
+    for kind in [
+        "stuck",
+        "loop_detected",
+        "budget_exceeded",
+        "blocked",
+        "stuck_suspect",
+    ] {
         assert!(
-            d.issue_approval(&format!("esc_{kind}"), "S1-OC01", kind, "reason").is_err(),
+            d.issue_approval(&format!("esc_{kind}"), "S1-OC01", kind, "reason")
+                .is_err(),
             "kind `{kind}` must not be answerable by a human"
         );
     }
-    assert!(d.pending_approvals().is_empty(), "no approvals issued for non-needs_you kinds");
+    assert!(
+        d.pending_approvals().is_empty(),
+        "no approvals issued for non-needs_you kinds"
+    );
 
     let digest = d
         .issue_approval("esc_1", "S1-OC01", "needs_you", "permission prompt")
@@ -68,23 +78,49 @@ fn only_needs_you_escalations_create_an_answerable_card() {
 fn answering_a_needs_you_card_records_a_signed_grant_only_for_allowed_modes() {
     let r = root("modes");
     let d = daemon(&r);
-    let digest = d.issue_approval("esc_2", "S1-OC01", "needs_you", "permission prompt").unwrap();
+    let digest = d
+        .issue_approval("esc_2", "S1-OC01", "needs_you", "permission prompt")
+        .unwrap();
 
     // A mode outside the whitelist is refused and grants nothing.
-    assert!(d.answer_approval("esc_2", true, None, T0, &digest, "sudo").is_err());
-    assert!(d.approval_grant("S1-OC01").is_none(), "invalid mode must not grant");
+    assert!(d
+        .answer_approval("esc_2", true, None, T0, &digest, "sudo")
+        .is_err());
+    assert!(
+        d.approval_grant("S1-OC01").is_none(),
+        "invalid mode must not grant"
+    );
 
     // A valid signed verdict that is not a permission grant leaves no standing grant.
-    let ans = d.answer_approval("esc_2", true, None, T0, &digest, "allow").unwrap();
+    let ans = d
+        .answer_approval("esc_2", true, None, T0, &digest, "allow")
+        .unwrap();
     assert_eq!(ans.id, "esc_2");
-    assert!(d.approval_grant("S1-OC01").is_none(), "a verdict is not a standing grant");
+    assert!(
+        d.approval_grant("S1-OC01").is_none(),
+        "a verdict is not a standing grant"
+    );
 
     // A signed permission-mode grant is recorded for the session only after a
     // valid answer for a needs_you card.
-    let digest3 = d.issue_approval("esc_3", "S2-OC01", "needs_you", "permission prompt").unwrap();
-    let grant = d.answer_approval("esc_3", true, Some("ok".to_string()), T0, &digest3, "bypass_permissions").unwrap();
+    let digest3 = d
+        .issue_approval("esc_3", "S2-OC01", "needs_you", "permission prompt")
+        .unwrap();
+    let grant = d
+        .answer_approval(
+            "esc_3",
+            true,
+            Some("ok".to_string()),
+            T0,
+            &digest3,
+            "bypass_permissions",
+        )
+        .unwrap();
     assert_eq!(grant.mode, "bypass_permissions");
-    assert_eq!(d.approval_grant("S2-OC01"), Some(AnswerMode::BypassPermissions));
+    assert_eq!(
+        d.approval_grant("S2-OC01"),
+        Some(AnswerMode::BypassPermissions)
+    );
     // A different session has no grant: grants are per-session, never global.
     assert_eq!(d.approval_grant("S1-OC01"), None);
 }
@@ -93,13 +129,26 @@ fn answering_a_needs_you_card_records_a_signed_grant_only_for_allowed_modes() {
 fn a_needs_you_escalation_is_never_answered_with_typed_prompt_text() {
     let r = root("no-prompt");
     let d = daemon(&r);
-    let digest = d.issue_approval("esc_4", "S1-OC01", "needs_you", "blocked_waiting").unwrap();
+    let digest = d
+        .issue_approval("esc_4", "S1-OC01", "needs_you", "blocked_waiting")
+        .unwrap();
     // Deny is a valid human answer; it is recorded, not typed into the pane.
-    let ans = d.answer_approval("esc_4", false, Some("ask me first".to_string()), T0, &digest, "deny").unwrap();
+    let ans = d
+        .answer_approval(
+            "esc_4",
+            false,
+            Some("ask me first".to_string()),
+            T0,
+            &digest,
+            "deny",
+        )
+        .unwrap();
     assert!(!ans.allow, "deny must be preserved");
     assert_eq!(ans.note.as_deref(), Some("ask me first"));
     // The card is consumed: a second answer cannot flip it.
-    assert!(d.answer_approval("esc_4", true, None, T0, &digest, "allow").is_err());
+    assert!(d
+        .answer_approval("esc_4", true, None, T0, &digest, "allow")
+        .is_err());
 }
 
 #[test]

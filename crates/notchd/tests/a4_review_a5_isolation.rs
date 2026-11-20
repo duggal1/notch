@@ -13,7 +13,8 @@ static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize:
 
 fn tmp_root(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!("notch-a4-review-{tag}-{}-{n}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("notch-a4-review-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path
@@ -34,7 +35,12 @@ fn git(args: &[&str], cwd: &Path) -> (bool, String) {
 
 fn git_ok(args: &[&str], cwd: &Path) -> String {
     let (ok, out) = git(args, cwd);
-    assert!(ok, "git {} failed in {}: {out}", args.join(" "), cwd.display());
+    assert!(
+        ok,
+        "git {} failed in {}: {out}",
+        args.join(" "),
+        cwd.display()
+    );
     out
 }
 
@@ -45,7 +51,15 @@ fn init_repo(root: &Path) -> (PathBuf, String) {
     std::fs::write(repo.join("base.txt"), "base\n").unwrap();
     git_ok(&["add", "base.txt"], &repo);
     git_ok(
-        &["-c", "user.name=review", "-c", "user.email=r@x", "commit", "-qm", "init"],
+        &[
+            "-c",
+            "user.name=review",
+            "-c",
+            "user.email=r@x",
+            "commit",
+            "-qm",
+            "init",
+        ],
         &repo,
     );
     let base = git_ok(&["rev-parse", "HEAD"], &repo);
@@ -64,17 +78,33 @@ fn a5_isolation_survives_adversarial_cross_edits_and_conflicts() {
     assert_ne!(a.path, b.path, "each session needs its own worktree path");
     assert_eq!(a.branch, "notch/S1-OC01");
     std::fs::write(a.path.join("only-a.txt"), "a\n").unwrap();
-    let sha_a = worktree::snapshot(&a.path, "S1-OC01", "kill").unwrap().expect("WIP committed");
+    let sha_a = worktree::snapshot(&a.path, "S1-OC01", "kill")
+        .unwrap()
+        .expect("WIP committed");
     assert!(!sha_a.is_empty());
     std::fs::write(b.path.join("only-b.txt"), "b\n").unwrap();
-    let _ = worktree::snapshot(&b.path, "S1-OC02", "kill").unwrap().expect("WIP committed");
+    let _ = worktree::snapshot(&b.path, "S1-OC02", "kill")
+        .unwrap()
+        .expect("WIP committed");
 
     let files_a = worktree::sample_files(&a);
     let files_b = worktree::sample_files(&b);
-    assert!(files_a.iter().any(|f| f.ends_with("only-a.txt")), "A's file must be attributed to A: {files_a:?}");
-    assert!(!files_a.iter().any(|f| f.ends_with("only-b.txt")), "B's file leaked into A: {files_a:?}");
-    assert!(files_b.iter().any(|f| f.ends_with("only-b.txt")), "B's file must be attributed to B: {files_b:?}");
-    assert!(!files_b.iter().any(|f| f.ends_with("only-a.txt")), "A's file leaked into B: {files_b:?}");
+    assert!(
+        files_a.iter().any(|f| f.ends_with("only-a.txt")),
+        "A's file must be attributed to A: {files_a:?}"
+    );
+    assert!(
+        !files_a.iter().any(|f| f.ends_with("only-b.txt")),
+        "B's file leaked into A: {files_a:?}"
+    );
+    assert!(
+        files_b.iter().any(|f| f.ends_with("only-b.txt")),
+        "B's file must be attributed to B: {files_b:?}"
+    );
+    assert!(
+        !files_b.iter().any(|f| f.ends_with("only-a.txt")),
+        "A's file leaked into B: {files_b:?}"
+    );
     assert!(
         !worktree::conflicts(&repo, &base, &a.branch, &b.branch).unwrap(),
         "different files must not conflict"
@@ -85,32 +115,59 @@ fn a5_isolation_survives_adversarial_cross_edits_and_conflicts() {
     let c = worktree::create(&repo, "S1-OC03", &tmp).unwrap().unwrap();
     let d = worktree::create(&repo, "S1-OC04", &tmp).unwrap().unwrap();
     std::fs::write(c.path.join("shared.txt"), "left\n").unwrap();
-    let _ = worktree::snapshot(&c.path, "S1-OC03", "kill").unwrap().unwrap();
+    let _ = worktree::snapshot(&c.path, "S1-OC03", "kill")
+        .unwrap()
+        .unwrap();
     std::fs::write(d.path.join("shared.txt"), "right\n").unwrap();
-    let _ = worktree::snapshot(&d.path, "S1-OC04", "kill").unwrap().unwrap();
+    let _ = worktree::snapshot(&d.path, "S1-OC04", "kill")
+        .unwrap()
+        .unwrap();
     let predicted = worktree::conflicts(&repo, &base, &c.branch, &d.branch).unwrap();
-    assert!(predicted, "same-file divergence must be reported as a conflict");
+    assert!(
+        predicted,
+        "same-file divergence must be reported as a conflict"
+    );
 
     let verify = root.join("verify");
     std::fs::create_dir_all(&verify).unwrap();
     git_ok(&["init", "-q"], &verify);
-    git_ok(&["remote", "add", "origin", repo.to_str().unwrap()], &verify);
+    git_ok(
+        &["remote", "add", "origin", repo.to_str().unwrap()],
+        &verify,
+    );
     git_ok(&["fetch", "-q", "origin"], &verify);
-    git_ok(&["checkout", "-q", "-b", "verify", &format!("refs/remotes/origin/{}", c.branch)], &verify);
+    git_ok(
+        &[
+            "checkout",
+            "-q",
+            "-b",
+            "verify",
+            &format!("refs/remotes/origin/{}", c.branch),
+        ],
+        &verify,
+    );
     let merge = Command::new("git")
-        .args(["merge", "--no-commit", &format!("refs/remotes/origin/{}", d.branch)])
+        .args([
+            "merge",
+            "--no-commit",
+            &format!("refs/remotes/origin/{}", d.branch),
+        ])
         .current_dir(&verify)
         .output()
         .unwrap();
     assert!(!merge.status.success(), "real git merge must also conflict");
     assert_eq!(
-        predicted, !merge.status.success(),
+        predicted,
+        !merge.status.success(),
         "conflicts() disagreed with the real merge"
     );
 
     // Dirty removal must be refused, with the uncommitted bytes left intact.
     std::fs::write(a.path.join("dirty.txt"), "do not delete\n").unwrap();
-    assert!(worktree::remove(&a).is_err(), "a dirty worktree must never be removed");
+    assert!(
+        worktree::remove(&a).is_err(),
+        "a dirty worktree must never be removed"
+    );
     assert_eq!(
         std::fs::read_to_string(a.path.join("dirty.txt")).unwrap(),
         "do not delete\n"

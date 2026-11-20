@@ -45,7 +45,11 @@ fn collected_write_is_not_resurrected_by_replay() {
     // A fresh replay sees the refused ledger line again, but an already
     // collected message must not be handed out a second time.
     let rr = replay_over_checkpoint(&dir, StateFile::empty()).unwrap();
-    assert_eq!(rr.refused.len(), 1, "the audit count still includes the fenced line");
+    assert_eq!(
+        rr.refused.len(),
+        1,
+        "the audit count still includes the fenced line"
+    );
     assert!(
         read_pending(&dir, "S1-OC01").unwrap().is_empty(),
         "a delivered write must not resurrect in the pending queue"
@@ -67,7 +71,11 @@ fn hostile_target_cannot_escape_pending_dir() {
         file: None,
     };
     let file = park(&dir, &parked).unwrap();
-    assert!(file.starts_with(&dir), "parked file escaped state dir: {}", file.display());
+    assert!(
+        file.starts_with(&dir),
+        "parked file escaped state dir: {}",
+        file.display()
+    );
     assert!(!dir.parent().unwrap().join("escape").exists());
 }
 
@@ -92,7 +100,10 @@ fn symlinked_pending_target_is_refused() {
         op: Op::Release,
         file: None,
     };
-    assert!(park(&dir, &parked).is_err(), "a planted symlink must not be written through");
+    assert!(
+        park(&dir, &parked).is_err(),
+        "a planted symlink must not be written through"
+    );
     assert!(read_pending(&dir, "S1-OC01").unwrap().is_empty());
     assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
 }

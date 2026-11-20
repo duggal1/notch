@@ -395,7 +395,10 @@ fn u64_at(v: &Value, key: &str) -> u64 {
     v.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 fn array_at<'a>(v: &'a Value, key: &str) -> &'a [Value] {
-    v.get(key).and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[])
+    v.get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
 }
 
 /// The one honest line each fleet unit gets. Derived only from the four legal
@@ -421,8 +424,16 @@ fn unit_line(status: &str, reason: &str, kind: &str) -> (&'static str, String) {
 /// do, with optional reads declining. Replace with `notchd::harness_registry`.
 fn declare_harnesses() -> Vec<HarnessOut> {
     let operations = [
-        "spawn", "read", "prompt", "kill", "focus", "status",
-        "signIn", "usage", "profiles", "remoteControl",
+        "spawn",
+        "read",
+        "prompt",
+        "kill",
+        "focus",
+        "status",
+        "signIn",
+        "usage",
+        "profiles",
+        "remoteControl",
     ];
     vec![HarnessOut {
         id: "opencode".into(),
@@ -454,7 +465,13 @@ fn approvals_from_snapshot(snap: &Value) -> Vec<ApprovalOut> {
         let supervisor = str_at(e, "supervisor").to_string();
         out.push(ApprovalOut {
             digest: card_digest(&id, &session, &kind, &reason, at),
-            id, session, supervisor, kind, reason, at, signed: false,
+            id,
+            session,
+            supervisor,
+            kind,
+            reason,
+            at,
+            signed: false,
         });
     }
     for s in sessions {
@@ -471,7 +488,13 @@ fn approvals_from_snapshot(snap: &Value) -> Vec<ApprovalOut> {
         let at = u64_at(s, "startedAt");
         out.push(ApprovalOut {
             digest: card_digest(&id, &session, "blocked", &reason, at),
-            id, session, supervisor, kind: "blocked".into(), reason, at, signed: false,
+            id,
+            session,
+            supervisor,
+            kind: "blocked".into(),
+            reason,
+            at,
+            signed: false,
         });
     }
     out.sort_by_key(|a| a.at);
@@ -499,10 +522,15 @@ fn fleet_from_snapshot(snap: &Value) -> Value {
     let mut done = 0usize;
     for s in sessions {
         let id = str_at(s, "id");
-        if id.is_empty() { continue; }
+        if id.is_empty() {
+            continue;
+        }
         let status = str_at(s, "status");
         let reason = str_at(s, "failureReason");
-        let esc = escalated.iter().find(|e| str_at(e, "session") == id).copied();
+        let esc = escalated
+            .iter()
+            .find(|e| str_at(e, "session") == id)
+            .copied();
         let kind = esc.map(|e| str_at(e, "kind")).unwrap_or("");
         let (word, detail) = unit_line(status, reason, kind);
         match status {
@@ -526,15 +554,31 @@ fn fleet_from_snapshot(snap: &Value) -> Value {
             "escalation": kind,
         }));
     }
-    let top = if stopped > 0 { "failed" } else if working > 0 { "working" }
-        else if done > 0 && idle == 0 && done == sessions.len() { "done" } else { "idle" };
-    let holds = supervisors.iter().filter(|s| {
-        s.get("paused").and_then(Value::as_bool).unwrap_or(false)
-    }).count();
+    let top = if stopped > 0 {
+        "failed"
+    } else if working > 0 {
+        "working"
+    } else if done > 0 && idle == 0 && done == sessions.len() {
+        "done"
+    } else {
+        "idle"
+    };
+    let holds = supervisors
+        .iter()
+        .filter(|s| s.get("paused").and_then(Value::as_bool).unwrap_or(false))
+        .count();
     let seq = decisions.len() + bus.len();
-    let fence_src = format!("{}|{}|{}", u64_at(snap, "generatedAt"), decisions.len(), bus.len());
+    let fence_src = format!(
+        "{}|{}|{}",
+        u64_at(snap, "generatedAt"),
+        decisions.len(),
+        bus.len()
+    );
     let mut fh: u64 = 0xcbf29ce484222325;
-    for b in fence_src.bytes() { fh ^= b as u64; fh = fh.wrapping_mul(0x100000001b3); }
+    for b in fence_src.bytes() {
+        fh ^= b as u64;
+        fh = fh.wrapping_mul(0x100000001b3);
+    }
     json!({
         "source": PROJECTION,
         "generatedAt": u64_at(snap, "generatedAt"),
@@ -597,9 +641,19 @@ pub async fn answer_approval(
         .ok_or_else(|| format!("unknown approval {id:?}"))?;
     let note = note.unwrap_or_default();
     let text = if allow {
-        format!("approved: {}", if note.is_empty() { "continue" } else { &note })
+        format!(
+            "approved: {}",
+            if note.is_empty() { "continue" } else { &note }
+        )
     } else {
-        format!("needs you: {}", if note.is_empty() { "answer this request" } else { &note })
+        format!(
+            "needs you: {}",
+            if note.is_empty() {
+                "answer this request"
+            } else {
+                &note
+            }
+        )
     };
     let outcome: Result<Value, String> = if allow {
         daemon.reprompt(&approval.session, &text).map(|_| json!({}))
@@ -645,9 +699,13 @@ pub async fn fleet_control(
         }
         "kill_all" => {
             let ack = kill_switch_impl(&daemon);
-            Ok(json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": PROJECTION }))
+            Ok(
+                json!({ "ok": ack.ok, "action": "kill_all", "closed": ack.closed, "source": PROJECTION }),
+            )
         }
-        other => Err(format!("unknown fleet action {other:?} (hold|release|kill_all)")),
+        other => Err(format!(
+            "unknown fleet action {other:?} (hold|release|kill_all)"
+        )),
     }
 }
 
@@ -671,7 +729,9 @@ pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>) {
                     Err(RecvTimeoutError::Disconnected) => break,
                 }
                 while let Ok(line) = rx.try_recv() {
-                    if let Some(v) = parse(&line) { pending = Some(v); }
+                    if let Some(v) = parse(&line) {
+                        pending = Some(v);
+                    }
                 }
                 if let Some(snap) = pending.take() {
                     if last.elapsed() >= Duration::from_millis(150) {

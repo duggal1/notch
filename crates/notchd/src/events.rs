@@ -56,11 +56,18 @@ impl EventLog {
         let mut buf = serde_json::to_vec(&line).unwrap_or_else(|_| b"{}".to_vec());
         buf.push(b'\n');
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         f.write_all(&buf)?;
         let mut w = self.window.lock().unwrap_or_else(|e| e.into_inner());
         w.push_back(now);
-        while w.front().map(|t| now.saturating_sub(*t) > WINDOW_MS).unwrap_or(false) {
+        while w
+            .front()
+            .map(|t| now.saturating_sub(*t) > WINDOW_MS)
+            .unwrap_or(false)
+        {
             w.pop_front();
         }
         Ok(())
@@ -70,7 +77,11 @@ impl EventLog {
     pub fn eps(&self) -> f64 {
         let now = self.clock.now_ms();
         let mut w = self.window.lock().unwrap_or_else(|e| e.into_inner());
-        while w.front().map(|t| now.saturating_sub(*t) > WINDOW_MS).unwrap_or(false) {
+        while w
+            .front()
+            .map(|t| now.saturating_sub(*t) > WINDOW_MS)
+            .unwrap_or(false)
+        {
             w.pop_front();
         }
         w.len() as f64 / (WINDOW_MS as f64 / 1000.0)

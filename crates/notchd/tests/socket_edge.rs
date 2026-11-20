@@ -45,9 +45,10 @@ fn socket_edge_subscribe_twice_one_socket() {
     }
     let has_marker = |v: &serde_json::Value| {
         v["event"] == "snapshot"
-            && v["snapshot"]["sessions"].as_array().map(|ss| {
-                ss.iter().any(|s| s["failureReason"] == "edge-two-subs")
-            }).unwrap_or(false)
+            && v["snapshot"]["sessions"]
+                .as_array()
+                .map(|ss| ss.iter().any(|s| s["failureReason"] == "edge-two-subs"))
+                .unwrap_or(false)
     };
     let first = c.wait_for_line(deadline_in(2000), has_marker);
     let second = c.wait_for_line(deadline_in(2000), has_marker);
@@ -151,14 +152,21 @@ fn socket_edge_message_body_3_chars_accepted() {
     assert_eq!(ack["cmd"], "message");
     assert_eq!(ack["ok"], true, "3-char body must be accepted: {ack}");
     assert!(
-        ack["messageId"].as_str().map(|s| s.starts_with("msg_")).unwrap_or(false),
+        ack["messageId"]
+            .as_str()
+            .map(|s| s.starts_with("msg_"))
+            .unwrap_or(false),
         "messageId missing: {ack}"
     );
     // The bus message shows up in the snapshot (cap 30, newest first).
     let snap = d.snapshot();
-    let bus = snap["snapshot"]["busMessages"].as_array().expect("busMessages array").clone();
+    let bus = snap["snapshot"]["busMessages"]
+        .as_array()
+        .expect("busMessages array")
+        .clone();
     assert!(
-        bus.iter().any(|m| m["from"] == "S1-OC01" && m["to"] == "S1-OC02" && m["preview"] == "abc"),
+        bus.iter()
+            .any(|m| m["from"] == "S1-OC01" && m["to"] == "S1-OC02" && m["preview"] == "abc"),
         "bus message not recorded in snapshot: {bus:?}"
     );
 }

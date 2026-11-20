@@ -52,15 +52,19 @@ impl FakeHerdr {
     fn close_count(&self) -> usize {
         self.calls()
             .iter()
-            .filter(|c| c.get(1).map(String::as_str) == Some("pane")
-                && c.get(2).map(String::as_str) == Some("close"))
+            .filter(|c| {
+                c.get(1).map(String::as_str) == Some("pane")
+                    && c.get(2).map(String::as_str) == Some("close")
+            })
             .count()
     }
     fn prompt_count(&self) -> usize {
         self.calls()
             .iter()
-            .filter(|c| c.get(1).map(String::as_str) == Some("agent")
-                && c.get(2).map(String::as_str) == Some("prompt"))
+            .filter(|c| {
+                c.get(1).map(String::as_str) == Some("agent")
+                    && c.get(2).map(String::as_str) == Some("prompt")
+            })
             .count()
     }
     fn calls(&self) -> Vec<Vec<String>> {
@@ -175,7 +179,9 @@ fn spawn(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>, n: usize) ->
     assert!(daemon.run_plan(&plan(root, n)).ok);
     // Prime: apply the async spawn outcomes and give every pane a working
     // revision, the same way the liveness harness does.
-    let agents: Vec<Value> = (1..=n).map(|i| agent(&format!("wT:p{i}"), "working", 1)).collect();
+    let agents: Vec<Value> = (1..=n)
+        .map(|i| agent(&format!("wT:p{i}"), "working", 1))
+        .collect();
     fake.set_agents(agents);
     daemon.poll_once();
     (daemon, cfg)
@@ -221,10 +227,15 @@ fn burst_of_failing_sessions_is_held_with_reasons_then_released() {
     );
     let d = decisions(&daemon);
     assert!(
-        d.iter().any(|(a, r)| a == "start_hold" && r.contains("burst")),
+        d.iter()
+            .any(|(a, r)| a == "start_hold" && r.contains("burst")),
         "a hold must be logged with a reason in the decision log: {d:?}"
     );
-    assert_eq!(fake.close_count(), 0, "a start hold must never close a pane");
+    assert_eq!(
+        fake.close_count(),
+        0,
+        "a start hold must never close a pane"
+    );
 
     // Advance past the brief hold and poll: the release itself is logged with
     // a reason, and the held set is empty again.
@@ -232,7 +243,8 @@ fn burst_of_failing_sessions_is_held_with_reasons_then_released() {
     daemon.poll_once();
     let d2 = decisions(&daemon);
     assert!(
-        d2.iter().any(|(a, r)| a == "start_hold_released" && r.contains("released")),
+        d2.iter()
+            .any(|(a, r)| a == "start_hold_released" && r.contains("released")),
         "release must be logged with a reason: {d2:?}"
     );
     assert!(
@@ -243,7 +255,11 @@ fn burst_of_failing_sessions_is_held_with_reasons_then_released() {
             .is_empty(),
         "the brief hold is released, not permanent"
     );
-    assert_eq!(fake.close_count(), 0, "still zero false kills after release");
+    assert_eq!(
+        fake.close_count(),
+        0,
+        "still zero false kills after release"
+    );
 }
 
 #[test]
@@ -274,16 +290,25 @@ fn storm_is_logged_with_a_reason_and_preempts_without_a_kill() {
         "storm detection must carry a reason in the decision log: {d:?}"
     );
     assert!(
-        d.iter().any(|(a, r)| a == "preempt" && r.contains("preempt")),
+        d.iter()
+            .any(|(a, r)| a == "preempt" && r.contains("preempt")),
         "preemption must carry a reason in the decision log: {d:?}"
     );
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Idle, "preempted worker is held, not failed");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Idle,
+        "preempted worker is held, not failed"
+    );
     assert!(
         snap.escalations.iter().any(|e| e.kind == "fleet_storm"),
         "preemption escalates with an honest reason"
     );
-    assert_eq!(fake.prompt_count(), 0, "a preempted worker is not re-prompted");
+    assert_eq!(
+        fake.prompt_count(),
+        0,
+        "a preempted worker is not re-prompted"
+    );
     assert_eq!(fake.close_count(), 0, "zero false kills");
 
     // No infinite re-prompts: further polls while herdr still says failed are
@@ -295,7 +320,12 @@ fn storm_is_logged_with_a_reason_and_preempts_without_a_kill() {
     assert_eq!(fake.prompt_count(), 0, "no unbounded re-prompt loop");
     assert_eq!(fake.close_count(), 0);
     assert_eq!(
-        daemon.snapshot().escalations.iter().filter(|e| e.kind == "fleet_storm").count(),
+        daemon
+            .snapshot()
+            .escalations
+            .iter()
+            .filter(|e| e.kind == "fleet_storm")
+            .count(),
         1,
         "one preemption per storm episode"
     );

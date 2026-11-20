@@ -35,12 +35,15 @@ fn fake_herdr() -> Herdr {
         let b = args.get(2).map(String::as_str).unwrap_or("");
         match (a, b) {
             ("pane", "split") => Ok(json!({"id":"x","result":{"type":"pane_info","pane":{
-                "pane_id":"wT:p1","tab_id":"w1:t1","workspace_id":"w1"}}}).to_string()),
+                "pane_id":"wT:p1","tab_id":"w1:t1","workspace_id":"w1"}}})
+            .to_string()),
             ("agent", "start") => Ok(json!({"id":"x","result":{"type":"agent_started","agent":{
-                "pane_id":"wT:p1","agent_status":"working","revision":1}}}).to_string()),
+                "pane_id":"wT:p1","agent_status":"working","revision":1}}})
+            .to_string()),
             ("agent", "list") => Ok(json!({"id":"x","result":{"type":"agent_list","agents":[{
                 "pane_id":"wT:p1","agent_status":"idle","agent_session":{"value":"ses_test"},
-                "cwd":"/tmp","revision":1,"name":"test"}]}}).to_string()),
+                "cwd":"/tmp","revision":1,"name":"test"}]}})
+            .to_string()),
             ("agent", "read") => Ok("working\n".to_string()),
             _ => Ok(r#"{"id":"x","result":{"type":"ok"}}"#.to_string()),
         }
@@ -57,7 +60,16 @@ fn judge_uses_per_session_id_and_real_worktree_cwd() {
     // must follow that worktree, never the daemon cwd.
     for args in [
         vec!["init", "-q"],
-        vec!["-c", "user.email=a@b", "-c", "user.name=a", "commit", "--allow-empty", "-qm", "init"],
+        vec![
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "init",
+        ],
     ] {
         let status = std::process::Command::new("git")
             .args(&args)
@@ -132,11 +144,20 @@ fn judge_uses_per_session_id_and_real_worktree_cwd() {
     let judge_line = text
         .lines()
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .find(|v| v["argv"].as_array().map(|a| a.first().and_then(Value::as_str) == Some("run")).unwrap_or(false))
+        .find(|v| {
+            v["argv"]
+                .as_array()
+                .map(|a| a.first().and_then(Value::as_str) == Some("run"))
+                .unwrap_or(false)
+        })
         .unwrap_or_else(|| panic!("no decider run call in shim log: {text}"));
     let argv: Vec<String> = judge_line["argv"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let cwd = judge_line["cwd"].as_str().unwrap_or("").to_string();
 
@@ -146,19 +167,30 @@ fn judge_uses_per_session_id_and_real_worktree_cwd() {
         "judge must use {expected_sid}; argv={argv:?}"
     );
     assert!(
-        !argv.iter().any(|a| a == notchd::decider::DEFAULT_DECIDER_SESSION),
+        !argv
+            .iter()
+            .any(|a| a == notchd::decider::DEFAULT_DECIDER_SESSION),
         "shared decider id leaked into judge: argv={argv:?}"
     );
 
     // macOS exposes /var and /private/var as the same directory; compare
     // canonical forms so a symlink spelling never causes a false failure.
     let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| PathBuf::from(&cwd));
-    let expected_canon = std::fs::canonicalize(&real_cwd).unwrap_or_else(|_| PathBuf::from(&real_cwd));
-    assert_eq!(cwd_canon, expected_canon, "judge cwd must be the real worktree/cwd, not {cwd}");
-    assert!(Path::new(&cwd).ends_with("worktree"), "judge cwd must be the worktree: {cwd}");
+    let expected_canon =
+        std::fs::canonicalize(&real_cwd).unwrap_or_else(|_| PathBuf::from(&real_cwd));
+    assert_eq!(
+        cwd_canon, expected_canon,
+        "judge cwd must be the real worktree/cwd, not {cwd}"
+    );
+    assert!(
+        Path::new(&cwd).ends_with("worktree"),
+        "judge cwd must be the worktree: {cwd}"
+    );
     assert_ne!(
         cwd,
-        std::env::current_dir().unwrap_or_default().to_string_lossy(),
+        std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy(),
         "judge must not inherit the daemon cwd"
     );
 

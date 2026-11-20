@@ -38,7 +38,14 @@ pub const MAX_REASON_CHARS: usize = 240;
 /// Closed vocabulary of what one answer may mean. `allow`/`deny`/`answer` are
 /// verdicts for the card; the rest are standing permission grants that only a
 /// human answer can create (port of agentbox `answer-modes.mts` whitelist).
-pub const ANSWER_MODES: [&str; 6] = ["allow", "deny", "answer", "default", "plan", "bypass_permissions"];
+pub const ANSWER_MODES: [&str; 6] = [
+    "allow",
+    "deny",
+    "answer",
+    "default",
+    "plan",
+    "bypass_permissions",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnswerMode {
@@ -74,7 +81,10 @@ impl AnswerMode {
         }
     }
     pub fn is_permission_grant(self) -> bool {
-        matches!(self, AnswerMode::Default | AnswerMode::Plan | AnswerMode::BypassPermissions)
+        matches!(
+            self,
+            AnswerMode::Default | AnswerMode::Plan | AnswerMode::BypassPermissions
+        )
     }
 }
 
@@ -122,15 +132,7 @@ pub fn decision_bytes(
     card: &str,
     mode: &str,
 ) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!([
-        id,
-        allow,
-        note,
-        at,
-        card,
-        mode,
-    ]))
-    .unwrap_or_default()
+    serde_json::to_vec(&serde_json::json!([id, allow, note, at, card, mode,])).unwrap_or_default()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -154,7 +156,8 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 fn valid_id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Ephemeral signing authority. The secret exists only in this process's
@@ -179,7 +182,9 @@ impl ApprovalAuthority {
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
             let mix = t.wrapping_add(
-                NONCE.fetch_add(1, Ordering::SeqCst).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                NONCE
+                    .fetch_add(1, Ordering::SeqCst)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15),
             );
             bytes[..8].copy_from_slice(&mix.to_le_bytes());
             bytes[8..16].copy_from_slice(&mix.wrapping_mul(0x9E37_79B9_7F4A_7C15).to_le_bytes());
@@ -289,17 +294,23 @@ impl ApprovalInbox {
             return Err(NotchError::Protocol("invalid approval session".into()));
         }
         if card.kind != "needs_you" {
-            return Err(NotchError::Protocol("only needs_you escalations are answerable".into()));
+            return Err(NotchError::Protocol(
+                "only needs_you escalations are answerable".into(),
+            ));
         }
         let reason = card.reason.trim();
         if reason.is_empty()
             || reason.chars().count() > MAX_REASON_CHARS
-            || reason.chars().any(|c| c == '\n' || c == '\r' || c.is_control())
+            || reason
+                .chars()
+                .any(|c| c == '\n' || c == '\r' || c.is_control())
         {
             return Err(NotchError::Protocol("invalid approval reason".into()));
         }
         if card.at == 0 {
-            return Err(NotchError::Protocol("approval card needs a timestamp".into()));
+            return Err(NotchError::Protocol(
+                "approval card needs a timestamp".into(),
+            ));
         }
         {
             let answered = self.answered.lock().unwrap_or_else(|e| e.into_inner());
@@ -365,16 +376,22 @@ impl ApprovalInbox {
             return Err(NotchError::Protocol("invalid approval id".into()));
         }
         if AnswerMode::parse(mode).is_none() {
-            return Err(NotchError::Protocol(format!("mode must be one of {}", ANSWER_MODES.join("|"))));
+            return Err(NotchError::Protocol(format!(
+                "mode must be one of {}",
+                ANSWER_MODES.join("|")
+            )));
         }
         if let Some(ref n) = note {
-            if n.chars().count() > MAX_NOTE_CHARS || n.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+            if n.chars().count() > MAX_NOTE_CHARS
+                || n.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
                 return Err(NotchError::Protocol("invalid approval note".into()));
             }
         }
         let pending = {
             let map = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            map.get(id).map(|p| (p.digest.clone(), p.issued_mono, p.issued_at_ms))
+            map.get(id)
+                .map(|p| (p.digest.clone(), p.issued_mono, p.issued_at_ms))
         };
         let Some((digest, issued_mono, issued_at_ms)) = pending else {
             return Err(NotchError::NotFound(format!("no pending approval `{id}`")));
@@ -384,13 +401,19 @@ impl ApprovalInbox {
             return Err(NotchError::Protocol(format!("approval `{id}` expired")));
         }
         if card != digest {
-            return Err(NotchError::Protocol("answer does not match the card shown".into()));
+            return Err(NotchError::Protocol(
+                "answer does not match the card shown".into(),
+            ));
         }
         let now = self.clock.now_ms();
         if at < issued_at_ms || at > now.saturating_add(MAX_CLOCK_SKEW_MS) {
-            return Err(NotchError::Protocol("answer timestamp is backdated or in the future".into()));
+            return Err(NotchError::Protocol(
+                "answer timestamp is backdated or in the future".into(),
+            ));
         }
-        let sig = self.authority.sign(id, allow, note.as_deref(), at, card, mode);
+        let sig = self
+            .authority
+            .sign(id, allow, note.as_deref(), at, card, mode);
         let answer = SignedAnswer {
             id: id.to_string(),
             allow,
@@ -473,8 +496,8 @@ mod sha256 {
 
     pub fn digest(data: &[u8]) -> [u8; 32] {
         let mut h: [u32; 8] = [
-            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
-            0x1f83d9ab, 0x5be0cd19,
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+            0x5be0cd19,
         ];
         let bit_len = (data.len() as u64).wrapping_mul(8);
         let mut padded = data.to_vec();

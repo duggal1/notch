@@ -21,7 +21,11 @@ fn burst_of_twenty_starts_is_held_then_released() {
     for i in 0..20 {
         let id = format!("S1-OC{i:02}");
         match g.note_start(&id, T0) {
-            StartGate::Hold { reason, until_ms, first } => {
+            StartGate::Hold {
+                reason,
+                until_ms,
+                first,
+            } => {
                 held += 1;
                 assert!(
                     reason.contains("burst") || reason.contains("hold"),
@@ -41,7 +45,11 @@ fn burst_of_twenty_starts_is_held_then_released() {
         20 - BURST_STARTS + 1,
         "all starts after the burst threshold are held"
     );
-    assert_eq!(g.held_ids().len(), held, "held set tracks every deferred start");
+    assert_eq!(
+        g.held_ids().len(),
+        held,
+        "held set tracks every deferred start"
+    );
 
     // Still held just before the deadline; released exactly at it, with a
     // reason. The guard is time-based — no release call is required to unblock.
@@ -82,7 +90,10 @@ fn six_fast_starts_in_ten_minutes_detects_storm_with_reason() {
         if i + 1 == STORM_STARTS {
             match gate {
                 StartGate::Storm { reason } => {
-                    assert!(reason.contains("storm"), "reason names the pattern: {reason}");
+                    assert!(
+                        reason.contains("storm"),
+                        "reason names the pattern: {reason}"
+                    );
                     assert!(reason.contains("6"), "reason carries the count: {reason}");
                     storm_reason = Some(reason);
                 }
@@ -161,11 +172,20 @@ fn preemption_is_bounded_no_infinite_reprompts() {
     // Exactly three self-retries (30 min, +2 h, +8 h), then it waits for a
     // person. No fourth auto start, ever.
     let mut at = storm_at + HELD_RETRY_MS[0];
-    assert!(matches!(g.note_start("S1-OC01", at), StartGate::Admit), "retry 1");
+    assert!(
+        matches!(g.note_start("S1-OC01", at), StartGate::Admit),
+        "retry 1"
+    );
     at += HELD_RETRY_MS[1];
-    assert!(matches!(g.note_start("S1-OC01", at), StartGate::Admit), "retry 2");
+    assert!(
+        matches!(g.note_start("S1-OC01", at), StartGate::Admit),
+        "retry 2"
+    );
     at += HELD_RETRY_MS[2];
-    assert!(matches!(g.note_start("S1-OC01", at), StartGate::Admit), "retry 3");
+    assert!(
+        matches!(g.note_start("S1-OC01", at), StartGate::Admit),
+        "retry 3"
+    );
 
     for i in 0..100 {
         match g.note_start("S1-OC01", at + 1 + i) {
@@ -205,7 +225,8 @@ fn preempt_victim_is_bounded_settles_by_call_and_by_timeout() {
     }
     assert!(g2.preempt_victim(storm_at + 1).is_some());
     assert!(
-        g2.preempt_victim(storm_at + PREEMPTION_HOLD_MS + 1).is_none(),
+        g2.preempt_victim(storm_at + PREEMPTION_HOLD_MS + 1)
+            .is_none(),
         "preemption hold is bounded in time"
     );
 }
@@ -216,8 +237,14 @@ fn guard_is_keyed_by_state_dir_and_monotonic_only() {
     let dir_b = std::env::temp_dir().join(format!("notchd-w2-guard-b-{}", std::process::id()));
     let a = notchd::supervisor::fleet_guard_for(&dir_a);
     let b = notchd::supervisor::fleet_guard_for(&dir_b);
-    assert!(!Arc::ptr_eq(&a, &b), "different state dirs get independent guards");
-    assert!(Arc::ptr_eq(&a, &notchd::supervisor::fleet_guard_for(&dir_a)));
+    assert!(
+        !Arc::ptr_eq(&a, &b),
+        "different state dirs get independent guards"
+    );
+    assert!(Arc::ptr_eq(
+        &a,
+        &notchd::supervisor::fleet_guard_for(&dir_a)
+    ));
 
     // A wall-clock jump of +/- 1h does not move a monotonic timeline at all:
     // the guard only ever sees the mono_ms the caller hands it.

@@ -26,15 +26,22 @@ fn ws_four_clients_concurrently_each_get_their_own_deltas() {
     for i in 0..4 {
         let mut seed = server.connect();
         let _ = seed.read_value();
-        let a = seed.rpc_ack("submit_task", &json!({
-            "cmd":"submit_task","task":format!("client {i} task"),"cwd":cwd
-        }));
+        let a = seed.rpc_ack(
+            "submit_task",
+            &json!({
+                "cmd":"submit_task","task":format!("client {i} task"),"cwd":cwd
+            }),
+        );
         assert_eq!(a["ok"], true, "{a}");
         sessions.push(a["sessionId"].as_str().unwrap().to_string());
     }
     sessions.sort();
     sessions.dedup();
-    assert_eq!(sessions.len(), 4, "seed must produce four ids: {sessions:?}");
+    assert_eq!(
+        sessions.len(),
+        4,
+        "seed must produce four ids: {sessions:?}"
+    );
 
     // Four real clients connect and act at the same time. A barrier lines up
     // a single bus message that must be fanned out to all four.
@@ -49,7 +56,10 @@ fn ws_four_clients_concurrently_each_get_their_own_deltas() {
             assert_eq!(hello["event"], "hello");
             let pong = c.rpc_ack("ping", &json!({"cmd":"ping"}));
             assert_eq!(pong["ok"], true);
-            let rep = c.rpc_ack("reprompt", &json!({"cmd":"reprompt","id":sid,"text":"continue"}));
+            let rep = c.rpc_ack(
+                "reprompt",
+                &json!({"cmd":"reprompt","id":sid,"text":"continue"}),
+            );
             assert_eq!(rep["ok"], true, "{rep}");
             b.wait();
             let msg = c.wait_for(Duration::from_secs(3), |v| {
@@ -84,7 +94,10 @@ fn ws_backpressure_drops_oldest_snapshot_and_counts_lag() {
     }
     assert_eq!(q.len(), 3, "queue stays bounded");
     assert_eq!(lag, 1, "one snapshot was dropped");
-    assert!(matches!(&q[0], OutFrame::Snapshot(v) if v["i"] == 1), "oldest snapshot dropped");
+    assert!(
+        matches!(&q[0], OutFrame::Snapshot(v) if v["i"] == 1),
+        "oldest snapshot dropped"
+    );
 
     // With no snapshots left, the oldest EVENT is dropped instead.
     for i in 0..3 {
@@ -93,7 +106,10 @@ fn ws_backpressure_drops_oldest_snapshot_and_counts_lag() {
     assert_eq!(q.len(), 3);
     assert_eq!(lag, 4);
     assert!(q.iter().all(|f| matches!(f, OutFrame::Event(_))));
-    assert!(matches!(&q[0], OutFrame::Event(v) if v["e"] == 0), "oldest event dropped last");
+    assert!(
+        matches!(&q[0], OutFrame::Event(v) if v["e"] == 0),
+        "oldest event dropped last"
+    );
 }
 
 #[test]
@@ -106,7 +122,10 @@ fn ws_slow_reader_does_not_block_other_clients_or_daemon() {
     let _hello = seed.read_value();
     let mut ids = Vec::new();
     for i in 0..2 {
-        let a = seed.rpc_ack("submit_task", &json!({"cmd":"submit_task","task":format!("seed {i}"),"cwd":cwd}));
+        let a = seed.rpc_ack(
+            "submit_task",
+            &json!({"cmd":"submit_task","task":format!("seed {i}"),"cwd":cwd}),
+        );
         assert_eq!(a["ok"], true);
         ids.push(a["sessionId"].as_str().unwrap().to_string());
     }
@@ -121,9 +140,12 @@ fn ws_slow_reader_does_not_block_other_clients_or_daemon() {
 
     let mut last_id = String::new();
     for i in 0..12 {
-        let a = fast.rpc_ack("message", &json!({
-            "cmd":"message","from":ids[0],"to":ids[1],"type":"task","body":format!("burst {i}")
-        }));
+        let a = fast.rpc_ack(
+            "message",
+            &json!({
+                "cmd":"message","from":ids[0],"to":ids[1],"type":"task","body":format!("burst {i}")
+            }),
+        );
         assert_eq!(a["ok"], true, "{a}");
         last_id = a["messageId"].as_str().unwrap().to_string();
     }
@@ -138,7 +160,10 @@ fn ws_slow_reader_does_not_block_other_clients_or_daemon() {
     let t0 = Instant::now();
     let pong = fast.rpc_ack("ping", &json!({"cmd":"ping"}));
     assert_eq!(pong["ok"], true);
-    assert!(t0.elapsed() < Duration::from_millis(200), "daemon blocked by slow reader");
+    assert!(
+        t0.elapsed() < Duration::from_millis(200),
+        "daemon blocked by slow reader"
+    );
 
     // When the slow client finally reads, it gets a bounded number of frames
     // (never an unbounded backlog) and can still talk to the daemon.
@@ -149,7 +174,10 @@ fn ws_slow_reader_does_not_block_other_clients_or_daemon() {
             break;
         }
     }
-    assert!(received <= 256, "outbox must be bounded, got {received} frames");
+    assert!(
+        received <= 256,
+        "outbox must be bounded, got {received} frames"
+    );
     let pong = slow.rpc_ack("ping", &json!({"cmd":"ping"}));
     assert_eq!(pong["ok"], true, "slow reader connection stayed alive");
 }
@@ -168,7 +196,10 @@ fn ws_disconnect_and_reconnect_gets_a_fresh_hello() {
     std::thread::sleep(Duration::from_millis(80));
     let mut c = server.connect();
     let hello = c.read_value_within(Duration::from_secs(2));
-    assert_eq!(hello.as_ref().and_then(|v| v["event"].as_str()), Some("hello"));
+    assert_eq!(
+        hello.as_ref().and_then(|v| v["event"].as_str()),
+        Some("hello")
+    );
     let pong = c.rpc_ack("ping", &json!({"cmd":"ping"}));
     assert_eq!(pong["ok"], true, "reconnected client works");
 }
@@ -187,7 +218,10 @@ fn ws_client_count_is_bounded() {
     for n in 1..=MAX_CLIENTS {
         let mut c = server.connect();
         let hello = c.read_value_within(Duration::from_secs(5));
-        assert_eq!(hello.as_ref().and_then(|v| v["event"].as_str()), Some("hello"));
+        assert_eq!(
+            hello.as_ref().and_then(|v| v["event"].as_str()),
+            Some("hello")
+        );
         clients.push(c);
         assert!(
             server.wait_for_active(n, Duration::from_secs(5)),
@@ -205,12 +239,20 @@ fn ws_client_count_is_bounded() {
         Err(e) => panic!("17th client should complete the upgrade, got {e}"),
         Ok(mut ws) => match ws.read() {
             Ok(Message::Close(Some(frame))) => {
-                assert_eq!(frame.code, CloseCode::Restart, "capacity close must be 1012");
+                assert_eq!(
+                    frame.code,
+                    CloseCode::Restart,
+                    "capacity close must be 1012"
+                );
             }
             other => panic!("17th client must be closed with 1012, got {other:?}"),
         },
     }
-    assert_eq!(server.active(), MAX_CLIENTS, "rejected client must not consume a slot");
+    assert_eq!(
+        server.active(),
+        MAX_CLIENTS,
+        "rejected client must not consume a slot"
+    );
 
     // Freeing a slot allows a new client in — again wait on the counter.
     clients[0].close();

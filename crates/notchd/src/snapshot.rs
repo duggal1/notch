@@ -2,7 +2,9 @@
 //! CamelCase keys, exactly this shape. Extra fields may be added; none may
 //! be removed or renamed in v1.
 
-use crate::model::{AttributionEntry, BusMessageEntry, ConflictEntry, DecisionEntry, EscalationEntry};
+use crate::model::{
+    AttributionEntry, BusMessageEntry, ConflictEntry, DecisionEntry, EscalationEntry,
+};
 use crate::status::Status;
 use serde::Serialize;
 
@@ -79,7 +81,10 @@ pub struct SessionSnapshot {
     pub max_iterations: Option<u32>,
     #[serde(rename = "wallClockDeadline", skip_serializing_if = "Option::is_none")]
     pub wall_clock_deadline: Option<u64>,
-    #[serde(rename = "lastSupervisorAction", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastSupervisorAction",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_supervisor_action: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -88,11 +93,18 @@ pub struct SessionSnapshot {
 /// Newest-first, capped projection of the bus log into the frozen
 /// `snapshot.busMessages` array. Duplicates (the same message recorded both by
 /// the `message` command and by `bus_drain`'s event log) collapse to one entry.
-pub fn cap_bus_messages_newest_first(entries: &[BusMessageEntry], cap: usize) -> Vec<BusMessageEntry> {
+pub fn cap_bus_messages_newest_first(
+    entries: &[BusMessageEntry],
+    cap: usize,
+) -> Vec<BusMessageEntry> {
     let mut out = entries.to_vec();
     out.sort_by_key(|e| std::cmp::Reverse(e.at));
     out.dedup_by(|a, b| {
-        a.from == b.from && a.to == b.to && a.kind == b.kind && a.preview == b.preview && a.at == b.at
+        a.from == b.from
+            && a.to == b.to
+            && a.kind == b.kind
+            && a.preview == b.preview
+            && a.at == b.at
     });
     out.truncate(cap);
     out

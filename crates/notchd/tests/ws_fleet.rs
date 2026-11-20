@@ -62,7 +62,8 @@ impl Server {
         let listener = ws::bind(0).unwrap();
         let port = listener.local_addr().unwrap().port();
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!("notchd-ws-fleet-{tag}-{}-{n}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("notchd-ws-fleet-{tag}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let config = Config {
             state_dir: root.join("state"),
@@ -75,16 +76,31 @@ impl Server {
         let token = ws::load_or_create_token(&config.state_dir).unwrap();
         let calls: Calls = Arc::new(Mutex::new(Vec::new()));
         let daemon = Arc::new(
-            Daemon::open(config, fake_herdr(Arc::clone(&calls)), Arc::new(SystemClock)).unwrap(),
+            Daemon::open(
+                config,
+                fake_herdr(Arc::clone(&calls)),
+                Arc::new(SystemClock),
+            )
+            .unwrap(),
         );
         let shutdown = Arc::new(AtomicBool::new(false));
         let s = Arc::clone(&shutdown);
         let handle = std::thread::spawn(move || {
             let _ = ws::serve(listener, daemon, s);
         });
-        let server = Self { root, port, token, calls, shutdown, handle: Some(handle) };
+        let server = Self {
+            root,
+            port,
+            token,
+            calls,
+            shutdown,
+            handle: Some(handle),
+        };
         let mut probe = server.connect();
-        assert_eq!(probe.read_within(Duration::from_secs(5)).unwrap()["event"], "hello");
+        assert_eq!(
+            probe.read_within(Duration::from_secs(5)).unwrap()["event"],
+            "hello"
+        );
         server
     }
 
@@ -152,7 +168,10 @@ impl Client {
                 Ok(Message::Pong(_) | Message::Binary(_) | Message::Frame(_)) => {}
                 Ok(Message::Close(_)) => return None,
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(_) => return None,
             }
         }
@@ -186,7 +205,10 @@ fn unit<'a>(fleet: &'a Value, id: &str) -> Option<&'a Value> {
 }
 
 fn submit(c: &mut Client) -> String {
-    let ack = c.rpc_ack("submit_task", &json!({"cmd":"submit_task","task":"fleet task"}));
+    let ack = c.rpc_ack(
+        "submit_task",
+        &json!({"cmd":"submit_task","task":"fleet task"}),
+    );
     assert_eq!(ack["ok"], true, "{ack}");
     ack["sessionId"].as_str().unwrap().to_string()
 }
@@ -202,9 +224,18 @@ fn fleet_frame_lists_every_managed_unit_with_required_fields() {
     let mut c = server.connect();
     let hello = c.read_within(Duration::from_secs(5)).unwrap();
     assert_eq!(hello["event"], "hello");
-    let mut keys: Vec<&str> = hello.as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = hello
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort();
-    assert_eq!(keys, ["event", "pid", "snapshot", "version"], "hello stays byte-compatible");
+    assert_eq!(
+        keys,
+        ["event", "pid", "snapshot", "version"],
+        "hello stays byte-compatible"
+    );
 
     let fleet = c
         .until(Duration::from_secs(2), |v| v["event"] == "fleet")
@@ -216,12 +247,27 @@ fn fleet_frame_lists_every_managed_unit_with_required_fields() {
         assert!(u["kind"].as_str().is_some(), "{id} has kind: {u}");
     }
     let s = unit(&fleet, &sid).unwrap();
-    for key in ["id", "kind", "status", "topStatus", "paneId", "workspace", "lastAction", "revision"] {
-        assert!(s.get(key).is_some(), "session fleet unit missing {key}: {s}");
+    for key in [
+        "id",
+        "kind",
+        "status",
+        "topStatus",
+        "paneId",
+        "workspace",
+        "lastAction",
+        "revision",
+    ] {
+        assert!(
+            s.get(key).is_some(),
+            "session fleet unit missing {key}: {s}"
+        );
     }
     assert!(s["paneId"].as_str().is_some(), "session has paneId: {s}");
     assert!(s["workspace"].is_string(), "session has workspace: {s}");
-    assert_eq!(fleet["fleet"]["topStatus"], hello["snapshot"]["orchestrator"]["status"]);
+    assert_eq!(
+        fleet["fleet"]["topStatus"],
+        hello["snapshot"]["orchestrator"]["status"]
+    );
 }
 
 #[test]
@@ -230,13 +276,19 @@ fn focus_frame_drives_only_the_managed_pane_through_herdr() {
     let mut c = server.connect();
     let _hello = c.read_within(Duration::from_secs(5)).unwrap();
     let sid = submit(&mut c);
-    assert!(c.until(Duration::from_secs(2), |v| v["event"] == "fleet").is_some());
+    assert!(c
+        .until(Duration::from_secs(2), |v| v["event"] == "fleet")
+        .is_some());
     server.calls.lock().unwrap().clear();
 
     let ack = c.rpc_ack("focus", &json!({"cmd":"focus","id":sid}));
     assert_eq!(ack["ok"], true, "{ack}");
     let calls = server.calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 1, "exactly one herdr call for one focus frame: {calls:?}");
+    assert_eq!(
+        calls.len(),
+        1,
+        "exactly one herdr call for one focus frame: {calls:?}"
+    );
     // The fake runner receives the full argv with its injected command name
     // in slot 0; the contract under test is "agent focus <lowercased id>".
     assert_eq!(
@@ -244,12 +296,18 @@ fn focus_frame_drives_only_the_managed_pane_through_herdr() {
         &["agent", "focus", "s1-oc01"],
         "frame -> herdr agent focus of the owned pane only"
     );
-    assert!(!calls.iter().any(|c| c.get(1).map(String::as_str) == Some("split")));
+    assert!(!calls
+        .iter()
+        .any(|c| c.get(1).map(String::as_str) == Some("split")));
 
     let bad = c.rpc_ack("focus", &json!({"cmd":"focus","id":"S9-OC99"}));
     assert_eq!(bad["ok"], false);
     assert_eq!(bad["error"], "unknown_session");
-    assert_eq!(server.calls.lock().unwrap().len(), calls.len(), "unknown id makes no herdr call");
+    assert_eq!(
+        server.calls.lock().unwrap().len(),
+        calls.len(),
+        "unknown id makes no herdr call"
+    );
 }
 
 #[test]
@@ -272,13 +330,18 @@ fn status_change_pushes_fleet_without_the_two_second_wait() {
     let changed = c
         .until(Duration::from_millis(800), |v| {
             v["event"] == "fleet"
-                && unit(v, &sid).map(|u| u["status"] == "failed").unwrap_or(false)
+                && unit(v, &sid)
+                    .map(|u| u["status"] == "failed")
+                    .unwrap_or(false)
         })
         .unwrap_or_else(|| panic!("no fleet frame reflecting the status change"));
     let fleet_ms = t0.elapsed().as_secs_f64() * 1000.0;
     assert_eq!(unit(&changed, &sid).unwrap()["status"], "failed");
     eprintln!("status change -> fleet: {fleet_ms:.2}ms (command ack {ack_ms:.2}ms)");
-    assert!(fleet_ms < 100.0, "fleet status push {fleet_ms:.1}ms must be < 100ms");
+    assert!(
+        fleet_ms < 100.0,
+        "fleet status push {fleet_ms:.1}ms must be < 100ms"
+    );
 }
 
 #[test]
@@ -295,8 +358,12 @@ fn measured_p50_p95_for_all_four_paths() {
     for _ in 0..12 {
         let mut c = server.connect();
         let t0 = Instant::now();
-        assert_eq!(c.read_within(Duration::from_secs(5)).unwrap()["event"], "hello");
-        c.until(Duration::from_millis(500), |v| v["event"] == "fleet").unwrap();
+        assert_eq!(
+            c.read_within(Duration::from_secs(5)).unwrap()["event"],
+            "hello"
+        );
+        c.until(Duration::from_millis(500), |v| v["event"] == "fleet")
+            .unwrap();
         hello_fleet.push(t0.elapsed().as_secs_f64() * 1000.0);
         c.close();
     }
@@ -305,7 +372,9 @@ fn measured_p50_p95_for_all_four_paths() {
     // the inline command path from pushed event frames (measured separately).
     let mut quiet = server.connect();
     let _hello = quiet.read_within(Duration::from_secs(5)).unwrap();
-    assert!(quiet.until(Duration::from_millis(500), |v| v["event"] == "fleet").is_some());
+    assert!(quiet
+        .until(Duration::from_millis(500), |v| v["event"] == "fleet")
+        .is_some());
     let mut ack_samples = Vec::new();
     for _ in 0..20 {
         let t0 = Instant::now();
@@ -327,17 +396,23 @@ fn measured_p50_p95_for_all_four_paths() {
     let mut end_to_end_samples = Vec::new();
     for _ in 0..12 {
         let sid = submit(&mut c);
-        assert!(c.until(Duration::from_millis(500), |v| {
-            v["event"] == "fleet" && unit(v, &sid).is_some()
-        }).is_some());
+        assert!(c
+            .until(Duration::from_millis(500), |v| {
+                v["event"] == "fleet" && unit(v, &sid).is_some()
+            })
+            .is_some());
         c.drain();
         let t0 = Instant::now();
         let ack = c.rpc_ack("kill", &json!({"cmd":"kill","id":sid}));
         assert_eq!(ack["ok"], true, "{ack}");
         let change_committed = Instant::now();
         c.until(Duration::from_millis(500), |v| {
-            v["event"] == "fleet" && unit(v, &sid).map(|u| u["status"] == "failed").unwrap_or(false)
-        }).unwrap();
+            v["event"] == "fleet"
+                && unit(v, &sid)
+                    .map(|u| u["status"] == "failed")
+                    .unwrap_or(false)
+        })
+        .unwrap();
         status_samples.push(change_committed.elapsed().as_secs_f64() * 1000.0);
         end_to_end_samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }

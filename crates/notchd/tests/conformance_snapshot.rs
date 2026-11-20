@@ -118,7 +118,9 @@ fn walk_keys(v: &Value, path: &str, out: &mut Vec<String>) {
         Value::Object(map) => {
             for (k, sub) in map {
                 if !is_camel_case_key(k) {
-                    out.push(format!("{path}.{k}: key does not match ^[a-z][a-zA-Z0-9]*$"));
+                    out.push(format!(
+                        "{path}.{k}: key does not match ^[a-z][a-zA-Z0-9]*$"
+                    ));
                 }
                 let sub_path = format!("{path}.{k}");
                 walk_keys(sub, &sub_path, out);
@@ -188,20 +190,55 @@ fn snapshot_key_violations(v: &Value) -> Vec<String> {
         Some(orch) => check_object_keys(orch, ORCHESTRATOR_KEYS, &[], "orchestrator", &mut out),
         None => out.push("<top>: missing required key `orchestrator`".to_string()),
     }
-    check_items(v, "supervisors", SUPERVISOR_REQUIRED, SUPERVISOR_OPTIONAL, "supervisors", &mut out);
-    check_items(v, "sessions", SESSION_REQUIRED, SESSION_OPTIONAL, "sessions", &mut out);
+    check_items(
+        v,
+        "supervisors",
+        SUPERVISOR_REQUIRED,
+        SUPERVISOR_OPTIONAL,
+        "supervisors",
+        &mut out,
+    );
+    check_items(
+        v,
+        "sessions",
+        SESSION_REQUIRED,
+        SESSION_OPTIONAL,
+        "sessions",
+        &mut out,
+    );
     check_items(v, "conflicts", CONFLICT_KEYS, &[], "conflicts", &mut out);
-    check_items(v, "attribution", ATTRIBUTION_KEYS, &[], "attribution", &mut out);
+    check_items(
+        v,
+        "attribution",
+        ATTRIBUTION_KEYS,
+        &[],
+        "attribution",
+        &mut out,
+    );
     // v1.3 optional top-level blocks: only when present (they are skipped
     // when empty). When present they must exist as arrays of exact items.
     if v.get("decisions").is_some() {
         check_items(v, "decisions", DECISION_KEYS, &[], "decisions", &mut out);
     }
     if v.get("escalations").is_some() {
-        check_items(v, "escalations", ESCALATION_KEYS, &[], "escalations", &mut out);
+        check_items(
+            v,
+            "escalations",
+            ESCALATION_KEYS,
+            &[],
+            "escalations",
+            &mut out,
+        );
     }
     if v.get("busMessages").is_some() {
-        check_items(v, "busMessages", BUS_MESSAGE_KEYS, &[], "busMessages", &mut out);
+        check_items(
+            v,
+            "busMessages",
+            BUS_MESSAGE_KEYS,
+            &[],
+            "busMessages",
+            &mut out,
+        );
     }
     out
 }
@@ -253,14 +290,20 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn tmp_root(tag: &str) -> PathBuf {
     let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let p = std::env::temp_dir().join(format!("notchd-conformance-{tag}-{}-{n}", std::process::id()));
+    let p = std::env::temp_dir().join(format!(
+        "notchd-conformance-{tag}-{}-{n}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&p).unwrap();
     p
 }
 
 fn short_sock(tag: &str) -> PathBuf {
     let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    PathBuf::from(format!("/tmp/nd-conf-{tag}-{}-{n}.sock", std::process::id()))
+    PathBuf::from(format!(
+        "/tmp/nd-conf-{tag}-{}-{n}.sock",
+        std::process::id()
+    ))
 }
 
 /// Scripted fake herdr. Records nothing we need; returns canned JSON.
@@ -376,7 +419,9 @@ struct FixtureOpencode {
 impl FixtureOpencode {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            api_session_raw: Mutex::new(serde_json::json!({"cursor": null, "data": []}).to_string()),
+            api_session_raw: Mutex::new(
+                serde_json::json!({"cursor": null, "data": []}).to_string(),
+            ),
             decisions: Mutex::new(VecDeque::new()),
         })
     }
@@ -406,7 +451,9 @@ impl FixtureOpencode {
             let rest = &args[1..];
             match rest.join(" ").as_str() {
                 "api GET /api/session" => Ok(fake.api_session_raw.lock().unwrap().clone()),
-                "models" => Ok("opencode/hy4-flash-free\nopencode/inkling-2-small-free\n".to_string()),
+                "models" => {
+                    Ok("opencode/hy4-flash-free\nopencode/inkling-2-small-free\n".to_string())
+                }
                 s if s.starts_with("run --model") => {
                     let mut q = fake.decisions.lock().unwrap();
                     q.pop_front().ok_or(HerdrError::Failed {
@@ -560,13 +607,18 @@ fn build_fixture(tag: &str) -> Fixture {
     let drain_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         daemon.poll_once();
-        let done = daemon.snapshot().sessions.iter().any(|s| {
-            s.id == "S1-OC01" && s.status == Status::Done
-        });
+        let done = daemon
+            .snapshot()
+            .sessions
+            .iter()
+            .any(|s| s.id == "S1-OC01" && s.status == Status::Done);
         if done {
             break;
         }
-        assert!(Instant::now() < drain_deadline, "verifier never produced a DONE decision");
+        assert!(
+            Instant::now() < drain_deadline,
+            "verifier never produced a DONE decision"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -585,7 +637,11 @@ fn build_fixture(tag: &str) -> Fixture {
 
     // Pause SV-1 so the snapshot exercises the allowed-optional `paused`.
     let paused = daemon.pause_supervisor("SV-1");
-    assert!(paused.is_ok(), "pause_supervisor failed: {}", paused.err().unwrap_or_default());
+    assert!(
+        paused.is_ok(),
+        "pause_supervisor failed: {}",
+        paused.err().unwrap_or_default()
+    );
 
     Fixture { daemon, fake, oc }
 }
@@ -601,8 +657,15 @@ fn assert_fixture_prereqs(v: &Value) {
     assert_eq!(supervisors.len(), 2, "expected 2 supervisors: {v}");
     assert_eq!(supervisors[0]["id"], "SV-1");
     assert_eq!(supervisors[1]["id"], "SV-2");
-    assert_eq!(supervisors[0]["paused"], Value::Bool(true), "SV-1 paused flag: {v}");
-    assert!(supervisors[1].get("paused").is_none(), "SV-2 must not carry `paused`");
+    assert_eq!(
+        supervisors[0]["paused"],
+        Value::Bool(true),
+        "SV-1 paused flag: {v}"
+    );
+    assert!(
+        supervisors[1].get("paused").is_none(),
+        "SV-2 must not carry `paused`"
+    );
 
     let sessions = v["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 3, "expected 3 sessions: {v}");
@@ -635,15 +698,24 @@ fn assert_fixture_prereqs(v: &Value) {
     let s3 = &sessions[2];
     assert_eq!(s3["status"], "working");
 
-    assert!(!v["decisions"].as_array().unwrap().is_empty(), "decisions must be non-empty");
+    assert!(
+        !v["decisions"].as_array().unwrap().is_empty(),
+        "decisions must be non-empty"
+    );
     let actions: Vec<&str> = v["decisions"]
         .as_array()
         .unwrap()
         .iter()
         .map(|d| d["action"].as_str().unwrap())
         .collect();
-    assert!(actions.contains(&"reprompt"), "expected a reprompt decision: {actions:?}");
-    assert!(actions.contains(&"escalate"), "expected an escalate decision: {actions:?}");
+    assert!(
+        actions.contains(&"reprompt"),
+        "expected a reprompt decision: {actions:?}"
+    );
+    assert!(
+        actions.contains(&"escalate"),
+        "expected an escalate decision: {actions:?}"
+    );
 
     let escalations = v["escalations"].as_array().unwrap();
     assert_eq!(escalations.len(), 1, "escalations: {escalations:?}");
@@ -659,10 +731,19 @@ fn assert_fixture_prereqs(v: &Value) {
     let conflicts = v["conflicts"].as_array().unwrap();
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0]["file"], "src/shared.rs");
-    assert_eq!(conflicts[0]["sessions"], serde_json::json!(["S1-OC01", "S2-OC01"]));
+    assert_eq!(
+        conflicts[0]["sessions"],
+        serde_json::json!(["S1-OC01", "S2-OC01"])
+    );
 
-    assert!(!v["attribution"].as_array().unwrap().is_empty(), "attribution empty");
-    assert!(!v["warnings"].as_array().unwrap().is_empty(), "warnings empty");
+    assert!(
+        !v["attribution"].as_array().unwrap().is_empty(),
+        "attribution empty"
+    );
+    assert!(
+        !v["warnings"].as_array().unwrap().is_empty(),
+        "warnings empty"
+    );
     assert_eq!(v["orchestrator"]["status"], "working");
 }
 
@@ -725,19 +806,39 @@ fn snapshot_status_enum_eps_f64_integer_ms_and_version() {
     let mut ms_violations = Vec::new();
     assert_integer_ms(v.get("generatedAt"), "generatedAt", &mut ms_violations);
     for (i, s) in v["sessions"].as_array().unwrap().iter().enumerate() {
-        assert_integer_ms(s.get("startedAt"), &format!("sessions[{i}].startedAt"), &mut ms_violations);
+        assert_integer_ms(
+            s.get("startedAt"),
+            &format!("sessions[{i}].startedAt"),
+            &mut ms_violations,
+        );
         if let Some(wcd) = s.get("wallClockDeadline") {
-            assert_integer_ms(Some(wcd), &format!("sessions[{i}].wallClockDeadline"), &mut ms_violations);
+            assert_integer_ms(
+                Some(wcd),
+                &format!("sessions[{i}].wallClockDeadline"),
+                &mut ms_violations,
+            );
         }
     }
     for (i, d) in v["decisions"].as_array().unwrap().iter().enumerate() {
-        assert_integer_ms(d.get("at"), &format!("decisions[{i}].at"), &mut ms_violations);
+        assert_integer_ms(
+            d.get("at"),
+            &format!("decisions[{i}].at"),
+            &mut ms_violations,
+        );
     }
     for (i, e) in v["escalations"].as_array().unwrap().iter().enumerate() {
-        assert_integer_ms(e.get("at"), &format!("escalations[{i}].at"), &mut ms_violations);
+        assert_integer_ms(
+            e.get("at"),
+            &format!("escalations[{i}].at"),
+            &mut ms_violations,
+        );
     }
     for (i, m) in v["busMessages"].as_array().unwrap().iter().enumerate() {
-        assert_integer_ms(m.get("at"), &format!("busMessages[{i}].at"), &mut ms_violations);
+        assert_integer_ms(
+            m.get("at"),
+            &format!("busMessages[{i}].at"),
+            &mut ms_violations,
+        );
     }
     assert!(
         ms_violations.is_empty(),
@@ -794,9 +895,17 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
     // decisions, escalations, busMessages, paused) are never read.
     fn parse_v12(v: &Value) -> Result<V12Summary, String> {
         let version = v["version"].as_u64().ok_or("version: missing/not u64")?;
-        let _generated_at = v["generatedAt"].as_u64().ok_or("generatedAt: missing/not u64")?;
-        let orchestrator_id = v["orchestrator"]["id"].as_str().ok_or("orchestrator.id")?.to_string();
-        let orchestrator_status = v["orchestrator"]["status"].as_str().ok_or("orchestrator.status")?.to_string();
+        let _generated_at = v["generatedAt"]
+            .as_u64()
+            .ok_or("generatedAt: missing/not u64")?;
+        let orchestrator_id = v["orchestrator"]["id"]
+            .as_str()
+            .ok_or("orchestrator.id")?
+            .to_string();
+        let orchestrator_status = v["orchestrator"]["status"]
+            .as_str()
+            .ok_or("orchestrator.status")?
+            .to_string();
 
         let mut supervisors = Vec::new();
         for (i, sup) in v["supervisors"]
@@ -806,12 +915,26 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
             .enumerate()
         {
             supervisors.push((
-                sup["id"].as_str().ok_or(format!("supervisors[{i}].id"))?.to_string(),
-                sup["status"].as_str().ok_or(format!("supervisors[{i}].status"))?.to_string(),
-                sup["working"].as_u64().ok_or(format!("supervisors[{i}].working"))?,
-                sup["idle"].as_u64().ok_or(format!("supervisors[{i}].idle"))?,
-                sup["failed"].as_u64().ok_or(format!("supervisors[{i}].failed"))?,
-                sup["done"].as_u64().ok_or(format!("supervisors[{i}].done"))?,
+                sup["id"]
+                    .as_str()
+                    .ok_or(format!("supervisors[{i}].id"))?
+                    .to_string(),
+                sup["status"]
+                    .as_str()
+                    .ok_or(format!("supervisors[{i}].status"))?
+                    .to_string(),
+                sup["working"]
+                    .as_u64()
+                    .ok_or(format!("supervisors[{i}].working"))?,
+                sup["idle"]
+                    .as_u64()
+                    .ok_or(format!("supervisors[{i}].idle"))?,
+                sup["failed"]
+                    .as_u64()
+                    .ok_or(format!("supervisors[{i}].failed"))?,
+                sup["done"]
+                    .as_u64()
+                    .ok_or(format!("supervisors[{i}].done"))?,
             ));
         }
 
@@ -823,14 +946,37 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
             .enumerate()
         {
             sessions.push(V12Session {
-                id: s["id"].as_str().ok_or(format!("sessions[{i}].id"))?.to_string(),
-                sup: s["sup"].as_str().ok_or(format!("sessions[{i}].sup"))?.to_string(),
-                status: s["status"].as_str().ok_or(format!("sessions[{i}].status"))?.to_string(),
-                title: s["title"].as_str().ok_or(format!("sessions[{i}].title"))?.to_string(),
-                task: s["task"].as_str().ok_or(format!("sessions[{i}].task"))?.to_string(),
-                cwd: s["cwd"].as_str().ok_or(format!("sessions[{i}].cwd"))?.to_string(),
-                pane_id: s["paneId"].as_str().ok_or(format!("sessions[{i}].paneId"))?.to_string(),
-                started_at: s["startedAt"].as_u64().ok_or(format!("sessions[{i}].startedAt"))?,
+                id: s["id"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].id"))?
+                    .to_string(),
+                sup: s["sup"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].sup"))?
+                    .to_string(),
+                status: s["status"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].status"))?
+                    .to_string(),
+                title: s["title"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].title"))?
+                    .to_string(),
+                task: s["task"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].task"))?
+                    .to_string(),
+                cwd: s["cwd"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].cwd"))?
+                    .to_string(),
+                pane_id: s["paneId"]
+                    .as_str()
+                    .ok_or(format!("sessions[{i}].paneId"))?
+                    .to_string(),
+                started_at: s["startedAt"]
+                    .as_u64()
+                    .ok_or(format!("sessions[{i}].startedAt"))?,
                 last_action: opt_str(&s["lastAction"]),
                 last_revision: opt_u64(&s["lastRevision"]),
                 latency_ms: opt_u64(&s["latencyMs"]),
@@ -853,7 +999,9 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
                 .iter()
                 .enumerate()
             {
-                let _ = sid.as_str().ok_or(format!("conflicts[{i}].sessions[{j}]"))?;
+                let _ = sid
+                    .as_str()
+                    .ok_or(format!("conflicts[{i}].sessions[{j}]"))?;
             }
         }
         for (i, a) in v["attribution"]
@@ -862,7 +1010,9 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
             .iter()
             .enumerate()
         {
-            let _ = a["session"].as_str().ok_or(format!("attribution[{i}].session"))?;
+            let _ = a["session"]
+                .as_str()
+                .ok_or(format!("attribution[{i}].session"))?;
             let _ = a["file"].as_str().ok_or(format!("attribution[{i}].file"))?;
         }
 
@@ -887,7 +1037,8 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
         })
     }
 
-    let summary = parse_v12(&v).unwrap_or_else(|e| panic!("v1.2 consumer failed on v1.3 snapshot: {e}"));
+    let summary =
+        parse_v12(&v).unwrap_or_else(|e| panic!("v1.2 consumer failed on v1.3 snapshot: {e}"));
     assert_eq!(summary.version, 1);
     assert_eq!(summary.orchestrator_id, "ORCH");
     assert!(STATUS_ENUM.contains(&summary.orchestrator_status.as_str()));
@@ -898,17 +1049,30 @@ fn v12_consumer_reads_only_v12_keys_on_v13_snapshot() {
     assert_eq!(summary.sessions[0].id, "S1-OC01");
     assert_eq!(summary.sessions[0].status, "done");
     assert_eq!(summary.sessions[0].sup, "SV-1");
-    assert!(summary.sessions[0].cwd.ends_with("/repo"), "cwd: {}", summary.sessions[0].cwd);
+    assert!(
+        summary.sessions[0].cwd.ends_with("/repo"),
+        "cwd: {}",
+        summary.sessions[0].cwd
+    );
     assert!(summary.sessions[0].pane_id.starts_with('w'));
     assert_eq!(summary.sessions[0].started_at, T0);
     assert!(summary.sessions[0].last_revision.is_some());
-    assert_eq!(summary.sessions[0].title, "Ship the audit-signoff release checklist");
-    assert!(!summary.sessions[0].task.contains('\n'), "task must be single line");
+    assert_eq!(
+        summary.sessions[0].title,
+        "Ship the audit-signoff release checklist"
+    );
+    assert!(
+        !summary.sessions[0].task.contains('\n'),
+        "task must be single line"
+    );
     assert!(summary.sessions[0].task.contains("audit-signoff"));
     let _ = summary.sessions[0].last_action; // presence/type enforced by the parser (string-or-null)
     let _ = summary.sessions[0].latency_ms; // presence/type enforced by the parser (u64-or-null)
     assert_eq!(summary.sessions[1].id, "S1-OC02");
-    assert_eq!(summary.sessions[1].failure_reason.as_deref(), Some("blocked_waiting"));
+    assert_eq!(
+        summary.sessions[1].failure_reason.as_deref(),
+        Some("blocked_waiting")
+    );
     assert_eq!(summary.sessions[2].id, "S2-OC01");
     assert!(summary.eps.is_finite() && summary.eps >= 0.0);
     assert!(!summary.warnings.is_empty());
@@ -958,7 +1122,10 @@ fn socket_ack_envelopes_match_contract_v13() {
     let hello = next_frame(&mut reader);
     assert_eq!(hello["event"], "hello", "hello frame: {hello}");
     assert_eq!(hello["version"], 1, "hello version: {hello}");
-    assert!(hello["pid"].as_u64().is_some(), "hello pid must be an integer: {hello}");
+    assert!(
+        hello["pid"].as_u64().is_some(),
+        "hello pid must be an integer: {hello}"
+    );
 
     // ping → { "event": "ack", "cmd": "ping", "ok": true, "pong": <ms> }
     send(&mut writer, serde_json::json!({"cmd": "ping"}));
@@ -967,17 +1134,32 @@ fn socket_ack_envelopes_match_contract_v13() {
     assert_eq!(pong["cmd"], "ping", "ping cmd: {pong}");
     assert!(pong["ok"].is_boolean(), "ping ok must be a bool: {pong}");
     assert_eq!(pong["ok"], Value::Bool(true), "ping ok: {pong}");
-    assert!(pong["pong"].as_u64().is_some(), "ping pong must be integer ms: {pong}");
+    assert!(
+        pong["pong"].as_u64().is_some(),
+        "ping pong must be integer ms: {pong}"
+    );
 
     // snapshot → { "event": "snapshot", "snapshot": {…} } — not an ack; the
     // embedded object must satisfy the full §1.3 key contract.
     send(&mut writer, serde_json::json!({"cmd": "snapshot"}));
     let snap_frame = next_frame(&mut reader);
-    assert_eq!(snap_frame["event"], "snapshot", "snapshot frame: {snap_frame}");
-    assert!(snap_frame.get("cmd").is_none(), "snapshot frame must not be an ack");
-    assert!(snap_frame.get("ok").is_none(), "snapshot frame must not carry ok");
+    assert_eq!(
+        snap_frame["event"], "snapshot",
+        "snapshot frame: {snap_frame}"
+    );
+    assert!(
+        snap_frame.get("cmd").is_none(),
+        "snapshot frame must not be an ack"
+    );
+    assert!(
+        snap_frame.get("ok").is_none(),
+        "snapshot frame must not carry ok"
+    );
     let wire_snap = &snap_frame["snapshot"];
-    assert_eq!(wire_snap["version"], 1, "wire snapshot version: {wire_snap}");
+    assert_eq!(
+        wire_snap["version"], 1,
+        "wire snapshot version: {wire_snap}"
+    );
     let wire_violations = snapshot_key_violations(wire_snap);
     assert!(
         wire_violations.is_empty(),
@@ -986,45 +1168,78 @@ fn socket_ack_envelopes_match_contract_v13() {
     );
 
     // kill with an id the daemon does not know → error ack.
-    send(&mut writer, serde_json::json!({"cmd": "kill", "id": "S9-OC99", "reason": "conformance probe"}));
+    send(
+        &mut writer,
+        serde_json::json!({"cmd": "kill", "id": "S9-OC99", "reason": "conformance probe"}),
+    );
     let kill = next_frame(&mut reader);
     assert_eq!(kill["event"], "ack", "kill ack: {kill}");
     assert_eq!(kill["cmd"], "kill", "kill cmd: {kill}");
     assert!(kill["ok"].is_boolean(), "kill ok must be a bool: {kill}");
-    assert_eq!(kill["ok"], Value::Bool(false), "kill with bad id must fail: {kill}");
+    assert_eq!(
+        kill["ok"],
+        Value::Bool(false),
+        "kill with bad id must fail: {kill}"
+    );
     assert!(
-        kill["error"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+        kill["error"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
         "kill error ack must carry a non-empty error string: {kill}"
     );
 
     // message with an illegal `type` → error ack (validated before delivery).
-    send(&mut writer, serde_json::json!({
-        "cmd": "message",
-        "from": "S1-OC01",
-        "to": "S2-OC01",
-        "type": "bogus",
-        "body": "conformance probe"
-    }));
+    send(
+        &mut writer,
+        serde_json::json!({
+            "cmd": "message",
+            "from": "S1-OC01",
+            "to": "S2-OC01",
+            "type": "bogus",
+            "body": "conformance probe"
+        }),
+    );
     let msg = next_frame(&mut reader);
     assert_eq!(msg["event"], "ack", "message ack: {msg}");
     assert_eq!(msg["cmd"], "message", "message cmd: {msg}");
     assert!(msg["ok"].is_boolean(), "message ok must be a bool: {msg}");
-    assert_eq!(msg["ok"], Value::Bool(false), "message with bad type must fail: {msg}");
+    assert_eq!(
+        msg["ok"],
+        Value::Bool(false),
+        "message with bad type must fail: {msg}"
+    );
     assert!(
-        msg["error"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+        msg["error"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
         "message error ack must carry a non-empty error string: {msg}"
     );
-    assert!(msg.get("messageId").is_none(), "failed message ack must not carry messageId: {msg}");
+    assert!(
+        msg.get("messageId").is_none(),
+        "failed message ack must not carry messageId: {msg}"
+    );
 
     // Unknown command → error ack echoing the command name.
     send(&mut writer, serde_json::json!({"cmd": "frobnicate"}));
     let unknown = next_frame(&mut reader);
     assert_eq!(unknown["event"], "ack", "unknown ack: {unknown}");
     assert_eq!(unknown["cmd"], "frobnicate", "unknown cmd echo: {unknown}");
-    assert!(unknown["ok"].is_boolean(), "unknown ok must be a bool: {unknown}");
-    assert_eq!(unknown["ok"], Value::Bool(false), "unknown command must fail: {unknown}");
     assert!(
-        unknown["error"].as_str().map(|s| !s.is_empty()).unwrap_or(false),
+        unknown["ok"].is_boolean(),
+        "unknown ok must be a bool: {unknown}"
+    );
+    assert_eq!(
+        unknown["ok"],
+        Value::Bool(false),
+        "unknown command must fail: {unknown}"
+    );
+    assert!(
+        unknown["error"]
+            .as_str()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
         "unknown command ack must carry a non-empty error string: {unknown}"
     );
 

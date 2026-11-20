@@ -59,8 +59,22 @@ fn live_message_is_in_snapshot_bus_messages_with_frozen_shape() {
     std::env::set_var("NOTCH_PRE_SPAWN_HOOK", "/nonexistent/notch-a4-hook");
     let dir = root();
     let d = daemon(&dir);
-    let a = d.submit_task("a".into(), Some(dir.to_string_lossy().into()), None, None, None, None);
-    let b = d.submit_task("b".into(), Some(dir.to_string_lossy().into()), None, None, None, None);
+    let a = d.submit_task(
+        "a".into(),
+        Some(dir.to_string_lossy().into()),
+        None,
+        None,
+        None,
+        None,
+    );
+    let b = d.submit_task(
+        "b".into(),
+        Some(dir.to_string_lossy().into()),
+        None,
+        None,
+        None,
+        None,
+    );
     let from = a.session_id.unwrap();
     let to = b.session_id.unwrap();
 
@@ -69,7 +83,9 @@ fn live_message_is_in_snapshot_bus_messages_with_frozen_shape() {
     let id = ack.message_id.expect("message id");
 
     let snap = serde_json::to_value(d.snapshot()).unwrap();
-    let bus = snap["busMessages"].as_array().expect("busMessages must be present after a live message");
+    let bus = snap["busMessages"]
+        .as_array()
+        .expect("busMessages must be present after a live message");
     assert_eq!(bus.len(), 1, "exactly one live message: {bus:?}");
     let entry = &bus[0];
     assert_eq!(entry["id"], json!(id));
@@ -89,21 +105,36 @@ fn live_bus_send_and_drain_is_projected_into_snapshot_bus_messages() {
     let dir = root();
     let d = daemon(&dir);
     // Two supervisors must exist for bus routing.
-    let seed = d.submit_task("seed".into(), Some(dir.to_string_lossy().into()), None, None, None, None);
+    let seed = d.submit_task(
+        "seed".into(),
+        Some(dir.to_string_lossy().into()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(seed.ok);
-    let second = d.submit_task("second".into(), Some(dir.to_string_lossy().into()), None, None, None, None);
+    let second = d.submit_task(
+        "second".into(),
+        Some(dir.to_string_lossy().into()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(second.ok);
     let from = seed.supervisor_id.unwrap();
     let to = second.supervisor_id.unwrap();
     assert_ne!(from, to);
 
-    d.bus_send(&from, &to, None, "handoff", "live bus body").unwrap();
+    d.bus_send(&from, &to, None, "handoff", "live bus body")
+        .unwrap();
     let drained = d.bus_drain();
     assert_eq!(drained, 1, "the bus must route the message");
 
     let snap = serde_json::to_value(d.snapshot()).unwrap();
     let bus = snap["busMessages"].as_array().expect(
-        "a routed bus message is logged in events.jsonl but missing from snapshot.busMessages"
+        "a routed bus message is logged in events.jsonl but missing from snapshot.busMessages",
     );
     assert!(
         bus.iter().any(|m| m["from"] == json!(from)

@@ -70,7 +70,9 @@ pub fn sample_git_at(cwd: &Path, base_rev: Option<&str>) -> Vec<String> {
     }
     if let Some(base) = base_rev {
         let range = format!("{base}..HEAD");
-        if let Ok(out) = crate::worktree::git_run(&["diff", "--name-only", range.as_str()], Some(cwd)) {
+        if let Ok(out) =
+            crate::worktree::git_run(&["diff", "--name-only", range.as_str()], Some(cwd))
+        {
             if out.ok {
                 files.extend(parse_name_only(&out.stdout));
             }

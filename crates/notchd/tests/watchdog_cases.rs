@@ -133,7 +133,6 @@ impl FakeHerdr {
         *self.fail_subcommand.lock().unwrap() = None;
     }
 
-
     fn calls(&self) -> Vec<Vec<String>> {
         self.calls.lock().unwrap().clone()
     }
@@ -202,13 +201,11 @@ impl FakeHerdr {
             })
             .to_string()),
             ("agent", "read") => Ok(self.read_text.lock().unwrap().clone()),
-            ("pane", "close") => {
-                Ok(serde_json::json!({
-                    "id": "cli:pane:close",
-                    "result": { "type": "ok" }
-                })
-                .to_string())
-            }
+            ("pane", "close") => Ok(serde_json::json!({
+                "id": "cli:pane:close",
+                "result": { "type": "ok" }
+            })
+            .to_string()),
             ("agent", "focus") => Ok(serde_json::json!({
                 "id": "cli:agent:focus",
                 "result": { "type": "ok" }
@@ -374,7 +371,12 @@ fn write_two_by_two_plan(root: &Path) -> PathBuf {
     path
 }
 
-fn spawn_one_session(root: &Path, fake: &Arc<FakeHerdr>, oc: &Arc<FakeOpencode>, clock: Arc<FakeClock>) -> (Daemon, String) {
+fn spawn_one_session(
+    root: &Path,
+    fake: &Arc<FakeHerdr>,
+    oc: &Arc<FakeOpencode>,
+    clock: Arc<FakeClock>,
+) -> (Daemon, String) {
     let daemon = build_daemon(root, fake, oc, clock, 15);
     let plan = write_one_session_plan(root);
     let ack = daemon.run_plan(&plan);
@@ -411,13 +413,21 @@ fn read_registry(root: &Path) -> Value {
 fn write_state_fixture(root: &Path, value: Value) {
     let state_dir = root.join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(state_dir.join("state.json"), serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    std::fs::write(
+        state_dir.join("state.json"),
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
 }
 
 fn write_registry_fixture(root: &Path, value: Value) {
     let state_dir = root.join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(state_dir.join("registry.json"), serde_json::to_string_pretty(&value).unwrap()).unwrap();
+    std::fs::write(
+        state_dir.join("registry.json"),
+        serde_json::to_string_pretty(&value).unwrap(),
+    )
+    .unwrap();
 }
 
 /// A state.json fixture with one supervisor SV-1 and one working session
@@ -479,7 +489,11 @@ fn stuck_no_kill_before_threshold_minus_one() {
 
     step_advance(&clock, &daemon, 14_000); // stays below the suspicion threshold
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Working, "T-1s must not kill");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Working,
+        "T-1s must not kill"
+    );
     assert_eq!(snap.sessions[0].failure_reason, None);
     assert_eq!(fake.pane_close_count(), 0);
     eprintln!("case1 delta=+14s obs=working/not-killed verdict=PASS");
@@ -535,10 +549,18 @@ fn stuck_two_polls_at_boundary_do_not_double_kill() {
     daemon.poll_once(); // same instant, stale herdr view — must not re-kill
     step_advance(&clock, &daemon, 30_000); // deep into overtime
     daemon.poll_once(); // and again — must not re-kill
-    assert_eq!(fake.pane_close_count(), 1, "one stuck kill across repeat boundary polls");
+    assert_eq!(
+        fake.pane_close_count(),
+        1,
+        "one stuck kill across repeat boundary polls"
+    );
     // Two verdicts on the way: Suspect at 1x, Stuck at 2x. Exactly one of
     // them is a kill — asserted above by pane_close_count().
-    assert_eq!(event_count(&events(&root), "watchdog"), 2, "suspect + stuck verdicts");
+    assert_eq!(
+        event_count(&events(&root), "watchdog"),
+        2,
+        "suspect + stuck verdicts"
+    );
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
     eprintln!("case1 delta=+15s/+45s obs=1 pane close, 1 watchdog event verdict=PASS");
 }
@@ -547,19 +569,34 @@ fn stuck_two_polls_at_boundary_do_not_double_kill() {
 fn watchdog_unit_boundary_matches_code_semantics() {
     let w = Watchdog::new(15);
     // Code: now - revision_changed_at >= stuck_after_ms, Working only.
-    assert!(!w.is_stuck(Status::Working, 10_000, 10_000 + 14_999), "T-1ms: not stuck");
-    assert!(w.is_stuck(Status::Working, 10_000, 10_000 + 15_000), "exact boundary: stuck (>=)");
-    assert!(w.is_stuck(Status::Working, 10_000, 10_000 + 15_001), "T+1ms: stuck");
+    assert!(
+        !w.is_stuck(Status::Working, 10_000, 10_000 + 14_999),
+        "T-1ms: not stuck"
+    );
+    assert!(
+        w.is_stuck(Status::Working, 10_000, 10_000 + 15_000),
+        "exact boundary: stuck (>=)"
+    );
+    assert!(
+        w.is_stuck(Status::Working, 10_000, 10_000 + 15_001),
+        "T+1ms: stuck"
+    );
     // Non-working statuses are never stuck.
     for s in [Status::Idle, Status::Done, Status::Failed] {
-        assert!(!w.is_stuck(s, 10_000, 10_000 + 999_000_000), "{s} must never be stuck");
+        assert!(
+            !w.is_stuck(s, 10_000, 10_000 + 999_000_000),
+            "{s} must never be stuck"
+        );
     }
     // Future revision timestamp (clock skew) saturates to 0, never underflows.
     assert!(!w.is_stuck(Status::Working, u64::MAX, 42));
     assert!(w.is_stuck(Status::Working, 0, u64::MAX));
     // saturating_mul for an absurd threshold must not panic.
     let huge = Watchdog::new(u64::MAX);
-    assert!(huge.is_stuck(Status::Working, 0, u64::MAX), "MAX-0 saturates to u64::MAX and >= u64::MAX");
+    assert!(
+        huge.is_stuck(Status::Working, 0, u64::MAX),
+        "MAX-0 saturates to u64::MAX and >= u64::MAX"
+    );
 }
 
 // ============================================================
@@ -581,13 +618,27 @@ fn done_in_stuck_window_not_killed_and_done_logged() {
     daemon.poll_once();
 
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Done, "done must win over the stuck check");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Done,
+        "done must win over the stuck check"
+    );
     assert_eq!(snap.sessions[0].failure_reason, None);
-    assert_eq!(fake.pane_close_count(), 0, "done panes are never watchdog-closed");
+    assert_eq!(
+        fake.pane_close_count(),
+        0,
+        "done panes are never watchdog-closed"
+    );
     let log = events(&root);
     assert_eq!(stuck_verdicts(&log), 0, "no stuck verdict for done");
-    assert!(log.contains("\"detail\":\"done\""), "done evidence logged: {log}");
-    assert!(snap.escalations.iter().all(|e| e.kind != "stuck"), "no stuck escalation for done");
+    assert!(
+        log.contains("\"detail\":\"done\""),
+        "done evidence logged: {log}"
+    );
+    assert!(
+        snap.escalations.iter().all(|e| e.kind != "stuck"),
+        "no stuck escalation for done"
+    );
     eprintln!("case2 delta=+60s obs=done, 0 pane closes, evidence logged verdict=PASS");
 }
 
@@ -625,7 +676,11 @@ fn paused_supervisor_stuck_session_killed_reason_intact() {
     fake.set_agents(vec![agent_entry(&pane, "working", 7)]);
 
     daemon.pause_supervisor("SV-1").unwrap();
-    assert!(daemon.snapshot().supervisors.iter().any(|s| s.id == "SV-1" && s.paused));
+    assert!(daemon
+        .snapshot()
+        .supervisors
+        .iter()
+        .any(|s| s.id == "SV-1" && s.paused));
 
     daemon.poll_once(); // prime at T0 (pause active)
     step_advance(&clock, &daemon, 30_000); // stepped ticks; watchdog fires while paused
@@ -633,14 +688,21 @@ fn paused_supervisor_stuck_session_killed_reason_intact() {
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
     assert_eq!(s.status, Status::Failed);
-    assert_eq!(s.failure_reason.as_deref(), Some("stuck"), "reason intact through pause");
+    assert_eq!(
+        s.failure_reason.as_deref(),
+        Some("stuck"),
+        "reason intact through pause"
+    );
     assert_eq!(fake.pane_close_count(), 1);
     assert!(
         snap.warnings.iter().any(|w| w.contains("stuck")),
         "stuck warning recorded: {:?}",
         snap.warnings
     );
-    assert!(snap.escalations.iter().any(|e| e.kind == "stuck"), "stuck escalation recorded");
+    assert!(
+        snap.escalations.iter().any(|e| e.kind == "stuck"),
+        "stuck escalation recorded"
+    );
     eprintln!("case3 delta=+20s paused obs=failed/stuck, reason intact, 1 close verdict=PASS");
 }
 
@@ -663,14 +725,29 @@ fn paused_supervisor_decision_loop_does_not_fire() {
     daemon.poll_once();
     daemon.poll_once();
 
-    assert_eq!(oc.decider_calls(), 0, "paused supervisor: zero decider calls");
-    assert!(!events(&root).contains("\"kind\":\"idle_signal\""), "no idle signal logged while paused");
-    assert_eq!(daemon.snapshot().sessions[0].status, Status::Idle, "idle session untouched");
+    assert_eq!(
+        oc.decider_calls(),
+        0,
+        "paused supervisor: zero decider calls"
+    );
+    assert!(
+        !events(&root).contains("\"kind\":\"idle_signal\""),
+        "no idle signal logged while paused"
+    );
+    assert_eq!(
+        daemon.snapshot().sessions[0].status,
+        Status::Idle,
+        "idle session untouched"
+    );
 
     daemon.resume_supervisor("SV-1").unwrap();
     daemon.poll_once();
     wait_for_decider(&oc, 1);
-    assert_eq!(oc.decider_calls(), 1, "after resume the decider fires once for the idle session");
+    assert_eq!(
+        oc.decider_calls(),
+        1,
+        "after resume the decider fires once for the idle session"
+    );
     // Drain the completed judge job; its verdict is applied on a later poll.
     for _ in 0..1_000 {
         if daemon.snapshot().sessions[0].iterations == Some(1) {
@@ -715,13 +792,22 @@ fn readopt_state_json_deleted_registry_intact_no_ids_reissued() {
     assert!(!root.join("state").join("state.json").exists());
 
     // herdr still shows the old panes — but the daemon has no record of them.
-    fake.set_agents(panes_after_plan.iter().map(|p| agent_entry(p, "working", 9)).collect());
+    fake.set_agents(
+        panes_after_plan
+            .iter()
+            .map(|p| agent_entry(p, "working", 9))
+            .collect(),
+    );
 
     let clock2 = Arc::new(FakeClock::new(T0 + 100_000));
     let daemon = build_daemon(&root, &fake, &oc, clock2.clone(), 15);
     daemon.reconcile(); // must not panic, must not invent sessions
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions.len(), 0, "state.json deleted: nothing to re-adopt (no crash)");
+    assert_eq!(
+        snap.sessions.len(),
+        0,
+        "state.json deleted: nothing to re-adopt (no crash)"
+    );
     assert_eq!(snap.supervisors.len(), 0);
 
     // Registry monotonicity: the next allocation must not reuse SV-1/SV-2.
@@ -734,11 +820,23 @@ fn readopt_state_json_deleted_registry_intact_no_ids_reissued() {
         None,
     );
     assert!(ack.ok, "submit_task ok: {:?}", ack.error);
-    assert_eq!(ack.supervisor_id.as_deref(), Some("SV-3"), "registry monotonic, no SV-1 reissue");
-    assert_eq!(ack.session_id.as_deref(), Some("S3-OC01"), "no S1-OC*/S2-OC* reissue");
+    assert_eq!(
+        ack.supervisor_id.as_deref(),
+        Some("SV-3"),
+        "registry monotonic, no SV-1 reissue"
+    );
+    assert_eq!(
+        ack.session_id.as_deref(),
+        Some("S3-OC01"),
+        "no S1-OC*/S2-OC* reissue"
+    );
     let reg = read_registry(&root);
     assert_eq!(reg["supervisorCount"], 3);
-    assert!(reg["ids"].as_array().unwrap().iter().any(|v| v == "S3-OC01"));
+    assert!(reg["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "S3-OC01"));
     eprintln!("case4 state.json deleted obs=fresh tree, next ids SV-3/S3-OC01 verdict=PASS");
 }
 
@@ -761,13 +859,24 @@ fn readopt_pane_present_keeps_session_and_binds_session_ref() {
     daemon.reconcile();
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions.len(), 1);
-    assert_eq!(snap.sessions[0].status, Status::Working, "live pane is re-adopted, not done");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Working,
+        "live pane is re-adopted, not done"
+    );
     assert_eq!(snap.sessions[0].id, "S1-OC01");
-    assert_eq!(snap.sessions[0].last_revision, Some(6), "revision re-adopted at reconcile");
+    assert_eq!(
+        snap.sessions[0].last_revision,
+        Some(6),
+        "revision re-adopted at reconcile"
+    );
     // Registry untouched: allocation continues from what it recorded.
     assert_eq!(read_registry(&root)["ids"].as_array().unwrap().len(), 2);
     // sessionRef survived the roundtrip through state.json.
-    assert_eq!(read_state(&root)["sessions"][0]["sessionRef"], "ses_fixture123");
+    assert_eq!(
+        read_state(&root)["sessions"][0]["sessionRef"],
+        "ses_fixture123"
+    );
     eprintln!("case4 pane present obs=working, sessionRef ses_fixture123 preserved verdict=PASS");
 }
 
@@ -833,7 +942,10 @@ fn frozen_revision_across_restart_gets_grace_window() {
 fn readopt_pane_missing_marks_done_and_cleans() {
     let root = tmp_root("readopt-gone-pane");
     write_registry_fixture(&root, registry_fixture());
-    write_state_fixture(&root, working_session_state("w5:p9", 5, Some("ses_fixture999")));
+    write_state_fixture(
+        &root,
+        working_session_state("w5:p9", 5, Some("ses_fixture999")),
+    );
     std::fs::create_dir_all(root.join("tmp").join("notch-S1-OC01")).unwrap();
     std::fs::write(root.join("tmp").join("notch-S1-OC01").join("marker"), b"x").unwrap();
 
@@ -845,10 +957,20 @@ fn readopt_pane_missing_marks_done_and_cleans() {
 
     daemon.reconcile();
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Done, "vanished pane -> done");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Done,
+        "vanished pane -> done"
+    );
     assert_eq!(snap.sessions[0].failure_reason, None);
-    assert!(!root.join("tmp").join("notch-S1-OC01").exists(), "cleanup removed the temp dir");
-    assert!(events(&root).contains("marked done"), "done re-adoption logged");
+    assert!(
+        !root.join("tmp").join("notch-S1-OC01").exists(),
+        "cleanup removed the temp dir"
+    );
+    assert!(
+        events(&root).contains("marked done"),
+        "done re-adoption logged"
+    );
     eprintln!("case4 pane missing obs=done, temp dir removed verdict=PASS");
 }
 
@@ -862,20 +984,41 @@ fn ids_never_reissued_after_kill_and_cleanup() {
     {
         let daemon = build_daemon(&root, &fake, &oc, clock.clone(), 15);
         assert!(daemon.run_plan(&plan).ok);
-        daemon.kill("S1-OC01", Some("operator stop".to_string())).unwrap();
+        daemon
+            .kill("S1-OC01", Some("operator stop".to_string()))
+            .unwrap();
         // Drop: state persists through kill().
     }
     let clock2 = Arc::new(FakeClock::new(T0 + 1_000));
     let daemon = build_daemon(&root, &fake, &oc, clock2, 15);
     let panes = fake.panes();
-    fake.set_agents(panes.iter().skip(1).map(|p| agent_entry(p, "working", 3)).collect()); // S1-OC01's pane gone
+    fake.set_agents(
+        panes
+            .iter()
+            .skip(1)
+            .map(|p| agent_entry(p, "working", 3))
+            .collect(),
+    ); // S1-OC01's pane gone
 
-    let ack = daemon.spawn("SV-1", "follow-up work", &root.join("a").to_string_lossy(), "follow-up");
+    let ack = daemon.spawn(
+        "SV-1",
+        "follow-up work",
+        &root.join("a").to_string_lossy(),
+        "follow-up",
+    );
     assert!(ack.ok, "spawn ok: {:?}", ack.error);
-    assert_eq!(ack.id.as_deref(), Some("S1-OC03"), "killed S1-OC01 is never reissued");
+    assert_eq!(
+        ack.id.as_deref(),
+        Some("S1-OC03"),
+        "killed S1-OC01 is never reissued"
+    );
     let snap = daemon.snapshot();
     let ids: Vec<&str> = snap.sessions.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids.iter().filter(|i| **i == "S1-OC01").count(), 1, "S1-OC01 appears once (failed)");
+    assert_eq!(
+        ids.iter().filter(|i| **i == "S1-OC01").count(),
+        1,
+        "S1-OC01 appears once (failed)"
+    );
     assert!(ids.contains(&"S1-OC03"));
     eprintln!("case4 killed S1-OC01 obs=next id S1-OC03 verdict=PASS");
 }
@@ -977,7 +1120,10 @@ fn timing_poll_once_50_working_sessions_git_probe() {
     let t = std::time::Instant::now();
     daemon.poll_once();
     let elapsed = t.elapsed();
-    println!("timing 50 working sessions (missing cwd): {}ms", elapsed.as_millis());
+    println!(
+        "timing 50 working sessions (missing cwd): {}ms",
+        elapsed.as_millis()
+    );
     assert!(elapsed < std::time::Duration::from_secs(30));
 }
 
@@ -1001,7 +1147,7 @@ fn unicode_titles_length_and_collision_attacks() {
     assert_ne!(rtl_a, rtl_b);
     // Homoglyph collision: Cyrillic 'а' vs Latin 'a'.
     let homoglyph = "deplоy infra now"; // contains U+043E
-    // Emoji + ZWJ rocket.
+                                        // Emoji + ZWJ rocket.
     let zwj = "ship it 🚀\u{200d}✨ 🚀\u{200d}✨";
 
     for (i, task) in [rtl_a, rtl_b, homoglyph, zwj].iter().enumerate() {
@@ -1045,10 +1191,20 @@ fn unicode_last_action_truncated_at_80_chars() {
 
     daemon.poll_once(); // prime: revision adoption only (last_action not read on priming? read is mapped==Working -> read happens)
     let snap = daemon.snapshot();
-    let action = snap.sessions[0].last_action.clone().expect("last_action recorded");
-    assert!(action.chars().count() <= 80, "truncated at 80 chars, got {}", action.chars().count());
+    let action = snap.sessions[0]
+        .last_action
+        .clone()
+        .expect("last_action recorded");
+    assert!(
+        action.chars().count() <= 80,
+        "truncated at 80 chars, got {}",
+        action.chars().count()
+    );
     assert!(action.starts_with('🔥'));
-    eprintln!("case6 lastAction obs={} chars (cap 80) verdict=PASS", action.chars().count());
+    eprintln!(
+        "case6 lastAction obs={} chars (cap 80) verdict=PASS",
+        action.chars().count()
+    );
 }
 
 #[test]
@@ -1063,19 +1219,28 @@ fn nul_bytes_in_pane_output_survive_roundtrip() {
 
     daemon.poll_once(); // prime
     let snap = daemon.snapshot();
-    let action = snap.sessions[0].last_action.clone().expect("last_action recorded");
+    let action = snap.sessions[0]
+        .last_action
+        .clone()
+        .expect("last_action recorded");
     assert!(action.contains('\0'), "NULs preserved verbatim");
     assert!(!action.contains('\n'), "last_action is single-line");
 
     // state.json must survive serialize/deserialize with NULs embedded.
     daemon.flush_state();
     let state_bytes = std::fs::read(root.join("state").join("state.json")).unwrap();
-    assert!(state_bytes.windows(4).any(|w| w == b"\\u00"), "NUL escaped in JSON");
+    assert!(
+        state_bytes.windows(4).any(|w| w == b"\\u00"),
+        "NUL escaped in JSON"
+    );
     drop(daemon);
     let clock2 = Arc::new(FakeClock::new(T0 + 500));
     let daemon2 = build_daemon(&root, &fake, &oc, clock2, 15);
     let snap2 = daemon2.snapshot();
-    let action2 = snap2.sessions[0].last_action.clone().expect("last_action survived reload");
+    let action2 = snap2.sessions[0]
+        .last_action
+        .clone()
+        .expect("last_action survived reload");
     assert!(action2.contains('\0'), "NULs survive a daemon restart");
     eprintln!("case6 NULs in pane output obs=survive poll + restart verdict=PASS");
 }
@@ -1092,9 +1257,14 @@ fn task_field_10mb_no_blowup() {
 
     // 10 MB of realistic wordy text, no leading/trailing whitespace
     // (submit_task trims, and last_action/goal round-trip through JSON).
-    let task = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor magna aliqua"
-        .repeat(110_000); // 96 chars * 110k ~= 10.5 MB
-    assert!(task.len() > 9_000_000, "task really is ~10MB ({} bytes)", task.len());
+    let task =
+        "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor magna aliqua"
+            .repeat(110_000); // 96 chars * 110k ~= 10.5 MB
+    assert!(
+        task.len() > 9_000_000,
+        "task really is ~10MB ({} bytes)",
+        task.len()
+    );
     assert_eq!(task.trim().len(), task.len());
 
     let t = std::time::Instant::now();
@@ -1111,8 +1281,14 @@ fn task_field_10mb_no_blowup() {
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert!(s.task.chars().count() <= 78, "wire task truncated to 78 chars");
-    assert!(s.title.chars().count() <= 48, "wire title truncated to 48 chars");
+    assert!(
+        s.task.chars().count() <= 78,
+        "wire task truncated to 78 chars"
+    );
+    assert!(
+        s.title.chars().count() <= 48,
+        "wire title truncated to 48 chars"
+    );
     // The full goal really landed in state.json.
     let state = read_state(&root);
     let goal = state["sessions"][0]["goal"].as_str().unwrap();
@@ -1121,7 +1297,14 @@ fn task_field_10mb_no_blowup() {
     // A single 10MB token (no whitespace) is the worst case for the collapser.
     let token = "a".repeat(10 * 1024 * 1024);
     let t = std::time::Instant::now();
-    let ack2 = daemon.submit_task(token, Some(cwd.to_string_lossy().to_string()), None, None, None, None);
+    let ack2 = daemon.submit_task(
+        token,
+        Some(cwd.to_string_lossy().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     let token_ms = t.elapsed().as_millis();
     assert!(ack2.ok, "10MB single token accepted");
     let snap = daemon.snapshot();
@@ -1130,7 +1313,10 @@ fn task_field_10mb_no_blowup() {
         assert!(s.title.chars().count() <= 48);
     }
     println!("timing 10MB task: submit={submit_ms}ms token={token_ms}ms");
-    eprintln!("case6 10MB task obs submit={}ms token={}ms verdict=PASS", submit_ms, token_ms);
+    eprintln!(
+        "case6 10MB task obs submit={}ms token={}ms verdict=PASS",
+        submit_ms, token_ms
+    );
 }
 
 #[test]
@@ -1174,7 +1360,11 @@ fn herdr_fail_agent_read_second_command_daemon_survives() {
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert_eq!(s.status, Status::Failed, "watchdog kill proceeds despite read failure");
+    assert_eq!(
+        s.status,
+        Status::Failed,
+        "watchdog kill proceeds despite read failure"
+    );
     assert_eq!(s.failure_reason.as_deref(), Some("stuck"));
     assert_eq!(
         s.last_action.as_deref(),
@@ -1214,22 +1404,45 @@ fn herdr_fail_pane_close_warning_and_still_failed() {
     let s = &snap.sessions[0];
     // A pane-close failure aborts the kill: the session stays live and its
     // temp dir is untouched so no uncommitted work is lost.
-    assert_eq!(s.status, Status::Working, "failed close leaves the session alive");
+    assert_eq!(
+        s.status,
+        Status::Working,
+        "failed close leaves the session alive"
+    );
     assert_eq!(s.failure_reason, None);
     assert!(
-        snap.warnings.iter().any(|w| w.contains("pane close failed")),
+        snap.warnings
+            .iter()
+            .any(|w| w.contains("pane close failed")),
         "close failure warning recorded: {:?}",
         snap.warnings
     );
-    assert!(snap.escalations.iter().any(|e| e.kind == "stuck"), "stuck escalation recorded anyway");
-    assert!(root.join("tmp").join("notch-S1-OC01").exists(), "no cleanup when the close failed");
+    assert!(
+        snap.escalations.iter().any(|e| e.kind == "stuck"),
+        "stuck escalation recorded anyway"
+    );
+    assert!(
+        root.join("tmp").join("notch-S1-OC01").exists(),
+        "no cleanup when the close failed"
+    );
 
     let failed_attempts = fake.pane_close_count();
-    assert!(failed_attempts >= 1, "every stuck tick retries the failing close");
+    assert!(
+        failed_attempts >= 1,
+        "every stuck tick retries the failing close"
+    );
     fake.clear_failure();
     daemon.poll_once(); // next tick retries the close with herdr healthy
-    assert_eq!(fake.pane_close_count(), failed_attempts + 1, "exactly one retry after recovery");
-    assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed, "retry completes the kill");
+    assert_eq!(
+        fake.pane_close_count(),
+        failed_attempts + 1,
+        "exactly one retry after recovery"
+    );
+    assert_eq!(
+        daemon.snapshot().sessions[0].status,
+        Status::Failed,
+        "retry completes the kill"
+    );
     eprintln!("case7 pane close fails obs=survived, warning recorded, retry kills verdict=PASS");
 }
 
@@ -1251,10 +1464,16 @@ fn herdr_fail_agent_prompt_daemon_survives_blocked_path() {
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert!(!s.status.is_terminal(), "blocked waits on a human, not failed");
+    assert!(
+        !s.status.is_terminal(),
+        "blocked waits on a human, not failed"
+    );
     assert_eq!(s.status, Status::Idle);
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
-    assert!(snap.escalations.iter().any(|e| e.kind == "needs_you"), "human escalation recorded");
+    assert!(
+        snap.escalations.iter().any(|e| e.kind == "needs_you"),
+        "human escalation recorded"
+    );
     assert!(
         snap.warnings.iter().any(|w| w.contains("escalated")),
         "escalation warning recorded: {:?}",
@@ -1282,9 +1501,15 @@ fn herdr_fail_agent_list_at_gate_next_poll_clean() {
     daemon.poll_once(); // must not panic; must record a warning; tree unchanged
 
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Working, "session untouched by the failed poll");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Working,
+        "session untouched by the failed poll"
+    );
     assert!(
-        snap.warnings.iter().any(|w| w.contains("herdr unavailable")),
+        snap.warnings
+            .iter()
+            .any(|w| w.contains("herdr unavailable")),
         "gate failure warning recorded: {:?}",
         snap.warnings
     );
@@ -1313,19 +1538,33 @@ fn kill_then_stale_herdr_no_double_close_cleanup_exactly_once() {
     daemon.poll_once(); // prime at T0
     step_advance(&clock, &daemon, 30_000); // stuck kill fires: close #1, cleanup runs
     assert_eq!(fake.pane_close_count(), 1);
-    assert!(!tmp_dir.exists(), "cleanup removed the temp dir on the kill poll");
+    assert!(
+        !tmp_dir.exists(),
+        "cleanup removed the temp dir on the kill poll"
+    );
 
     // Cleanup exactly once: recreate the dir; a later poll must not re-clean.
     std::fs::create_dir_all(&tmp_dir).unwrap();
     std::fs::write(tmp_dir.join("marker"), b"x").unwrap();
     step_advance(&clock, &daemon, 40_000); // stale herdr view still says working/frozen
-    assert_eq!(fake.pane_close_count(), 1, "stale herdr data must not re-close the pane");
-    assert!(tmp_dir.exists() && tmp_dir.join("marker").exists(), "cleanup did not run twice");
+    assert_eq!(
+        fake.pane_close_count(),
+        1,
+        "stale herdr data must not re-close the pane"
+    );
+    assert!(
+        tmp_dir.exists() && tmp_dir.join("marker").exists(),
+        "cleanup did not run twice"
+    );
 
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Failed);
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
-    assert_eq!(event_count(&events(&root), "watchdog"), 2, "suspect + stuck verdicts");
+    assert_eq!(
+        event_count(&events(&root), "watchdog"),
+        2,
+        "suspect + stuck verdicts"
+    );
     eprintln!("case8 stale-after-kill obs=1 close, cleanup exactly once verdict=PASS");
 }
 
@@ -1340,16 +1579,27 @@ fn reprompt_then_stuck_kill_stuck_wins_no_double_close() {
     let tmp_dir = root.join("tmp").join("notch-S1-OC01");
 
     daemon.poll_once(); // prime at T0
-    // Poll 2 at T0+1s: herdr reports blocked -> the human owns the gate. The
-    // session stays non-terminal, nothing is typed into the prompt, pane/temp
-    // are kept, and a `needs_you` escalation is recorded.
+                        // Poll 2 at T0+1s: herdr reports blocked -> the human owns the gate. The
+                        // session stays non-terminal, nothing is typed into the prompt, pane/temp
+                        // are kept, and a `needs_you` escalation is recorded.
     fake.set_agents(vec![agent_entry(&pane, "blocked", 8)]);
     clock.advance_ms(1_000);
     daemon.poll_once();
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Idle, "blocked waits on a human");
-    assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("blocked_waiting"));
-    assert_eq!(fake.pane_close_count(), 0, "a human gate never closes the pane");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Idle,
+        "blocked waits on a human"
+    );
+    assert_eq!(
+        snap.sessions[0].failure_reason.as_deref(),
+        Some("blocked_waiting")
+    );
+    assert_eq!(
+        fake.pane_close_count(),
+        0,
+        "a human gate never closes the pane"
+    );
     assert!(tmp_dir.exists(), "temp dir kept for the human");
     assert!(snap.escalations.iter().any(|e| e.kind == "needs_you"));
 
@@ -1358,9 +1608,17 @@ fn reprompt_then_stuck_kill_stuck_wins_no_double_close() {
     fake.set_agents(vec![agent_entry(&pane, "working", 8)]);
     step_advance(&clock, &daemon, 30_000);
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Failed, "verified stuck wins over a human gate");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Failed,
+        "verified stuck wins over a human gate"
+    );
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
-    assert_eq!(fake.pane_close_count(), 1, "exactly one close after the stuck verdict");
+    assert_eq!(
+        fake.pane_close_count(),
+        1,
+        "exactly one close after the stuck verdict"
+    );
     assert!(!tmp_dir.exists(), "cleanup ran once on the kill");
 
     // Poll 4: stale herdr still reporting working/8 — nothing happens.
@@ -1373,9 +1631,18 @@ fn reprompt_then_stuck_kill_stuck_wins_no_double_close() {
         .iter()
         .map(|e| e.kind.clone())
         .collect();
-    assert!(kinds.contains(&"stuck".to_string()), "stuck verdict recorded: {kinds:?}");
-    assert!(kinds.contains(&"needs_you".to_string()), "human gate was escalated: {kinds:?}");
-    assert!(!kinds.iter().any(|k| k == "blocked"), "blocked is never a plain failure escalation");
+    assert!(
+        kinds.contains(&"stuck".to_string()),
+        "stuck verdict recorded: {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"needs_you".to_string()),
+        "human gate was escalated: {kinds:?}"
+    );
+    assert!(
+        !kinds.iter().any(|k| k == "blocked"),
+        "blocked is never a plain failure escalation"
+    );
     eprintln!("case8 reprompt->stuck obs=1 close, failed/stuck wins verdict=PASS");
 }
 
@@ -1402,7 +1669,11 @@ fn blocked_twice_escalates_blocked_no_pane_close_cleanup_once() {
     assert_eq!(s.status, Status::Idle, "blocked is not failed");
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
     assert!(snap.escalations.iter().any(|e| e.kind == "needs_you"));
-    assert_eq!(fake.pane_close_count(), 0, "a human gate never closes the pane");
+    assert_eq!(
+        fake.pane_close_count(),
+        0,
+        "a human gate never closes the pane"
+    );
     assert!(tmp_dir.exists(), "temp dir kept for the human");
     assert_eq!(event_count(&events(&root), "watchdog"), 0);
 
@@ -1421,7 +1692,10 @@ fn blocked_twice_escalates_blocked_no_pane_close_cleanup_once() {
 #[test]
 fn blocked_herdr_mapping_is_failed_blocked_waiting() {
     use notchd::status::Status as S;
-    assert_eq!(Status::from_herdr("blocked"), (S::Failed, Some("blocked_waiting".to_string())));
+    assert_eq!(
+        Status::from_herdr("blocked"),
+        (S::Failed, Some("blocked_waiting".to_string()))
+    );
     assert_eq!(Status::from_herdr("unknown"), (S::Idle, None));
     assert_eq!(Status::from_herdr("working"), (S::Working, None));
     assert_eq!(Status::from_herdr("idle"), (S::Idle, None));
@@ -1447,12 +1721,22 @@ fn blocked_first_failure_is_needs_human_no_prompt() {
 
     let snap = daemon.snapshot();
     let s = &snap.sessions[0];
-    assert!(!s.status.is_terminal(), "blocked waits on a human, not failed");
+    assert!(
+        !s.status.is_terminal(),
+        "blocked waits on a human, not failed"
+    );
     assert_eq!(s.status, Status::Idle);
     assert_eq!(s.failure_reason.as_deref(), Some("blocked_waiting"));
     assert_eq!(fake.pane_close_count(), 0);
-    assert!(snap.escalations.iter().any(|e| e.session == "S1-OC01" && e.kind == "needs_you"));
-    assert_eq!(event_count(&events(&root), "reprompt"), 0, "never type into a permission prompt");
+    assert!(snap
+        .escalations
+        .iter()
+        .any(|e| e.session == "S1-OC01" && e.kind == "needs_you"));
+    assert_eq!(
+        event_count(&events(&root), "reprompt"),
+        0,
+        "never type into a permission prompt"
+    );
     eprintln!("case9 first blocked obs=idle/needs_you, no prompt verdict=PASS");
 }
 
@@ -1481,7 +1765,11 @@ fn blocked_escalates_needs_you_and_excludes_decider() {
         .find(|e| e.session == "S1-OC01")
         .expect("needs_you escalation recorded in snapshot");
     assert_eq!(esc.kind, "needs_you", "blocked waits on a human");
-    assert!(esc.reason.contains("blocked_waiting"), "reason carries blocked_waiting: {}", esc.reason);
+    assert!(
+        esc.reason.contains("blocked_waiting"),
+        "reason carries blocked_waiting: {}",
+        esc.reason
+    );
     assert!(esc.id.starts_with("esc_"));
     assert_eq!(event_count(&events(&root), "escalate"), 1);
 
@@ -1519,9 +1807,15 @@ fn blocked_never_prompts_even_if_prompt_would_fail() {
         .find(|e| e.session == "S1-OC01")
         .expect("needs_you escalation recorded");
     assert_eq!(esc.kind, "needs_you");
-    assert_eq!(fake.pane_close_count(), 0, "a human gate never closes a pane");
+    assert_eq!(
+        fake.pane_close_count(),
+        0,
+        "a human gate never closes a pane"
+    );
     assert!(
-        !fake.calls().iter().any(|c| c.get(4).map(String::as_str)
+        !fake.calls().iter().any(|c| c
+            .get(4)
+            .map(String::as_str)
             .map(|t| t.contains("Diagnose and continue"))
             .unwrap_or(false)),
         "blocked never triggers the diagnose-and-continue re-prompt"

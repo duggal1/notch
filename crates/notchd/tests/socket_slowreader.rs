@@ -21,9 +21,7 @@ fn socket_slowreader_others_proceed() {
     // Slow client: connect, hello, subscribe — then never read again.
     let slow_stream = std::os::unix::net::UnixStream::connect(&d.sock).unwrap();
     let mut slow_writer = slow_stream.try_clone().unwrap();
-    slow_writer
-        .write_all(b"{\"cmd\":\"subscribe\"}\n")
-        .unwrap();
+    slow_writer.write_all(b"{\"cmd\":\"subscribe\"}\n").unwrap();
     slow_writer.flush().unwrap();
     // Keep the slow socket open without ever draining it.
 
@@ -55,7 +53,8 @@ fn socket_slowreader_others_proceed() {
     }
 
     // Clients behind the same daemon still answer quickly, mid-storm.
-    let mut behind = TestConn::connect_with_timeouts(&d.sock, Duration::from_secs(3), Duration::from_secs(5));
+    let mut behind =
+        TestConn::connect_with_timeouts(&d.sock, Duration::from_secs(3), Duration::from_secs(5));
     let _hello = behind.hello();
     let start = std::time::Instant::now();
     let ack = behind.rpc(&json!({"cmd":"ping"}));
@@ -71,7 +70,13 @@ fn socket_slowreader_others_proceed() {
 
     // Daemon-level errors must not pile up while this is going on.
     let log = d.events_log().to_ascii_lowercase();
-    for needle in ["subscriber", "epipe", "broken pipe", "slow consumer", "backpressure"] {
+    for needle in [
+        "subscriber",
+        "epipe",
+        "broken pipe",
+        "slow consumer",
+        "backpressure",
+    ] {
         assert!(
             !log.contains(needle),
             "events.jsonl contains {needle:?} — the daemon is logging subscriber trouble:\n{log}"
@@ -124,11 +129,15 @@ fn socket_slowreader_pruned_after_close() {
     }
     let hit = fresh.wait_for_line(deadline_in(2000), |v| {
         v["event"] == "snapshot"
-            && v["snapshot"]["sessions"].as_array().map(|ss| {
-                ss.iter().any(|s| s["failureReason"] == "after-close")
-            }).unwrap_or(false)
+            && v["snapshot"]["sessions"]
+                .as_array()
+                .map(|ss| ss.iter().any(|s| s["failureReason"] == "after-close"))
+                .unwrap_or(false)
     });
-    assert!(hit.is_some(), "fresh subscriber never saw the post-close kill push");
+    assert!(
+        hit.is_some(),
+        "fresh subscriber never saw the post-close kill push"
+    );
 
     // Nothing about the dead subscriber may surface in warnings or events.
     let warnings = d.warnings();

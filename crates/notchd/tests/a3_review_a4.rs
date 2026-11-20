@@ -62,5 +62,8 @@ fn a4_adversarial_stale_clone_concurrency_never_reissues_ids() {
         assert!(after.ids().contains(id), "id {id} was not persisted");
     }
     let next = after.allocate_session(1);
-    assert!(!ids.contains(&next), "next allocation reissued a used id: {next}");
+    assert!(
+        !ids.contains(&next),
+        "next allocation reissued a used id: {next}"
+    );
 }

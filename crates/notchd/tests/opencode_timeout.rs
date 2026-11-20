@@ -80,7 +80,10 @@ fn tmp_root(tag: &str) -> PathBuf {
 /// Write the shim to a unique path and return it. The filename is the marker.
 fn write_shim(root: &Path, tag: &str) -> PathBuf {
     let n = TMP_N.fetch_add(1, Ordering::SeqCst);
-    let path = root.join(format!("opencode_timeout_hangshim_{tag}_{}_{n}", std::process::id()));
+    let path = root.join(format!(
+        "opencode_timeout_hangshim_{tag}_{}_{n}",
+        std::process::id()
+    ));
     std::fs::write(&path, SHIM_SRC).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     path
@@ -126,7 +129,8 @@ fn assert_timeout(err: Option<&HerdrError>, expected_ms: u64, ctx: &str) {
         "{ctx}: expected typed timeout error, got {err:?}"
     );
     assert!(
-        err.to_string().contains(&format!("opencode timeout after {expected_ms}ms")),
+        err.to_string()
+            .contains(&format!("opencode timeout after {expected_ms}ms")),
         "{ctx}: error does not carry the deadline: {err}"
     );
 }
@@ -151,21 +155,34 @@ fn each_call_is_bounded_and_reaps_hung_child() {
     let r = oc.api_session_list();
     let api_ms = t.elapsed().as_millis() as u64;
     assert_timeout(r.err().as_ref(), TEST_TIMEOUT_MS, "api_session_list");
-    assert!(api_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "api_session_list took {api_ms}ms");
-    assert_eq!(live_shim_count(&marker), 0, "api_session_list left a live shim");
+    assert!(
+        api_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS,
+        "api_session_list took {api_ms}ms"
+    );
+    assert_eq!(
+        live_shim_count(&marker),
+        0,
+        "api_session_list left a live shim"
+    );
 
     let t = Instant::now();
     let r = oc.models();
     let models_ms = t.elapsed().as_millis() as u64;
     assert_timeout(r.err().as_ref(), TEST_TIMEOUT_MS, "models");
-    assert!(models_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "models took {models_ms}ms");
+    assert!(
+        models_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS,
+        "models took {models_ms}ms"
+    );
     assert_eq!(live_shim_count(&marker), 0, "models left a live shim");
 
     let t = Instant::now();
     let r = oc.run_decider("mock/model", "do the work");
     let run_ms = t.elapsed().as_millis() as u64;
     assert_timeout(r.err().as_ref(), TEST_TIMEOUT_MS, "run_decider");
-    assert!(run_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "run_decider took {run_ms}ms");
+    assert!(
+        run_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS,
+        "run_decider took {run_ms}ms"
+    );
     assert_eq!(live_shim_count(&marker), 0, "run_decider left a live shim");
 
     // The persistent-session variant shares the same seam.
@@ -173,8 +190,15 @@ fn each_call_is_bounded_and_reaps_hung_child() {
     let r = oc.run_decider_session("mock/model", "ses_test", "do the work");
     let sess_ms = t.elapsed().as_millis() as u64;
     assert_timeout(r.err().as_ref(), TEST_TIMEOUT_MS, "run_decider_session");
-    assert!(sess_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "run_decider_session took {sess_ms}ms");
-    assert_eq!(live_shim_count(&marker), 0, "run_decider_session left a live shim");
+    assert!(
+        sess_ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS,
+        "run_decider_session took {sess_ms}ms"
+    );
+    assert_eq!(
+        live_shim_count(&marker),
+        0,
+        "run_decider_session left a live shim"
+    );
 }
 
 /// Three consecutive hangs neither panic nor wedge the client: all three are
@@ -195,12 +219,17 @@ fn three_consecutive_hangs_never_wedge() {
         let r = oc.api_session_list();
         let ms = t.elapsed().as_millis() as u64;
         assert_timeout(r.err().as_ref(), TEST_TIMEOUT_MS, &format!("hang #{i}"));
-        assert!(ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "hang #{i} took {ms}ms");
+        assert!(
+            ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS,
+            "hang #{i} took {ms}ms"
+        );
         assert_eq!(live_shim_count(&marker), 0, "hang #{i} left a live shim");
     }
 
     std::env::set_var("SHIM_MODE", "healthy");
-    let sessions = oc.api_session_list().expect("client wedged after three hangs");
+    let sessions = oc
+        .api_session_list()
+        .expect("client wedged after three hangs");
     assert_eq!(sessions.len(), 1, "healthy call after hangs must work");
     assert_eq!(sessions[0].id, "ses_test");
 }
@@ -229,7 +258,11 @@ fn healthy_shim_still_works() {
     assert!(out.contains("CONTINUE"), "unexpected decider output: {out}");
 
     let calls = std::fs::read_to_string(&counter).unwrap_or_default();
-    assert_eq!(calls.lines().count(), 3, "each surface must hit the shim once");
+    assert_eq!(
+        calls.lines().count(),
+        3,
+        "each surface must hit the shim once"
+    );
 }
 
 /// The daemon's 5-minute `list_models` cache still works, and a hanging shim
@@ -251,7 +284,11 @@ fn models_cached_path_still_works_under_hang() {
     let first = daemon.list_models();
     assert!(first.ok, "first list_models failed: {:?}", first.error);
     assert_eq!(first.models.len(), 2);
-    assert_eq!(count_lines(&counter), 1, "first call should invoke the shim once");
+    assert_eq!(
+        count_lines(&counter),
+        1,
+        "first call should invoke the shim once"
+    );
 
     // Warm cache: switch the shim to hang. A cached answer must return fast
     // and must not spawn another child. The cached path does ZERO subprocess
@@ -272,8 +309,15 @@ fn models_cached_path_still_works_under_hang() {
         assert_eq!(cached.models, first.models);
         fastest_ms = fastest_ms.min(ms);
     }
-    assert!(fastest_ms < TEST_TIMEOUT_MS, "cached list_models blocked for {fastest_ms}ms (no subprocess should be needed)");
-    assert_eq!(count_lines(&counter), 1, "cached path must not respawn the shim");
+    assert!(
+        fastest_ms < TEST_TIMEOUT_MS,
+        "cached list_models blocked for {fastest_ms}ms (no subprocess should be needed)"
+    );
+    assert_eq!(
+        count_lines(&counter),
+        1,
+        "cached path must not respawn the shim"
+    );
 }
 
 /// Real daemon + fake herdr: one `poll_once` under a hanging opencode returns
@@ -315,7 +359,10 @@ fn poll_once_is_bounded_and_falls_back_to_herdr() {
     let t = Instant::now();
     daemon.poll_once();
     let ms = t.elapsed().as_millis() as u64;
-    assert!(ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS, "poll_once blocked for {ms}ms");
+    assert!(
+        ms < TEST_TIMEOUT_MS + TIMEOUT_MARGIN_MS,
+        "poll_once blocked for {ms}ms"
+    );
     // The API shim must be dead; judge-pool decider shims are a separate
     // (asynchronous) process and are not what this assertion measures.
     assert_eq!(
@@ -333,7 +380,11 @@ fn poll_once_is_bounded_and_falls_back_to_herdr() {
     let snap: Value = serde_json::to_value(daemon.snapshot()).unwrap();
     let sessions = snap["sessions"].as_array().expect("sessions array");
     let session = &sessions[0];
-    assert_eq!(session["status"], json!("working"), "herdr fallback must keep the session alive");
+    assert_eq!(
+        session["status"],
+        json!("working"),
+        "herdr fallback must keep the session alive"
+    );
     assert!(
         session["failureReason"].is_null(),
         "a hung API probe must not fabricate a failure: {snap}"
@@ -358,21 +409,38 @@ fn timeout_env_override_is_safe() {
     let r = oc.models();
     let ms = t.elapsed().as_millis() as u64;
     assert_timeout(r.err().as_ref(), 250, "250ms override");
-    assert!(ms < 250 + TIMEOUT_MARGIN_MS, "override deadline missed: {ms}ms");
+    assert!(
+        ms < 250 + TIMEOUT_MARGIN_MS,
+        "override deadline missed: {ms}ms"
+    );
     assert_eq!(live_shim_count(&marker), 0);
 
     std::env::set_var("NOTCH_OPENCODE_TIMEOUT_MS", "definitely-not-a-number");
-    assert_eq!(timeout_ms(), DEFAULT_TIMEOUT_MS, "invalid env should fall back");
+    assert_eq!(
+        timeout_ms(),
+        DEFAULT_TIMEOUT_MS,
+        "invalid env should fall back"
+    );
     let t = Instant::now();
     let r = oc.models();
     let ms = t.elapsed().as_millis() as u64;
     assert_timeout(r.err().as_ref(), DEFAULT_TIMEOUT_MS, "invalid env fallback");
-    assert!(ms >= DEFAULT_TIMEOUT_MS, "fallback deadline too short: {ms}ms");
-    assert!(ms < DEFAULT_TIMEOUT_MS + 300, "fallback deadline too long: {ms}ms");
+    assert!(
+        ms >= DEFAULT_TIMEOUT_MS,
+        "fallback deadline too short: {ms}ms"
+    );
+    assert!(
+        ms < DEFAULT_TIMEOUT_MS + 300,
+        "fallback deadline too long: {ms}ms"
+    );
     assert_eq!(live_shim_count(&marker), 0);
 
     std::env::remove_var("NOTCH_OPENCODE_TIMEOUT_MS");
-    assert_eq!(timeout_ms(), DEFAULT_TIMEOUT_MS, "unset env should use the default");
+    assert_eq!(
+        timeout_ms(),
+        DEFAULT_TIMEOUT_MS,
+        "unset env should use the default"
+    );
 }
 
 // ------------------------------- helpers -----------------------------------

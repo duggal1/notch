@@ -24,7 +24,10 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn tmp_root(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let p = std::env::temp_dir().join(format!("fleetprobe-fallback-{tag}-{}-{n}", std::process::id()));
+    let p = std::env::temp_dir().join(format!(
+        "fleetprobe-fallback-{tag}-{}-{n}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(p.join("tmp")).unwrap();
     p
@@ -37,7 +40,10 @@ struct ToggleHerdr {
 
 impl ToggleHerdr {
     fn new() -> Arc<Self> {
-        Arc::new(Self { status: Mutex::new("working".to_string()), revision: AtomicU64::new(1) })
+        Arc::new(Self {
+            status: Mutex::new("working".to_string()),
+            revision: AtomicU64::new(1),
+        })
     }
     fn set(&self, s: &str) {
         *self.status.lock().unwrap() = s.to_string();
@@ -111,7 +117,8 @@ impl ToggleOc {
                 Ok(json!({"cursor":null,"data":[{
                     "id":"w55:p2","model":{"id":"m"},"time":time,
                     "location":{"directory":"/tmp"}
-                }]}).to_string())
+                }]})
+                .to_string())
             }
             s if s.starts_with("run --model") => Ok("CONTINUE: keep working".to_string()),
             "models" => Ok("opencode/hy4-flash-free\n".to_string()),
@@ -154,7 +161,9 @@ impl Client {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() { return false; }
+            if remaining.is_zero() {
+                return false;
+            }
             match self.ws.read() {
                 Ok(Message::Text(t)) => {
                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
@@ -163,23 +172,34 @@ impl Client {
                         }
                     }
                 }
-                Ok(Message::Ping(_)) => { let _ = self.ws.flush(); }
+                Ok(Message::Ping(_)) => {
+                    let _ = self.ws.flush();
+                }
                 Ok(_) => {}
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => {}
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
                 Err(_) => return false,
             }
         }
     }
     fn ping_ok(&mut self) -> bool {
-        if self.ws.send(Message::Text(json!({"cmd":"ping"}).to_string().into())).is_err() {
+        if self
+            .ws
+            .send(Message::Text(json!({"cmd":"ping"}).to_string().into()))
+            .is_err()
+        {
             return false;
         }
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             if let Ok(Message::Text(t)) = self.ws.read() {
                 if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                    if v["event"] == "ack" && v["cmd"] == "ping" { return v["ok"] == true; }
+                    if v["event"] == "ack" && v["cmd"] == "ping" {
+                        return v["ok"] == true;
+                    }
                 }
             }
         }
@@ -216,14 +236,22 @@ fn killed_primary_signal_falls_back_without_wedging_ws() {
     let a = daemon.submit_task(
         "fallback seed".to_string(),
         Some(work.to_string_lossy().to_string()),
-        None, None, None, None,
+        None,
+        None,
+        None,
+        None,
     );
     assert!(a.ok, "seed failed: {:?}", a.error);
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let s = daemon.snapshot();
-        if s.sessions.iter().any(|x| x.id == "S1-OC01" && !x.pane_id.is_empty()) { break; }
+        if s.sessions
+            .iter()
+            .any(|x| x.id == "S1-OC01" && !x.pane_id.is_empty())
+        {
+            break;
+        }
         assert!(Instant::now() < deadline, "pane id never published");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -246,27 +274,39 @@ fn killed_primary_signal_falls_back_without_wedging_ws() {
     herdr.set("idle");
     oc.idle.store(true, Ordering::SeqCst);
     daemon.poll_once();
-    assert!(client.wait_any_frame(Duration::from_secs(3)), "stream wedged in phase A");
+    assert!(
+        client.wait_any_frame(Duration::from_secs(3)),
+        "stream wedged in phase A"
+    );
 
     // Back to working; keep polling so snapshots keep flowing.
     herdr.set("working");
     oc.idle.store(false, Ordering::SeqCst);
     for _ in 0..6 {
         daemon.poll_once();
-        assert!(client.wait_any_frame(Duration::from_secs(3)), "stream wedged while healthy");
+        assert!(
+            client.wait_any_frame(Duration::from_secs(3)),
+            "stream wedged while healthy"
+        );
     }
 
     // Phase B — KILL the primary source; herdr still says idle -> fallback.
     oc.api_up.store(false, Ordering::SeqCst);
     herdr.set("idle");
     daemon.poll_once();
-    assert!(client.wait_any_frame(Duration::from_secs(3)), "stream wedged during outage");
+    assert!(
+        client.wait_any_frame(Duration::from_secs(3)),
+        "stream wedged during outage"
+    );
 
     // Several more polls with the source down: snapshots must keep flowing.
     herdr.set("working");
     for _ in 0..6 {
         daemon.poll_once();
-        assert!(client.wait_any_frame(Duration::from_secs(3)), "stream wedged during outage polls");
+        assert!(
+            client.wait_any_frame(Duration::from_secs(3)),
+            "stream wedged during outage polls"
+        );
     }
 
     // Phase C — RESTART the primary -> signal "primary" again.
@@ -274,11 +314,17 @@ fn killed_primary_signal_falls_back_without_wedging_ws() {
     herdr.set("idle");
     oc.idle.store(true, Ordering::SeqCst);
     daemon.poll_once();
-    assert!(client.wait_any_frame(Duration::from_secs(3)), "stream wedged after restart");
+    assert!(
+        client.wait_any_frame(Duration::from_secs(3)),
+        "stream wedged after restart"
+    );
     herdr.set("working");
     oc.idle.store(false, Ordering::SeqCst);
 
-    assert!(client.ping_ok(), "WS wedged across the whole outage/restart cycle");
+    assert!(
+        client.ping_ok(),
+        "WS wedged across the whole outage/restart cycle"
+    );
 
     // Read the exact signals that fired from the real event log.
     let log = std::fs::read_to_string(&events_path).unwrap_or_default();
@@ -289,15 +335,24 @@ fn killed_primary_signal_falls_back_without_wedging_ws() {
         .filter_map(|v| v["detail"].as_str().map(str::to_string))
         .collect();
     eprintln!("FLEET FALLBACK idle signals fired: {signals:?}");
-    assert!(signals.iter().any(|s| s == "primary"), "primary signal never fired: {signals:?}");
+    assert!(
+        signals.iter().any(|s| s == "primary"),
+        "primary signal never fired: {signals:?}"
+    );
     assert!(
         signals.iter().any(|s| s == "herdr" || s == "quiet"),
         "fallback signal never fired during the outage: {signals:?}"
     );
     // In order: at least one primary before the outage, a fallback during it.
     let first_primary = signals.iter().position(|s| s == "primary").unwrap();
-    let first_fallback = signals.iter().position(|s| s == "herdr" || s == "quiet").unwrap();
-    assert!(first_fallback > first_primary, "fallback must fire after the primary: {signals:?}");
+    let first_fallback = signals
+        .iter()
+        .position(|s| s == "herdr" || s == "quiet")
+        .unwrap();
+    assert!(
+        first_fallback > first_primary,
+        "fallback must fire after the primary: {signals:?}"
+    );
 
     shutdown.store(true, Ordering::SeqCst);
     let _ = handle.join();

@@ -78,7 +78,11 @@ impl FakeHerdr {
     }
 
     fn agent_entry(&self, pane: &str) -> Value {
-        let status = if *self.idle.lock().unwrap() { "idle" } else { "working" };
+        let status = if *self.idle.lock().unwrap() {
+            "idle"
+        } else {
+            "working"
+        };
         serde_json::json!({
             "agent": "opencode",
             "agent_status": status,
@@ -127,19 +131,22 @@ impl FakeHerdr {
                     })
                     .to_string())
                 }
-                ("agent", "start") => Ok(
-                    r#"{"id":"cli:agent:start","result":{"type":"agent_started"}}"#.to_string()
-                ),
+                ("agent", "start") => {
+                    Ok(r#"{"id":"cli:agent:start","result":{"type":"agent_started"}}"#.to_string())
+                }
                 ("agent", "prompt") => {
                     let target = args.get(3).cloned().unwrap_or_default();
                     let text = args.get(4).cloned().unwrap_or_default();
                     fake.prompts.lock().unwrap().push((target, text));
-                    Ok(r#"{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}"#.to_string())
+                    Ok(
+                        r#"{"id":"cli:agent:prompt","result":{"type":"agent_prompted"}}"#
+                            .to_string(),
+                    )
                 }
                 ("agent", "read") => Ok(fake.tail.lock().unwrap().clone()),
-                ("pane", "close") | ("agent", "focus") | ("agent", "wait") => Ok(
-                    r#"{"id":"cli:ok","result":{"type":"ok"}}"#.to_string()
-                ),
+                ("pane", "close") | ("agent", "focus") | ("agent", "wait") => {
+                    Ok(r#"{"id":"cli:ok","result":{"type":"ok"}}"#.to_string())
+                }
                 _ => Err(HerdrError::Failed {
                     args: args.to_vec(),
                     code: Some(2),
@@ -364,7 +371,10 @@ fn step_polls_until_calls(daemon: &Daemon, oc: &FakeOpencode, target: usize, max
         if oc.wait_for_run_calls(target, Duration::from_millis(200)) {
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {target} run calls");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {target} run calls"
+        );
     }
     panic!("did not reach {target} run calls in {max_polls} polls");
 }
@@ -398,17 +408,29 @@ fn fast_path_satisfied_marks_done_with_zero_decider_calls() {
 
     daemon.poll_once();
 
-    assert_eq!(oc.run_calls().len(), 0, "fast path must make ZERO decider calls");
-    assert_eq!(session_status(&daemon, &id), Status::Done, "local evidence satisfied");
+    assert_eq!(
+        oc.run_calls().len(),
+        0,
+        "fast path must make ZERO decider calls"
+    );
+    assert_eq!(
+        session_status(&daemon, &id),
+        Status::Done,
+        "local evidence satisfied"
+    );
     let ev = events(&root);
     assert!(
-        ev.iter().any(|e| e["kind"] == "perf"
-            && e["detail"].as_str().unwrap_or("").contains("path=fast")),
+        ev.iter().any(
+            |e| e["kind"] == "perf" && e["detail"].as_str().unwrap_or("").contains("path=fast")
+        ),
         "fast path must be logged: {ev:?}"
     );
     let report = notchd::decider::decision_stats_report();
     assert!(report.contains("fast=1"), "fast sample recorded: {report}");
-    assert!(report.contains("persistent=0"), "no persistent sample: {report}");
+    assert!(
+        report.contains("persistent=0"),
+        "no persistent sample: {report}"
+    );
 }
 
 /// A failed local check is a concrete CONTINUE, still with ZERO decider calls.
@@ -425,13 +447,23 @@ fn fast_path_missing_reprompts_with_specific_evidence_and_zero_calls() {
 
     daemon.poll_once();
 
-    assert_eq!(oc.run_calls().len(), 0, "fast path must make ZERO decider calls");
+    assert_eq!(
+        oc.run_calls().len(),
+        0,
+        "fast path must make ZERO decider calls"
+    );
     assert_eq!(session_status(&daemon, &id), Status::Working, "re-prompted");
     assert_eq!(iterations(&daemon, &id), 1, "one re-prompt counted");
     let prompts = herdr.prompts();
     let last = prompts.last().expect("a re-prompt was issued").1.clone();
-    assert!(last.contains("tests/missing.rs"), "concrete missing file: {last}");
-    assert!(last.contains("test_jsonify"), "concrete missing marker: {last}");
+    assert!(
+        last.contains("tests/missing.rs"),
+        "concrete missing file: {last}"
+    );
+    assert!(
+        last.contains("test_jsonify"),
+        "concrete missing marker: {last}"
+    );
 }
 
 /// Every non-fast judgment of one notch session reuses that session's
@@ -460,9 +492,19 @@ fn persistent_path_reuses_same_session_id_across_calls() {
     let calls = oc.run_calls();
     assert_eq!(calls.len(), 3, "one judgment per poll/drain: {calls:?}");
     let sids: Vec<String> = calls.iter().map(|c| session_id_of(c)).collect();
-    assert!(sids.iter().all(|s| !s.is_empty()), "every call must carry --session: {calls:?}");
-    assert!(sids.iter().all(|s| s == &sids[0]), "ONE session id reused across this session's calls: {sids:?}");
-    assert!(sids[0].starts_with("ses_notch_"), "per-notch-session opencode id: {}", sids[0]);
+    assert!(
+        sids.iter().all(|s| !s.is_empty()),
+        "every call must carry --session: {calls:?}"
+    );
+    assert!(
+        sids.iter().all(|s| s == &sids[0]),
+        "ONE session id reused across this session's calls: {sids:?}"
+    );
+    assert!(
+        sids[0].starts_with("ses_notch_"),
+        "per-notch-session opencode id: {}",
+        sids[0]
+    );
     assert_eq!(
         sids[0],
         notchd::decider::decider_session_id_for(&id),
@@ -470,13 +512,20 @@ fn persistent_path_reuses_same_session_id_across_calls() {
     );
     // The judge reads this session's real cwd, never the daemon cwd or a scratch dir.
     let actual_cwd = session_cwd(&daemon, &id);
-    let actual_canon = std::fs::canonicalize(&actual_cwd).unwrap_or_else(|_| PathBuf::from(&actual_cwd));
+    let actual_canon =
+        std::fs::canonicalize(&actual_cwd).unwrap_or_else(|_| PathBuf::from(&actual_cwd));
     let expected_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-    assert_eq!(actual_canon, expected_canon, "judge must see the real cwd, got {actual_cwd}");
+    assert_eq!(
+        actual_canon, expected_canon,
+        "judge must see the real cwd, got {actual_cwd}"
+    );
     let ev = events(&root);
     assert!(
         ev.iter().any(|e| e["kind"] == "perf"
-            && e["detail"].as_str().unwrap_or("").contains("path=persistent")),
+            && e["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("path=persistent")),
         "persistent path logged: {ev:?}"
     );
 }
@@ -499,17 +548,33 @@ fn fallback_to_cold_run_is_logged() {
     daemon.poll_once(); // drain the job so the cold-fallback perf event is logged
 
     let calls = oc.run_calls();
-    assert_eq!(calls.len(), 2, "persistent attempt + cold fallback: {calls:?}");
-    assert!(calls[0].windows(2).any(|w| w[0] == "--session"), "first is persistent");
-    assert!(!calls[1].windows(2).any(|w| w[0] == "--session"), "second is cold");
+    assert_eq!(
+        calls.len(),
+        2,
+        "persistent attempt + cold fallback: {calls:?}"
+    );
+    assert!(
+        calls[0].windows(2).any(|w| w[0] == "--session"),
+        "first is persistent"
+    );
+    assert!(
+        !calls[1].windows(2).any(|w| w[0] == "--session"),
+        "second is cold"
+    );
     let ev = events(&root);
     assert!(
         ev.iter().any(|e| e["kind"] == "perf"
-            && e["detail"].as_str().unwrap_or("").contains("path=cold_fallback")),
+            && e["detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("path=cold_fallback")),
         "fallback path must be logged: {ev:?}"
     );
     let report = notchd::decider::decision_stats_report();
-    assert!(report.contains("cold_fallback=1"), "cold sample recorded: {report}");
+    assert!(
+        report.contains("cold_fallback=1"),
+        "cold sample recorded: {report}"
+    );
 }
 
 /// Judgments for several idle sessions fan out to <= 4 bounded threads, with
@@ -544,17 +609,30 @@ fn parallel_judgments_are_bounded_and_concurrent() {
         "perf fan-out: 6 judgments, peak_concurrency={peak}, wall={}ms (serial would be ~720ms)",
         elapsed.as_millis()
     );
-    assert!(elapsed < Duration::from_millis(650), "fan-out too slow: {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_millis(650),
+        "fan-out too slow: {elapsed:?}"
+    );
     // One distinct per-notch-session decider id per job, and no session is
     // judged twice (the <=1-job-in-flight invariant).
     let sids: Vec<String> = calls.iter().map(|c| session_id_of(c)).collect();
-    assert!(sids.iter().all(|s| s.starts_with("ses_notch_")), "per-notch-session ids: {sids:?}");
+    assert!(
+        sids.iter().all(|s| s.starts_with("ses_notch_")),
+        "per-notch-session ids: {sids:?}"
+    );
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for s in &sids {
         *counts.entry(s.as_str()).or_insert(0) += 1;
     }
-    assert_eq!(counts.len(), 6, "6 distinct session ids (one per session): {sids:?}");
-    assert!(counts.values().all(|&n| n == 1), "one job per session in flight: {counts:?}");
+    assert_eq!(
+        counts.len(),
+        6,
+        "6 distinct session ids (one per session): {sids:?}"
+    );
+    assert!(
+        counts.values().all(|&n| n == 1),
+        "one job per session in flight: {counts:?}"
+    );
 }
 
 /// Pause / budget / working-session rules still gate before any model call.

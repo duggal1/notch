@@ -73,11 +73,7 @@ fn snap_value(daemon: &Daemon) -> Value {
 fn done_decisions(snap: &Value) -> usize {
     snap["decisions"]
         .as_array()
-        .map(|a| {
-            a.iter()
-                .filter(|d| d["action"] == json!("done"))
-                .count()
-        })
+        .map(|a| a.iter().filter(|d| d["action"] == json!("done")).count())
         .unwrap_or(0)
 }
 
@@ -124,8 +120,17 @@ fn dod_session_is_not_done_before_verifier_decision() {
     // a premature done, no duplicate verifier decisions).
     daemon.poll_once();
     let snap2 = snap_value(&daemon);
-    let s2 = snap2["sessions"].as_array().unwrap().iter().find(|s| s["id"] == session["id"]).unwrap();
-    assert_ne!(s2["status"], json!("done"), "second poll still gated; snapshot={snap2}");
+    let s2 = snap2["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == session["id"])
+        .unwrap();
+    assert_ne!(
+        s2["status"],
+        json!("done"),
+        "second poll still gated; snapshot={snap2}"
+    );
 }
 
 /// Control: with a real decider that returns DONE then a verifier YES, the
@@ -160,12 +165,24 @@ fn dod_session_becomes_done_after_verifier_yes() {
     for _ in 0..8 {
         daemon.poll_once();
         let snap = snap_value(&daemon);
-        if snap["sessions"].as_array().unwrap().iter().any(|s| s["id"] == json!(id) && s["status"] == json!("done")) {
-            assert!(done_decisions(&snap) >= 1, "done must be accompanied by a verifier decision; snapshot={snap}");
+        if snap["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == json!(id) && s["status"] == json!("done"))
+        {
+            assert!(
+                done_decisions(&snap) >= 1,
+                "done must be accompanied by a verifier decision; snapshot={snap}"
+            );
             became_done = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(50)); // worker queue drain, not sync of logic
     }
-    assert!(became_done, "session never reached done via verifier; snapshot={}", snap_value(&daemon));
+    assert!(
+        became_done,
+        "session never reached done via verifier; snapshot={}",
+        snap_value(&daemon)
+    );
 }

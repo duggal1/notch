@@ -35,7 +35,11 @@ fn git(repo: &Path, args: &[&str]) -> String {
         .current_dir(repo)
         .output()
         .expect("git available");
-    assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -98,7 +102,8 @@ fn recovered_session_snapshots_wip_before_stuck_close() {
                         "agent":"opencode", "agent_status":"working",
                         "pane_id":"wR:p1", "revision":rev,
                         "terminal_title":"OC | recovered", "focused":false, "name":"recovered"
-                    }]}}).to_string())
+                    }]}})
+                    .to_string())
                 }
                 ("agent", "read") => Ok("no progress\n".to_string()),
                 ("pane", "close") => {
@@ -132,6 +137,13 @@ fn recovered_session_snapshots_wip_before_stuck_close() {
         subjects.contains("notch: WIP snapshot (stuck) — S1-OC01"),
         "recovered dirty worktree was not snapshotted before kill; git log: {subjects}"
     );
-    assert!(pane_closed.load(Ordering::SeqCst), "pane should have been closed after the snapshot");
-    assert_eq!(git(&repo, &["status", "--porcelain"]), "", "WIP must be committed, not left dirty");
+    assert!(
+        pane_closed.load(Ordering::SeqCst),
+        "pane should have been closed after the snapshot"
+    );
+    assert_eq!(
+        git(&repo, &["status", "--porcelain"]),
+        "",
+        "WIP must be committed, not left dirty"
+    );
 }

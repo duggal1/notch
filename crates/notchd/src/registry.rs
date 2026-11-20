@@ -151,7 +151,12 @@ impl Registry {
     #[allow(dead_code)] // contract API: wired by load_or_recover in daemon/state.rs
     pub(crate) fn rebuild_from_state(state: &crate::model::StateFile) -> Registry {
         let mut reg = Registry::fresh();
-        reg.supervisor_count = state.supervisors.iter().map(|s| s.number).max().unwrap_or(0);
+        reg.supervisor_count = state
+            .supervisors
+            .iter()
+            .map(|s| s.number)
+            .max()
+            .unwrap_or(0);
         for sup in &state.supervisors {
             reg.ids.push(sup.id.clone());
         }
@@ -214,7 +219,10 @@ impl Registry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        crate::durable::write_atomic(path, &serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec()))
+        crate::durable::write_atomic(
+            path,
+            &serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec()),
+        )
     }
 
     pub fn ids(&self) -> &[String] {
@@ -322,7 +330,10 @@ fn is_more_advanced(candidate: &Registry, current: Option<&Registry>) -> bool {
                 (
                     r.ids.len(),
                     r.supervisor_count as usize,
-                    r.session_counts.values().map(|n| *n as usize).sum::<usize>(),
+                    r.session_counts
+                        .values()
+                        .map(|n| *n as usize)
+                        .sum::<usize>(),
                 )
             };
             rank(candidate) > rank(best)
@@ -344,8 +355,7 @@ mod a4_tests {
     fn test_dir(tag: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir =
-            std::env::temp_dir().join(format!("notch-reg-{tag}-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("notch-reg-{tag}-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -396,12 +406,22 @@ mod a4_tests {
         // otherwise be identical in both registries).
         let fake = canary.allocate_session(1);
         assert_ne!(fake, real);
-        fs::write(crate::durable::tmp_path(&path), serde_json::to_vec(&canary).unwrap()).unwrap();
+        fs::write(
+            crate::durable::tmp_path(&path),
+            serde_json::to_vec(&canary).unwrap(),
+        )
+        .unwrap();
         fs::write(&path, b"not json").unwrap();
 
         let recovered = Registry::load(&path, &SystemClock);
-        assert!(recovered.ids().contains(&real), "backup ids must be recovered");
-        assert!(!recovered.ids().contains(&fake), "a .tmp file must NEVER be adopted");
+        assert!(
+            recovered.ids().contains(&real),
+            "backup ids must be recovered"
+        );
+        assert!(
+            !recovered.ids().contains(&fake),
+            "a .tmp file must NEVER be adopted"
+        );
     }
 
     #[test]

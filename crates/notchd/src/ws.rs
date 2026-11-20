@@ -123,7 +123,9 @@ use std::time::{Duration, Instant};
 use tungstenite::http::{self, Request};
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::protocol::{CloseFrame, WebSocketConfig};
-use tungstenite::{accept_with_config, accept_hdr_with_config, Error as WsError, Message, WebSocket};
+use tungstenite::{
+    accept_hdr_with_config, accept_with_config, Error as WsError, Message, WebSocket,
+};
 
 /// Default TCP port (`ws://127.0.0.1:7407`).
 pub const DEFAULT_PORT: u16 = 7407;
@@ -199,7 +201,9 @@ pub fn load_or_create_token(state_dir: &Path) -> io::Result<String> {
 /// Strict mode is the default. `NOTCH_WS_BROWSER=1` is the only opt-in to the
 /// query-token / Origin-tolerant handshake; any other value keeps strict mode.
 pub fn browser_ws_enabled() -> bool {
-    std::env::var("NOTCH_WS_BROWSER").map(|v| v == "1").unwrap_or(false)
+    std::env::var("NOTCH_WS_BROWSER")
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }
 
 /// Extract the `token` parameter from a URI query. Hex tokens need no URL
@@ -259,7 +263,15 @@ pub fn auth_headers_ok(
     expected_token: &str,
     expected_host: &str,
 ) -> bool {
-    handshake_auth_ok(origin, authorization, host, None, expected_token, expected_host, false)
+    handshake_auth_ok(
+        origin,
+        authorization,
+        host,
+        None,
+        expected_token,
+        expected_host,
+        false,
+    )
 }
 
 fn auth_rejection() -> http::Response<Option<String>> {
@@ -651,7 +663,13 @@ pub fn snapshot_deltas(previous: Option<&Value>, current: &Value) -> Vec<Value> 
     let key_of = |v: &Value| -> String {
         let get = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("");
         let at = v.get("at").map(Value::to_string).unwrap_or_default();
-        format!("{at}|{}|{}|{}|{}", get("supervisor"), get("session"), get("action"), get("reason"))
+        format!(
+            "{at}|{}|{}|{}|{}",
+            get("supervisor"),
+            get("session"),
+            get("action"),
+            get("reason")
+        )
     };
     let mut seen: HashMap<String, usize> = HashMap::new();
     if let Some(items) = prev.get("decisions").and_then(Value::as_array) {
@@ -732,7 +750,10 @@ fn handle_conn(
     #[allow(clippy::result_large_err)]
     let callback = move |req: &Request<()>, response| {
         let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
-        let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok());
+        let authorization = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
         let host = req.headers().get("host").and_then(|v| v.to_str().ok());
         let query = req.uri().query();
         if handshake_auth_ok(
@@ -855,18 +876,18 @@ fn conn_loop(
                     return;
                 }
                 Ok(Message::Binary(_)) => {
-                    if send_text(
-                        ws,
-                        ack("", false, json!({"error": "binary_not_supported"})),
-                    )
-                    .is_err()
+                    if send_text(ws, ack("", false, json!({"error": "binary_not_supported"})))
+                        .is_err()
                     {
                         return;
                     }
                 }
                 Ok(Message::Frame(_)) => {}
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) =>
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) =>
                 {
                     break
                 }
@@ -914,7 +935,11 @@ fn ack(cmd: &str, ok: bool, extra: Value) -> Value {
 
 fn ack_from(cmd: &str, value: &impl serde::Serialize) -> Value {
     let body = serde_json::to_value(value).unwrap_or(Value::Null);
-    ack(cmd, body.get("ok").and_then(Value::as_bool).unwrap_or(false), body)
+    ack(
+        cmd,
+        body.get("ok").and_then(Value::as_bool).unwrap_or(false),
+        body,
+    )
 }
 
 fn snapshot_frame(daemon: &Daemon) -> Value {
@@ -1018,7 +1043,11 @@ fn handle_command(daemon: &Daemon, text: &str) -> Vec<Value> {
         "resume_supervisor" => {
             let id = str_field(&v, "id");
             match daemon.resume_supervisor(&id) {
-                Ok(_) => ack("resume_supervisor", true, json!({"id": id, "resumed": true})),
+                Ok(_) => ack(
+                    "resume_supervisor",
+                    true,
+                    json!({"id": id, "resumed": true}),
+                ),
                 Err(e) => ack("resume_supervisor", false, json!({"error": e})),
             }
         }

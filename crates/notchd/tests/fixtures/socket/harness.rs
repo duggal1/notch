@@ -229,10 +229,14 @@ impl TestConn {
     /// Connect, retrying ConnectionRefused (backlog overflow under a connect
     /// burst) until `deadline`. Returns the conn plus the refusal count.
     pub fn connect_retry(sock: &Path, deadline: Duration) -> (TestConn, u64) {
-        let (stream, refusals) =
-            connect_with_retry(sock, deadline, Duration::from_millis(2)).expect("connect with retry");
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        stream.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
+        let (stream, refusals) = connect_with_retry(sock, deadline, Duration::from_millis(2))
+            .expect("connect with retry");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(30)))
+            .unwrap();
         let writer = stream.try_clone().unwrap();
         (
             TestConn {
@@ -298,8 +302,7 @@ impl TestConn {
 
     pub fn read_value(&mut self) -> Value {
         let l = self.read_line();
-        serde_json::from_str(l.trim_end())
-            .unwrap_or_else(|e| panic!("bad json line: {e}: {l:?}"))
+        serde_json::from_str(l.trim_end()).unwrap_or_else(|e| panic!("bad json line: {e}: {l:?}"))
     }
 
     pub fn send_and_read(&mut self, obj: &Value) -> Value {

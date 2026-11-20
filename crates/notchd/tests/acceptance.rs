@@ -3,13 +3,13 @@
 
 use notchd::attribution;
 use notchd::bus::BusMessage;
+use notchd::clock::FakeClock;
 use notchd::config::Config;
 use notchd::daemon::Daemon;
 use notchd::events::EventLog;
 use notchd::herdr::{Herdr, HerdrError};
 use notchd::registry::Registry;
 use notchd::status::Status;
-use notchd::clock::FakeClock;
 
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -227,7 +227,10 @@ impl FakeOpencode {
             api_session_raw: Mutex::new(
                 serde_json::json!({"cursor": null, "data": []}).to_string(),
             ),
-            models: Mutex::new(vec!["opencode/hy4-flash-free".to_string(), "opencode/inkling-2-small-free".to_string()]),
+            models: Mutex::new(vec![
+                "opencode/hy4-flash-free".to_string(),
+                "opencode/inkling-2-small-free".to_string(),
+            ]),
             decisions: Mutex::new(VecDeque::new()),
         })
     }
@@ -286,7 +289,12 @@ impl FakeOpencode {
     }
 }
 
-fn spawn_daemon_with_opencode(root: &Path, fake: &Arc<FakeHerdr>, oc: &Arc<FakeOpencode>, clock: Arc<FakeClock>) -> Daemon {
+fn spawn_daemon_with_opencode(
+    root: &Path,
+    fake: &Arc<FakeHerdr>,
+    oc: &Arc<FakeOpencode>,
+    clock: Arc<FakeClock>,
+) -> Daemon {
     let config = test_config(root, 15);
     std::fs::create_dir_all(&config.tmp_dir).unwrap();
     let daemon = Daemon::open(config, fake.herdr(), clock.clone()).unwrap();
@@ -360,7 +368,10 @@ fn registry_allocates_unique_ids_never_reused_across_reload() {
         seen.push(reg.allocate_session(1));
         seen.push(reg.allocate_session(2));
     }
-    assert_eq!(seen, vec!["S1-OC01", "S2-OC01", "S1-OC02", "S2-OC02", "S1-OC03", "S2-OC03"]);
+    assert_eq!(
+        seen,
+        vec!["S1-OC01", "S2-OC01", "S1-OC02", "S2-OC02", "S1-OC03", "S2-OC03"]
+    );
     reg.save(&path).unwrap();
 
     // "Kill" everything and reload: IDs must never be reused.
@@ -374,11 +385,7 @@ fn registry_allocates_unique_ids_never_reused_across_reload() {
     let before = all.len();
     all.dedup();
     assert_eq!(all.len(), before, "duplicate id allocated");
-    assert_eq!(
-        reg2.ids().len(),
-        2 + 6 + 2,
-        "every allocation is permanent"
-    );
+    assert_eq!(reg2.ids().len(), 2 + 6 + 2, "every allocation is permanent");
 }
 
 #[test]
@@ -414,11 +421,17 @@ fn two_by_two_plan_spawns_in_order_with_env_and_titles() {
     let calls = fake.calls();
     let splits: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("split"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("split")
+        })
         .collect();
     let starts: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("start"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("start")
+        })
         .collect();
     assert_eq!(splits.len(), 4, "expected 4 pane splits, calls: {calls:?}");
     assert_eq!(starts.len(), 4, "expected 4 agent starts");
@@ -439,7 +452,10 @@ fn two_by_two_plan_spawns_in_order_with_env_and_titles() {
     for (i, start) in starts.iter().enumerate() {
         let joined = start.join(" ");
         // herdr agent names must be lowercase (herdr rejects uppercase).
-        assert!(joined.contains(&expected_ids[i].to_lowercase()), "start {i} missing session name: {joined}");
+        assert!(
+            joined.contains(&expected_ids[i].to_lowercase()),
+            "start {i} missing session name: {joined}"
+        );
         assert!(joined.contains("--kind"));
         assert!(joined.contains("opencode"));
     }
@@ -447,7 +463,10 @@ fn two_by_two_plan_spawns_in_order_with_env_and_titles() {
     // Order: all spawns for SV-1 happen before SV-2 in plan order.
     let prompts: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("prompt")
+        })
         .collect();
     assert_eq!(prompts.len(), 4, "each session gets its prompt after start");
 
@@ -501,7 +520,14 @@ fn watchdog_kills_only_stuck_working_session() {
     let ack = daemon.run_plan(&plan);
     assert!(ack.ok);
     let snap = daemon.snapshot();
-    let pane_of = |id: &str| snap.sessions.iter().find(|s| s.id == id).unwrap().pane_id.clone();
+    let pane_of = |id: &str| {
+        snap.sessions
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap()
+            .pane_id
+            .clone()
+    };
     let pane_a = pane_of("S1-OC01");
     let pane_b = pane_of("S1-OC02");
     // Reconfigure agents AFTER spawn, keyed to the real pane ids.
@@ -521,9 +547,16 @@ fn watchdog_kills_only_stuck_working_session() {
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close")
+        })
         .collect();
-    assert_eq!(closes.len(), 1, "exactly one pane close expected: {calls:?}");
+    assert_eq!(
+        closes.len(),
+        1,
+        "exactly one pane close expected: {calls:?}"
+    );
     assert!(closes[0].join(" ").contains(&pane_a));
 
     let snap = daemon.snapshot();
@@ -554,8 +587,20 @@ fn non_working_session_is_never_killed_and_revision_advance_resets_the_timer() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
     let snap = daemon.snapshot();
-    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
-    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+    let pane_a = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
+    let pane_b = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC02")
+        .unwrap()
+        .pane_id
+        .clone();
 
     // Both working; revisions static. One poll, then a poll where rev advances.
     fake.set_agents(vec![
@@ -573,10 +618,16 @@ fn non_working_session_is_never_killed_and_revision_advance_resets_the_timer() {
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close")
+        })
         .collect();
     assert_eq!(closes.len(), 1);
-    assert!(closes[0].join(" ").contains(&pane_b), "B is the stuck one: {calls:?}");
+    assert!(
+        closes[0].join(" ").contains(&pane_b),
+        "B is the stuck one: {calls:?}"
+    );
 }
 
 // ---------- 4. Re-prompt on failure ----------
@@ -591,22 +642,46 @@ fn blocked_escalates_needs_you_without_prompting() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
     let snap = daemon.snapshot();
-    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    let pane_a = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
     // Every session starts working; S1-OC01 goes blocked (-> failed blocked_waiting).
     fake.set_agents(vec![
         agent_entry(&pane_a, "blocked", 9),
         agent_entry(
-            &snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone(),
+            &snap
+                .sessions
+                .iter()
+                .find(|s| s.id == "S1-OC02")
+                .unwrap()
+                .pane_id
+                .clone(),
             "done",
             9,
         ),
         agent_entry(
-            &snap.sessions.iter().find(|s| s.id == "S2-OC01").unwrap().pane_id.clone(),
+            &snap
+                .sessions
+                .iter()
+                .find(|s| s.id == "S2-OC01")
+                .unwrap()
+                .pane_id
+                .clone(),
             "done",
             9,
         ),
         agent_entry(
-            &snap.sessions.iter().find(|s| s.id == "S2-OC02").unwrap().pane_id.clone(),
+            &snap
+                .sessions
+                .iter()
+                .find(|s| s.id == "S2-OC02")
+                .unwrap()
+                .pane_id
+                .clone(),
             "done",
             9,
         ),
@@ -618,17 +693,27 @@ fn blocked_escalates_needs_you_without_prompting() {
     let prompts_with_tail = fake
         .calls()
         .iter()
-        .filter(|c| c.get(4).map(String::as_str)
-            .map(|t| t.contains("cannot compile src/auth.rs:12"))
-            .unwrap_or(false))
+        .filter(|c| {
+            c.get(4)
+                .map(String::as_str)
+                .map(|t| t.contains("cannot compile src/auth.rs:12"))
+                .unwrap_or(false)
+        })
         .count();
-    assert_eq!(prompts_with_tail, 0, "never diagnose-and-continue into a permission prompt");
+    assert_eq!(
+        prompts_with_tail, 0,
+        "never diagnose-and-continue into a permission prompt"
+    );
 
     // Poll 2: still blocked -> still non-terminal, still no prompt.
     daemon.poll_once();
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
-    assert!(!s1.status.is_terminal(), "blocked is not failed: {}", s1.status);
+    assert!(
+        !s1.status.is_terminal(),
+        "blocked is not failed: {}",
+        s1.status
+    );
     assert_eq!(s1.status, Status::Idle);
     assert_eq!(s1.failure_reason.as_deref(), Some("blocked_waiting"));
     assert!(
@@ -637,8 +722,14 @@ fn blocked_escalates_needs_you_without_prompting() {
         snap.warnings
     );
     let esc = &snap.escalations;
-    assert!(esc.iter().any(|e| e.kind == "needs_you"), "blocked waits on a human: {esc:?}");
-    assert!(!esc.iter().any(|e| e.kind == "blocked"), "blocked is never a plain failure");
+    assert!(
+        esc.iter().any(|e| e.kind == "needs_you"),
+        "blocked waits on a human: {esc:?}"
+    );
+    assert!(
+        !esc.iter().any(|e| e.kind == "blocked"),
+        "blocked is never a plain failure"
+    );
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
     assert!(log.contains("escalate"), "escalate event missing: {log}");
 }
@@ -652,7 +743,13 @@ fn session_that_recovers_after_reprompt_is_not_escalated() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
     let snap = daemon.snapshot();
-    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    let pane_a = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
     let others: Vec<(String, String)> = snap
         .sessions
         .iter()
@@ -681,8 +778,10 @@ fn session_that_recovers_after_reprompt_is_not_escalated() {
     // `needs_you` is the expected human-gate escalation; a stuck/failure
     // escalation after recovery would be a false positive.
     assert!(
-        !snap.escalations.iter().any(|e| e.session == "S1-OC01"
-            && (e.kind == "stuck" || e.kind == "blocked")),
+        !snap
+            .escalations
+            .iter()
+            .any(|e| e.session == "S1-OC01" && (e.kind == "stuck" || e.kind == "blocked")),
         "recovered session must not be escalated as stuck/failed: {:?}",
         snap.escalations
     );
@@ -701,10 +800,22 @@ fn cross_supervisor_messages_route_through_orchestrator_in_order() {
     daemon.run_plan(&plan);
 
     daemon
-        .bus_send("SV-1", "SV-2", Some("S1-OC01".to_string()), "status", "first")
+        .bus_send(
+            "SV-1",
+            "SV-2",
+            Some("S1-OC01".to_string()),
+            "status",
+            "first",
+        )
         .unwrap();
     daemon
-        .bus_send("SV-1", "SV-2", Some("S1-OC01".to_string()), "status", "second")
+        .bus_send(
+            "SV-1",
+            "SV-2",
+            Some("S1-OC01".to_string()),
+            "status",
+            "second",
+        )
         .unwrap();
     daemon
         .bus_send("SV-2", "SV-1", None, "status", "reply")
@@ -726,11 +837,18 @@ fn cross_supervisor_messages_route_through_orchestrator_in_order() {
 
     // Stored in the event log.
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
-    assert!(log.contains("bus SV-1->SV-2"), "event log missing bus entries: {log}");
+    assert!(
+        log.contains("bus SV-1->SV-2"),
+        "event log missing bus entries: {log}"
+    );
 
     // Unknown supervisor is rejected.
-    assert!(daemon.bus_send("SV-1", "SV-99", None, "status", "nope").is_err());
-    assert!(daemon.bus_send("SV-99", "SV-1", None, "status", "nope").is_err());
+    assert!(daemon
+        .bus_send("SV-1", "SV-99", None, "status", "nope")
+        .is_err());
+    assert!(daemon
+        .bus_send("SV-99", "SV-1", None, "status", "nope")
+        .is_err());
 }
 
 // ---------- 6. Attribution + conflict ----------
@@ -820,15 +938,23 @@ fn cleanup_sweep_removes_dead_session_dirs_and_rotates_events_log() {
     fake.set_agents(agents);
     daemon.poll_once(); // -> all done -> cleanup already removes their dirs
     let remaining_without_sweep = std::fs::read_dir(root.join("tmp")).unwrap().count();
-    assert_eq!(remaining_without_sweep, 0, "done sessions must be cleaned automatically");
+    assert_eq!(
+        remaining_without_sweep, 0,
+        "done sessions must be cleaned automatically"
+    );
 
     // Re-create a dead session dir and verify the explicit global sweep.
     let dead_dir = root.join("tmp").join("notch-S1-OC01");
     std::fs::create_dir_all(&dead_dir).unwrap();
     // Inflate events.jsonl past the 4 MB threshold.
     let events = root.join("state").join("events.jsonl");
-    let line = serde_json::json!({"ts": 1, "session": null, "kind": "status", "detail": "x".repeat(200)});
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&events).unwrap();
+    let line =
+        serde_json::json!({"ts": 1, "session": null, "kind": "status", "detail": "x".repeat(200)});
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&events)
+        .unwrap();
     for _ in 0..22_000 {
         writeln!(f, "{}", line).unwrap();
     }
@@ -864,38 +990,85 @@ fn snapshot_matches_bridge_v1_key_set_and_camelcase() {
     let v = serde_json::to_value(&snap).unwrap();
     let obj = v.as_object().unwrap();
     let top_keys: std::collections::BTreeSet<&str> = obj.keys().map(String::as_str).collect();
-    let expected_top: std::collections::BTreeSet<&str> =
-        ["version", "generatedAt", "orchestrator", "supervisors", "sessions", "eps", "conflicts", "attribution", "warnings"]
-            .into_iter()
-            .collect();
+    let expected_top: std::collections::BTreeSet<&str> = [
+        "version",
+        "generatedAt",
+        "orchestrator",
+        "supervisors",
+        "sessions",
+        "eps",
+        "conflicts",
+        "attribution",
+        "warnings",
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(top_keys, expected_top, "top-level key set drifted");
     assert_eq!(obj["version"], 1);
 
     let sup = &obj["supervisors"][0];
-    let sup_keys: std::collections::BTreeSet<&str> = sup.as_object().unwrap().keys().map(String::as_str).collect();
+    let sup_keys: std::collections::BTreeSet<&str> = sup
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     let expected_sup: std::collections::BTreeSet<&str> =
-        ["id", "status", "working", "idle", "failed", "done", "title"].into_iter().collect();
+        ["id", "status", "working", "idle", "failed", "done", "title"]
+            .into_iter()
+            .collect();
     assert_eq!(sup_keys, expected_sup);
 
     let ses = &obj["sessions"][0];
-    let ses_keys: std::collections::BTreeSet<&str> = ses.as_object().unwrap().keys().map(String::as_str).collect();
+    let ses_keys: std::collections::BTreeSet<&str> = ses
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     let expected_ses: std::collections::BTreeSet<&str> = [
-        "id", "sup", "status", "title", "task", "cwd", "paneId", "startedAt", "lastAction",
-        "lastRevision", "latencyMs", "failureReason",
+        "id",
+        "sup",
+        "status",
+        "title",
+        "task",
+        "cwd",
+        "paneId",
+        "startedAt",
+        "lastAction",
+        "lastRevision",
+        "latencyMs",
+        "failureReason",
         // v1.3 additive fields, always present on sessions spawned by this engine
-        "goal", "iterations", "maxIterations", "wallClockDeadline",
+        "goal",
+        "iterations",
+        "maxIterations",
+        "wallClockDeadline",
     ]
     .into_iter()
     .collect();
     assert_eq!(ses_keys, expected_ses);
 
     // Status vocabulary is exactly the four allowed values.
-    assert!(matches!(ses["status"].as_str().unwrap(), "working" | "idle" | "failed" | "done"));
+    assert!(matches!(
+        ses["status"].as_str().unwrap(),
+        "working" | "idle" | "failed" | "done"
+    ));
 
     // supervisors ordered by id, sessions ordered by id
-    let sup_ids: Vec<&str> = obj["supervisors"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+    let sup_ids: Vec<&str> = obj["supervisors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
     assert_eq!(sup_ids, vec!["SV-1", "SV-2"]);
-    let ses_ids: Vec<&str> = obj["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+    let ses_ids: Vec<&str> = obj["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ses_ids, vec!["S1-OC01", "S1-OC02", "S2-OC01", "S2-OC02"]);
 
     // eps is a float
@@ -941,7 +1114,9 @@ fn ndjson_socket_hello_ping_subscribe_kill_unknown_cleanup() {
     };
 
     let stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
 
@@ -978,7 +1153,10 @@ fn ndjson_socket_hello_ping_subscribe_kill_unknown_cleanup() {
     assert_eq!(snap["snapshot"]["version"], 1);
 
     // kill unknown id -> ok:false, machine-readable error
-    send(&mut writer, serde_json::json!({"cmd": "kill", "id": "S9-OC99"}));
+    send(
+        &mut writer,
+        serde_json::json!({"cmd": "kill", "id": "S9-OC99"}),
+    );
     let ack = read(&mut reader);
     assert_eq!(ack["cmd"], "kill");
     assert_eq!(ack["ok"], false);
@@ -1008,7 +1186,10 @@ fn ndjson_socket_hello_ping_subscribe_kill_unknown_cleanup() {
 fn herdr_agent_list_fixture_parses() {
     let fixture = include_str!("fixtures/herdr-agent-list.json");
     let agents = notchd::herdr::parse_agent_list_output(fixture).expect("fixture must parse");
-    assert!(!agents.is_empty(), "fixture must contain at least one agent");
+    assert!(
+        !agents.is_empty(),
+        "fixture must contain at least one agent"
+    );
     for a in &agents {
         assert!(!a.pane_id.is_empty(), "every entry must carry a pane_id");
     }
@@ -1060,7 +1241,9 @@ fn kill_marks_failed_runs_cleanup_and_events() {
     daemon.run_plan(&plan);
     std::fs::create_dir_all(root.join("tmp").join("notch-S1-OC01")).unwrap();
 
-    let ack = daemon.kill("S1-OC01", Some("operator stop".to_string())).unwrap();
+    let ack = daemon
+        .kill("S1-OC01", Some("operator stop".to_string()))
+        .unwrap();
     assert!(ack.ok);
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
@@ -1070,7 +1253,10 @@ fn kill_marks_failed_runs_cleanup_and_events() {
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close")
+        })
         .collect();
     assert_eq!(closes.len(), 1);
 
@@ -1132,7 +1318,10 @@ fn start_marks_vanished_panes_done_and_keeps_live_sessions() {
     assert_eq!(s1.status, Status::Working);
     assert_eq!(s2.status, Status::Done);
     let log = std::fs::read_to_string(state_dir.join("events.jsonl")).unwrap();
-    assert!(log.contains("readopt") || log.contains("done"), "expected a re-adoption/done event: {log}");
+    assert!(
+        log.contains("readopt") || log.contains("done"),
+        "expected a re-adoption/done event: {log}"
+    );
 }
 
 #[test]
@@ -1197,7 +1386,9 @@ fn subscribe_pushes_snapshot_on_change_after_100ms_debounce() {
     };
 
     let stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
     let mut line = String::new();
@@ -1304,14 +1495,23 @@ fn first_git_sample_sets_a_baseline_and_only_new_files_attribute() {
     .unwrap();
     daemon.run_plan(&plan_path);
     let snap = daemon.snapshot();
-    let pane = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
+    let pane = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
     fake.set_agents(vec![agent_entry(&pane, "working", 1)]);
 
     // Poll 1: sets the baseline; the pre-dirty file must NOT be attributed.
     daemon.poll_once();
     let snap = daemon.snapshot();
     assert!(
-        !snap.attribution.iter().any(|a| a.file.contains("other-agents-work.rs")),
+        !snap
+            .attribution
+            .iter()
+            .any(|a| a.file.contains("other-agents-work.rs")),
         "baseline files must not be attributed to the session: {:?}",
         snap.attribution
     );
@@ -1322,7 +1522,9 @@ fn first_git_sample_sets_a_baseline_and_only_new_files_attribute() {
     daemon.poll_once();
     let snap = daemon.snapshot();
     assert!(
-        snap.attribution.iter().any(|a| a.file.contains("session-own-work.rs")),
+        snap.attribution
+            .iter()
+            .any(|a| a.file.contains("session-own-work.rs")),
         "new files after the baseline must be attributed: {:?}",
         snap.attribution
     );
@@ -1345,7 +1547,14 @@ fn submit_task_allocates_titles_and_sends_full_task_to_agent() {
     let daemon = spawn_daemon(&root, &fake, clock);
 
     let task = "Refactor the auth middleware to remove the shared session cache from the login path and the token refresh path";
-    let ack = daemon.submit_task(task.to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        task.to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(ack.ok, "submit_task failed: {:?}", ack.error);
     assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
     assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
@@ -1354,10 +1563,16 @@ fn submit_task_allocates_titles_and_sends_full_task_to_agent() {
     let calls = fake.calls();
     let prompts: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("prompt")
+        })
         .collect();
     assert_eq!(prompts.len(), 1, "exactly one prompt expected: {calls:?}");
-    assert_eq!(prompts[0][4], task, "full task text must reach the agent untruncated");
+    assert_eq!(
+        prompts[0][4], task,
+        "full task text must reach the agent untruncated"
+    );
 
     // Titles: 48-char word-boundary truncation, single line.
     let snap = daemon.snapshot();
@@ -1368,9 +1583,14 @@ fn submit_task_allocates_titles_and_sends_full_task_to_agent() {
         "supervisor title must be the task head on a word boundary"
     );
     assert_eq!(snap.sessions.len(), 1);
-    assert_eq!(snap.sessions[0].title, "Refactor the auth middleware to remove the");
+    assert_eq!(
+        snap.sessions[0].title,
+        "Refactor the auth middleware to remove the"
+    );
     assert_eq!(snap.sessions[0].sup, "SV-1");
-    assert!(snap.sessions[0].task.starts_with("Refactor the auth middleware"));
+    assert!(snap.sessions[0]
+        .task
+        .starts_with("Refactor the auth middleware"));
     assert_eq!(snap.sessions[0].status, Status::Working);
 
     // Per-session temp dir created like run-plan.
@@ -1386,7 +1606,14 @@ fn submit_task_title_override_and_single_line_normalization() {
     let daemon = spawn_daemon(&root, &fake, clock);
 
     // Multi-line title with extra whitespace is normalized to one line.
-    let ack = daemon.submit_task("do the thing\nwith two lines".to_string(), Some(repo.to_str().unwrap().to_string()), Some("My\n  Custom   Title".to_string()), None, None, None);
+    let ack = daemon.submit_task(
+        "do the thing\nwith two lines".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        Some("My\n  Custom   Title".to_string()),
+        None,
+        None,
+        None,
+    );
     assert!(ack.ok, "submit_task failed: {:?}", ack.error);
     let snap = daemon.snapshot();
     assert_eq!(snap.supervisors[0].title, "My Custom Title");
@@ -1403,7 +1630,14 @@ fn submit_task_validation_allocates_nothing() {
     let daemon = spawn_daemon(&root, &fake, clock);
 
     // Nonexistent cwd
-    let ack = daemon.submit_task("task one".to_string(), Some(root.join("nope").to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        "task one".to_string(),
+        Some(root.join("nope").to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(!ack.ok);
     assert!(ack.error.is_some());
     // No ids on a validation failure
@@ -1413,18 +1647,46 @@ fn submit_task_validation_allocates_nothing() {
     // File, not a directory
     let file = root.join("a-file.txt");
     std::fs::write(&file, "x").unwrap();
-    let ack = daemon.submit_task("task two".to_string(), Some(file.to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        "task two".to_string(),
+        Some(file.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(!ack.ok);
     assert!(ack.error.is_some());
 
     // Empty and whitespace-only task
-    let ack = daemon.submit_task("".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        "".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(!ack.ok);
-    let ack = daemon.submit_task("   \n\t  ".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        "   \n\t  ".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(!ack.ok);
 
     // Nothing was allocated: the next valid submit gets SV-1 / S1-OC01.
-    let ack = daemon.submit_task("real task".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        "real task".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(ack.ok);
     assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
     assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
@@ -1439,15 +1701,31 @@ fn submit_task_spawn_failure_marks_session_failed_and_returns_error() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let daemon = spawn_daemon(&root, &fake, clock);
 
-    let ack = daemon.submit_task("task that cannot spawn".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack = daemon.submit_task(
+        "task that cannot spawn".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     // Spawn now runs off the ack path: submit is fast-ack, the failure lands
     // asynchronously and is observed on a later poll.
-    assert!(ack.ok, "submit must ack before the slow herdr spawn: {:?}", ack.error);
+    assert!(
+        ack.ok,
+        "submit must ack before the slow herdr spawn: {:?}",
+        ack.error
+    );
     // The allocated ids are reported and the session is marked failed.
     assert_eq!(ack.supervisor_id.as_deref(), Some("SV-1"));
     assert_eq!(ack.session_id.as_deref(), Some("S1-OC01"));
     for _ in 0..100 {
-        let s = daemon.snapshot().sessions.into_iter().find(|s| s.id == "S1-OC01").unwrap();
+        let s = daemon
+            .snapshot()
+            .sessions
+            .into_iter()
+            .find(|s| s.id == "S1-OC01")
+            .unwrap();
         if s.status == Status::Failed {
             break;
         }
@@ -1472,8 +1750,22 @@ fn submit_task_second_submit_allocates_incrementing_ids() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let daemon = spawn_daemon(&root, &fake, clock);
 
-    let ack1 = daemon.submit_task("first task".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
-    let ack2 = daemon.submit_task("second task".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack1 = daemon.submit_task(
+        "first task".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
+    let ack2 = daemon.submit_task(
+        "second task".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(ack1.ok && ack2.ok);
     assert_eq!(ack1.supervisor_id.as_deref(), Some("SV-1"));
     assert_eq!(ack2.supervisor_id.as_deref(), Some("SV-2"));
@@ -1490,18 +1782,31 @@ fn submit_task_second_submit_allocates_incrementing_ids() {
 fn task_head_truncation_is_word_boundary_single_line() {
     use notchd::model::{single_line, truncate_words};
     assert_eq!(truncate_words("short task", 48), "short task");
-    assert_eq!(truncate_words("a\n\nmulti   line\ttask", 48), "a multi line task");
+    assert_eq!(
+        truncate_words("a\n\nmulti   line\ttask", 48),
+        "a multi line task"
+    );
     // Exactly 48 chars fits; the same line with one more word is cut at the boundary.
-    let t = truncate_words("one two three four five six seven eight nine ten eleven twelve thirteen", 48);
+    let t = truncate_words(
+        "one two three four five six seven eight nine ten eleven twelve thirteen",
+        48,
+    );
     assert_eq!(t, "one two three four five six seven eight nine ten");
     assert_eq!(t.chars().count(), 48);
     // A short line that fits is returned whole.
-    assert_eq!(truncate_words("alpha beta gammadelta epsilon zeta eta theta", 48), "alpha beta gammadelta epsilon zeta eta theta");
+    assert_eq!(
+        truncate_words("alpha beta gammadelta epsilon zeta eta theta", 48),
+        "alpha beta gammadelta epsilon zeta eta theta"
+    );
     // Single word longer than 48 is hard-cut at 48 (documented fallback)
     let long = "x".repeat(100);
     assert_eq!(truncate_words(&long, 48), "x".repeat(48));
     // No trailing space, never a mid-word cut
-    for s in ["Refactor the auth middleware to remove the shared session cache from the login path", "a b c", "   spaced   out   "] {
+    for s in [
+        "Refactor the auth middleware to remove the shared session cache from the login path",
+        "a b c",
+        "   spaced   out   ",
+    ] {
         let cut = truncate_words(s, 48);
         assert!(cut.chars().count() <= 48);
         assert!(!cut.ends_with(' '), "no trailing space: `{cut}`");
@@ -1530,7 +1835,9 @@ fn socket_submit_task_roundtrip() {
     };
 
     let stream = std::os::unix::net::UnixStream::connect(&sock).unwrap();
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut writer = stream;
     let mut line = String::new();
@@ -1547,7 +1854,10 @@ fn socket_submit_task_roundtrip() {
     };
 
     // Validation failure over the wire: no ids.
-    send(&mut writer, serde_json::json!({"cmd": "submit_task", "task": "", "cwd": repo.to_str().unwrap()}));
+    send(
+        &mut writer,
+        serde_json::json!({"cmd": "submit_task", "task": "", "cwd": repo.to_str().unwrap()}),
+    );
     let bad = read(&mut reader);
     assert_eq!(bad["event"], "ack");
     assert_eq!(bad["cmd"], "submit_task");
@@ -1556,7 +1866,10 @@ fn socket_submit_task_roundtrip() {
     assert!(bad.get("supervisorId").is_none());
 
     // Happy path over the wire.
-    send(&mut writer, serde_json::json!({"cmd": "submit_task", "task": "Wire task head that is long enough to prove the task field carries the full text of the submitted job", "cwd": repo.to_str().unwrap(), "title": "Wire Title"}));
+    send(
+        &mut writer,
+        serde_json::json!({"cmd": "submit_task", "task": "Wire task head that is long enough to prove the task field carries the full text of the submitted job", "cwd": repo.to_str().unwrap(), "title": "Wire Title"}),
+    );
     let good = read(&mut reader);
     assert_eq!(good["cmd"], "submit_task");
     assert_eq!(good["ok"], true);
@@ -1593,8 +1906,14 @@ fn submit_task_v1_3_stores_goal_dod_model_and_budgets() {
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions.len(), 1);
     let s = &snap.sessions[0];
-    assert_eq!(s.goal.as_deref(), Some("Write a failing regression test for the registry reuse bug"));
-    assert_eq!(s.definition_of_done.as_deref(), Some("cargo test registry_rejects_duplicate passes"));
+    assert_eq!(
+        s.goal.as_deref(),
+        Some("Write a failing regression test for the registry reuse bug")
+    );
+    assert_eq!(
+        s.definition_of_done.as_deref(),
+        Some("cargo test registry_rejects_duplicate passes")
+    );
     assert_eq!(s.model.as_deref(), Some("opencode/hy4-flash-free"));
     assert_eq!(s.iterations, Some(0));
     assert_eq!(s.max_iterations, Some(8));
@@ -1605,9 +1924,15 @@ fn submit_task_v1_3_stores_goal_dod_model_and_budgets() {
     let calls = fake.calls();
     let start = calls
         .iter()
-        .find(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("start"))
+        .find(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("start")
+        })
         .expect("agent start call");
-    assert!(!start.iter().any(|a| a == "--model"), "no model passthrough may reach agent start: {start:?}");
+    assert!(
+        !start.iter().any(|a| a == "--model"),
+        "no model passthrough may reach agent start: {start:?}"
+    );
 
     // Unset model: no passthrough tokens anywhere in argv.
     let ack = daemon.submit_task(
@@ -1622,7 +1947,10 @@ fn submit_task_v1_3_stores_goal_dod_model_and_budgets() {
     let calls = fake.calls();
     let last_start = calls
         .iter()
-        .rfind(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("start"))
+        .rfind(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("start")
+        })
         .unwrap();
     assert!(!last_start.iter().any(|a| a == "--model"));
 }
@@ -1635,7 +1963,14 @@ fn submit_task_supervisor_id_reroutes_into_existing_supervisor() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let daemon = spawn_daemon(&root, &fake, clock.clone());
 
-    let ack1 = daemon.submit_task("first".to_string(), Some(repo.to_str().unwrap().to_string()), None, None, None, None);
+    let ack1 = daemon.submit_task(
+        "first".to_string(),
+        Some(repo.to_str().unwrap().to_string()),
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(ack1.ok);
     let ack2 = daemon.submit_task(
         "second under the same supervisor".to_string(),
@@ -1693,14 +2028,41 @@ fn activity_probe_parses_live_fixture() {
 #[test]
 fn activity_classification_idle_busy_and_missing() {
     use notchd::opencode::ApiSession;
-    let idle_s = ApiSession { id: "a".into(), busy: Some(1000), idle: Some(2000), model: None, directory: None };
-    let busy_s = ApiSession { id: "b".into(), busy: Some(3000), idle: Some(2000), model: None, directory: None };
-    let missing_s = ApiSession { id: "c".into(), busy: Some(3000), idle: None, model: None, directory: None };
-    let missing_busy = ApiSession { id: "d".into(), busy: None, idle: Some(2000), model: None, directory: None };
+    let idle_s = ApiSession {
+        id: "a".into(),
+        busy: Some(1000),
+        idle: Some(2000),
+        model: None,
+        directory: None,
+    };
+    let busy_s = ApiSession {
+        id: "b".into(),
+        busy: Some(3000),
+        idle: Some(2000),
+        model: None,
+        directory: None,
+    };
+    let missing_s = ApiSession {
+        id: "c".into(),
+        busy: Some(3000),
+        idle: None,
+        model: None,
+        directory: None,
+    };
+    let missing_busy = ApiSession {
+        id: "d".into(),
+        busy: None,
+        idle: Some(2000),
+        model: None,
+        directory: None,
+    };
     assert!(notchd::opencode::is_idle(&idle_s));
     assert!(!notchd::opencode::is_idle(&busy_s));
     assert!(!notchd::opencode::is_idle(&missing_s));
-    assert!(notchd::opencode::is_idle(&missing_busy), "no busy marker yet means idle");
+    assert!(
+        notchd::opencode::is_idle(&missing_busy),
+        "no busy marker yet means idle"
+    );
 }
 
 // ---------- 23. Supervisor decision loop (v1.3) ----------
@@ -1721,7 +2083,14 @@ fn submit_simple_goal(daemon: &Daemon, root: &Path, title: &str) -> String {
 }
 
 fn pane_of(daemon: &Daemon, id: &str) -> String {
-    daemon.snapshot().sessions.iter().find(|s| s.id == id).unwrap().pane_id.clone()
+    daemon
+        .snapshot()
+        .sessions
+        .iter()
+        .find(|s| s.id == id)
+        .unwrap()
+        .pane_id
+        .clone()
 }
 
 fn mark_idle(fake: &Arc<FakeHerdr>, oc: &Arc<FakeOpencode>, pane_id: &str, revision: u64) {
@@ -1755,21 +2124,40 @@ fn idle_triggers_one_decider_and_one_reprompt_continue_path() {
     let calls = fake.calls();
     let prompts: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("prompt")
+        })
         .collect();
     let reprompt = prompts
         .iter()
-        .find(|p| p.join(" ").contains("create proof.txt containing exactly notch-idle-proof"))
+        .find(|p| {
+            p.join(" ")
+                .contains("create proof.txt containing exactly notch-idle-proof")
+        })
         .expect("re-prompt with decider instruction");
-    assert_eq!(reprompt[4], "create proof.txt containing exactly notch-idle-proof and cat it");
+    assert_eq!(
+        reprompt[4],
+        "create proof.txt containing exactly notch-idle-proof and cat it"
+    );
 
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
     assert_eq!(s.iterations, Some(1));
-    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("reprompt:"));
+    assert!(s
+        .last_supervisor_action
+        .as_deref()
+        .unwrap()
+        .starts_with("reprompt:"));
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
-    assert!(log.contains("\"kind\":\"decision\""), "decision event missing: {log}");
-    assert!(log.contains("\"kind\":\"idle_signal\""), "idle_signal event missing: {log}");
+    assert!(
+        log.contains("\"kind\":\"decision\""),
+        "decision event missing: {log}"
+    );
+    assert!(
+        log.contains("\"kind\":\"idle_signal\""),
+        "idle_signal event missing: {log}"
+    );
 }
 
 #[test]
@@ -1794,8 +2182,15 @@ fn done_verifier_yes_marks_done_and_cleans_up_no_iterations() {
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
     assert_eq!(s.status, Status::Done);
     assert_eq!(s.iterations, Some(0));
-    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("done:"));
-    assert!(!root.join("tmp").join(format!("notch-{sid}")).exists(), "verifier-accepted done must clean up");
+    assert!(s
+        .last_supervisor_action
+        .as_deref()
+        .unwrap()
+        .starts_with("done:"));
+    assert!(
+        !root.join("tmp").join(format!("notch-{sid}")).exists(),
+        "verifier-accepted done must clean up"
+    );
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
     assert!(log.contains("done (verifier accepted evidence)"));
 }
@@ -1820,14 +2215,28 @@ fn done_verifier_no_reprompts_for_missing_evidence_counts_iteration() {
     let calls = fake.calls();
     let reprompt = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
-        .find(|p| p.join(" ").contains("definition of done is not yet satisfied") || p.join(" ").contains("never shown"));
-    assert!(reprompt.is_some(), "expected a missing-evidence re-prompt: {calls:?}");
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("prompt")
+        })
+        .find(|p| {
+            p.join(" ")
+                .contains("definition of done is not yet satisfied")
+                || p.join(" ").contains("never shown")
+        });
+    assert!(
+        reprompt.is_some(),
+        "expected a missing-evidence re-prompt: {calls:?}"
+    );
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
     assert_eq!(s.iterations, Some(1));
     assert_eq!(s.status, Status::Working);
-    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("verify:"));
+    assert!(s
+        .last_supervisor_action
+        .as_deref()
+        .unwrap()
+        .starts_with("verify:"));
 }
 
 #[test]
@@ -1855,11 +2264,18 @@ fn three_consecutive_stucks_trigger_strategy_change_then_escalate() {
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
     assert_eq!(s.status, Status::Idle);
     let decisions: Vec<&str> = snap.decisions.iter().map(|d| d.action.as_str()).collect();
-    assert!(decisions.contains(&"escalate"), "escalate decision recorded: {decisions:?}");
+    assert!(
+        decisions.contains(&"escalate"),
+        "escalate decision recorded: {decisions:?}"
+    );
     // No fifth decider call — the escalated session is excluded from the loop.
     let calls_before = oc.decider_calls();
     daemon.poll_once();
-    assert_eq!(oc.decider_calls(), calls_before, "escalated session must not call the decider");
+    assert_eq!(
+        oc.decider_calls(),
+        calls_before,
+        "escalated session must not call the decider"
+    );
 }
 
 #[test]
@@ -1876,13 +2292,25 @@ fn budget_exhaustion_escalates_at_max_iterations() {
     // every round so the loop detector does not (correctly) fire.
     for round in 1..=8u32 {
         mark_idle(&fake, &oc, &pane, 20 + round as u64);
-        *fake.read_text.lock().unwrap() = format!("round {round}: cargo test output line {round}
-");
+        *fake.read_text.lock().unwrap() = format!(
+            "round {round}: cargo test output line {round}
+"
+        );
         oc.push_decision(&format!("CONTINUE: do the next thing (round {round})"));
         daemon.poll_once();
         wait_for_decider(&oc, &daemon, &pane, round as usize);
-        let s = daemon.snapshot().sessions.into_iter().find(|s| s.id == sid).unwrap();
-        eprintln!("[loop] round={round} status={} reason={:?} iterations={:?}", s.status.as_str(), s.failure_reason, s.iterations);
+        let s = daemon
+            .snapshot()
+            .sessions
+            .into_iter()
+            .find(|s| s.id == sid)
+            .unwrap();
+        eprintln!(
+            "[loop] round={round} status={} reason={:?} iterations={:?}",
+            s.status.as_str(),
+            s.failure_reason,
+            s.iterations
+        );
     }
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
@@ -1891,12 +2319,23 @@ fn budget_exhaustion_escalates_at_max_iterations() {
     let calls_before = oc.decider_calls();
     mark_idle(&fake, &oc, &pane, 40);
     daemon.poll_once();
-    assert_eq!(oc.decider_calls(), calls_before, "decider must not be called past budget");
+    assert_eq!(
+        oc.decider_calls(),
+        calls_before,
+        "decider must not be called past budget"
+    );
     let snap = daemon.snapshot();
     let esc = &snap.escalations;
-    assert!(esc.iter().any(|e| e.kind == "budget_exceeded"), "budget escalation expected: {esc:?}");
+    assert!(
+        esc.iter().any(|e| e.kind == "budget_exceeded"),
+        "budget escalation expected: {esc:?}"
+    );
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
-    assert_eq!(s.failure_reason.as_deref(), None::<&str>, "budget escalation does not kill the session");
+    assert_eq!(
+        s.failure_reason.as_deref(),
+        None::<&str>,
+        "budget escalation does not kill the session"
+    );
 }
 
 #[test]
@@ -1951,7 +2390,10 @@ fn kill_switch_closes_everything_and_marks_failed() {
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close")
+        })
         .collect();
     assert_eq!(closes.len(), 2);
 }
@@ -1966,18 +2408,32 @@ fn message_delivers_verbatim_and_is_logged_and_capped() {
     let sid1 = submit_simple_goal(&daemon, &root, "Task one");
     let sid2 = submit_simple_goal(&daemon, &root, "Task two");
 
-    let ack = daemon.message(&sid1, &sid2, "handoff", "handoff: the tests fail at auth.rs:12");
+    let ack = daemon.message(
+        &sid1,
+        &sid2,
+        "handoff",
+        "handoff: the tests fail at auth.rs:12",
+    );
     assert!(ack.ok, "message failed: {:?}", ack.error);
     assert_eq!(ack.message_id.as_deref(), Some("msg_1"));
 
     let calls = fake.calls();
     let prompts: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("agent") && c.get(2).map(String::as_str) == Some("prompt"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("agent")
+                && c.get(2).map(String::as_str) == Some("prompt")
+        })
         .collect();
-    let delivery = prompts.iter().find(|p| p.join(" ").contains("the tests fail at auth.rs:12")).unwrap();
+    let delivery = prompts
+        .iter()
+        .find(|p| p.join(" ").contains("the tests fail at auth.rs:12"))
+        .unwrap();
     assert_eq!(delivery[3], sid2.to_lowercase());
-    assert_eq!(delivery[4], "handoff: the tests fail at auth.rs:12", "body is verbatim");
+    assert_eq!(
+        delivery[4], "handoff: the tests fail at auth.rs:12",
+        "body is verbatim"
+    );
 
     // Unknown session and oversized body are rejected without delivery.
     let ack = daemon.message(&sid1, "S9-OC99", "handoff", "hello");
@@ -2011,10 +2467,19 @@ fn list_models_parses_and_caches() {
     let clock = Arc::new(FakeClock::new(1_763_520_000_000));
     let daemon = spawn_daemon_with_opencode(&root, &fake, &oc, clock);
     let m1 = daemon.list_models();
-    assert_eq!(m1.models, vec!["opencode/hy4-flash-free", "opencode/inkling-2-small-free"]);
+    assert_eq!(
+        m1.models,
+        vec!["opencode/hy4-flash-free", "opencode/inkling-2-small-free"]
+    );
     let m2 = daemon.list_models();
     assert_eq!(m2.models, m1.models);
-    let runs = oc.calls.lock().unwrap().iter().filter(|c| c.get(1).map(String::as_str) == Some("models")).count();
+    let runs = oc
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| c.get(1).map(String::as_str) == Some("models"))
+        .count();
     assert_eq!(runs, 1, "second call must hit the cache");
 }
 
@@ -2064,13 +2529,22 @@ fn rate_limit_tail_triggers_backoff_without_calling_decider() {
     let sid = submit_simple_goal(&daemon, &root, "Write the proof file");
     let pane = pane_of(&daemon, &sid);
     mark_idle(&fake, &oc, &pane, 60);
-    *fake.read_text.lock().unwrap() = "Error: 429 Too Many Requests: rate limit exceeded\n".to_string();
+    *fake.read_text.lock().unwrap() =
+        "Error: 429 Too Many Requests: rate limit exceeded\n".to_string();
 
     daemon.poll_once();
-    assert_eq!(oc.decider_calls(), 0, "decider must not fire on a rate-limited tail");
+    assert_eq!(
+        oc.decider_calls(),
+        0,
+        "decider must not fire on a rate-limited tail"
+    );
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
-    assert!(s.last_supervisor_action.as_deref().unwrap().starts_with("backoff:"));
+    assert!(s
+        .last_supervisor_action
+        .as_deref()
+        .unwrap()
+        .starts_with("backoff:"));
     assert!(snap.warnings.iter().any(|w| w.contains("rate limit")));
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
     assert!(log.contains("backoff"), "backoff decision missing: {log}");
@@ -2091,7 +2565,11 @@ fn unparseable_decider_output_is_logged_honestly_as_stuck() {
     wait_for_decider(&oc, &daemon, &pane, 1);
     let snap = daemon.snapshot();
     let s = snap.sessions.iter().find(|s| s.id == sid).unwrap();
-    assert!(s.last_supervisor_action.as_deref().unwrap().contains("decider unparseable"));
+    assert!(s
+        .last_supervisor_action
+        .as_deref()
+        .unwrap()
+        .contains("decider unparseable"));
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
     assert!(log.contains("decider unparseable"));
 }
@@ -2110,10 +2588,15 @@ fn idle_signal_event_uses_primary_source() {
     oc.push_decision("YES: cat output proves it");
     daemon.poll_once();
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
-    let signal_line = log.lines().find(|l| l.contains("\"kind\":\"idle_signal\"")).expect("idle_signal logged");
-    assert!(signal_line.contains("primary"), "primary signal expected: {signal_line}");
+    let signal_line = log
+        .lines()
+        .find(|l| l.contains("\"kind\":\"idle_signal\""))
+        .expect("idle_signal logged");
+    assert!(
+        signal_line.contains("primary"),
+        "primary signal expected: {signal_line}"
+    );
 }
-
 
 // ---------- 33. Watchdog stuck-kill records a `stuck` escalation (v1.3) ----------
 
@@ -2127,8 +2610,20 @@ fn stuck_kill_records_stuck_escalation_in_snapshot() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
     let snap = daemon.snapshot();
-    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
-    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+    let pane_a = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
+    let pane_b = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC02")
+        .unwrap()
+        .pane_id
+        .clone();
 
     // A working forever, one done — only A is a stuck candidate.
     fake.set_agents(vec![
@@ -2142,12 +2637,24 @@ fn stuck_kill_records_stuck_escalation_in_snapshot() {
     let esc = &snap.escalations;
     // The ladder emits Suspect then Stuck; exactly one of each.
     assert_eq!(esc.len(), 2, "suspect + stuck escalations: {esc:?}");
-    assert_eq!(esc.iter().filter(|e| e.kind == "stuck").count(), 1, "one stuck verdict: {esc:?}");
-    assert_eq!(esc.iter().filter(|e| e.kind == "stuck_suspect").count(), 1, "one suspect verdict: {esc:?}");
+    assert_eq!(
+        esc.iter().filter(|e| e.kind == "stuck").count(),
+        1,
+        "one stuck verdict: {esc:?}"
+    );
+    assert_eq!(
+        esc.iter().filter(|e| e.kind == "stuck_suspect").count(),
+        1,
+        "one suspect verdict: {esc:?}"
+    );
     let stuck = esc.iter().find(|e| e.kind == "stuck").unwrap();
     assert_eq!(stuck.session, "S1-OC01");
     assert_eq!(stuck.supervisor, "SV-1");
-    assert!(stuck.reason.contains("no revision change"), "reason: {}", stuck.reason);
+    assert!(
+        stuck.reason.contains("no revision change"),
+        "reason: {}",
+        stuck.reason
+    );
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
     assert_eq!(s1.status, Status::Failed);
     assert_eq!(s1.failure_reason.as_deref(), Some("stuck"));
@@ -2165,8 +2672,20 @@ fn kill_switch_closes_done_session_panes_too() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
     let snap = daemon.snapshot();
-    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
-    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+    let pane_a = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
+    let pane_b = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC02")
+        .unwrap()
+        .pane_id
+        .clone();
 
     // Mark S1-OC01 done (idle TUIs persist after done), S1-OC02 stays working.
     fake.set_agents(vec![
@@ -2178,11 +2697,17 @@ fn kill_switch_closes_done_session_panes_too() {
     std::fs::create_dir_all(root.join("tmp").join("notch-S1-OC01")).unwrap();
 
     let ack = daemon.kill_switch();
-    assert_eq!(ack.closed, 4, "every managed pane closes, including the done session's TUI");
+    assert_eq!(
+        ack.closed, 4,
+        "every managed pane closes, including the done session's TUI"
+    );
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close")
+        })
         .collect();
     assert_eq!(closes.len(), 4);
     assert!(closes.iter().any(|c| c.join(" ").contains(&pane_a)));
@@ -2206,8 +2731,20 @@ fn kill_switch_one_failed_close_does_not_abort_the_batch() {
     let plan = write_plan(&root);
     daemon.run_plan(&plan);
     let snap = daemon.snapshot();
-    let pane_a = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap().pane_id.clone();
-    let pane_b = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap().pane_id.clone();
+    let pane_a = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC01")
+        .unwrap()
+        .pane_id
+        .clone();
+    let pane_b = snap
+        .sessions
+        .iter()
+        .find(|s| s.id == "S1-OC02")
+        .unwrap()
+        .pane_id
+        .clone();
 
     // The done session's pane is already gone in herdr.
     fake.set_agents(vec![
@@ -2218,7 +2755,10 @@ fn kill_switch_one_failed_close_does_not_abort_the_batch() {
     fake.set_fail_panes(vec![&pane_a]);
 
     let ack = daemon.kill_switch();
-    assert_eq!(ack.closed, 3, "three panes close; the already-gone one doesn't count");
+    assert_eq!(
+        ack.closed, 3,
+        "three panes close; the already-gone one doesn't count"
+    );
     let snap = daemon.snapshot();
     let s1 = snap.sessions.iter().find(|s| s.id == "S1-OC01").unwrap();
     let s2 = snap.sessions.iter().find(|s| s.id == "S1-OC02").unwrap();
@@ -2227,7 +2767,10 @@ fn kill_switch_one_failed_close_does_not_abort_the_batch() {
     assert_eq!(s1.failure_reason.as_deref(), Some("kill_switch"));
     assert_eq!(s2.failure_reason.as_deref(), Some("kill_switch"));
     let log = std::fs::read_to_string(root.join("state").join("events.jsonl")).unwrap();
-    assert!(log.contains("pane_already_closed"), "failure must be logged, got: {log}");
+    assert!(
+        log.contains("pane_already_closed"),
+        "failure must be logged, got: {log}"
+    );
 }
 
 #[test]
@@ -2248,7 +2791,10 @@ fn kill_switch_skips_sessions_with_empty_pane_id() {
     let calls = fake.calls();
     let closes: Vec<&Vec<String>> = calls
         .iter()
-        .filter(|c| c.get(1).map(String::as_str) == Some("pane") && c.get(2).map(String::as_str) == Some("close"))
+        .filter(|c| {
+            c.get(1).map(String::as_str) == Some("pane")
+                && c.get(2).map(String::as_str) == Some("close")
+        })
         .collect();
     assert_eq!(closes.len(), 0, "empty paneId must be skipped, not closed");
 }
@@ -2311,12 +2857,32 @@ fn sweep_never_deletes_non_engine_dirs() {
     let daemon = spawn_daemon(&root, &fake, clock);
     let ack = daemon.cleanup(None);
     assert!(ack.ok);
-    assert!(notch_accept.exists(), "unrelated notch-accept-123 must survive sweep");
-    assert!(notch_foo.exists(), "unrelated notch-foo-bar must survive sweep");
-    assert!(impostor.exists(), "nonempty untracked exact-name dir must survive sweep");
-    assert!(!empty_orphan.exists(), "exact-name empty orphan must be swept");
-    assert!(!tracked_dir.exists(), "tracked dead session dir must be removed");
-    assert_eq!(ack.removed, Some(2), "one tracked dead dir + one empty orphan, got {:?}", ack.removed);
+    assert!(
+        notch_accept.exists(),
+        "unrelated notch-accept-123 must survive sweep"
+    );
+    assert!(
+        notch_foo.exists(),
+        "unrelated notch-foo-bar must survive sweep"
+    );
+    assert!(
+        impostor.exists(),
+        "nonempty untracked exact-name dir must survive sweep"
+    );
+    assert!(
+        !empty_orphan.exists(),
+        "exact-name empty orphan must be swept"
+    );
+    assert!(
+        !tracked_dir.exists(),
+        "tracked dead session dir must be removed"
+    );
+    assert_eq!(
+        ack.removed,
+        Some(2),
+        "one tracked dead dir + one empty orphan, got {:?}",
+        ack.removed
+    );
     let snap = daemon.snapshot();
     assert!(
         snap.warnings.iter().any(|w| w.contains("notch-S1-OC09")),

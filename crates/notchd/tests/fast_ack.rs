@@ -100,7 +100,10 @@ fn submit_task_acks_before_slow_spawn_and_persists_id() {
     // Release the blocked herdr spawn so the daemon can be torn down.
     let _ = tx.send(());
     assert!(ack.ok, "submit_task failed: {:?}", ack.error);
-    let id = ack.session_id.clone().unwrap_or_else(|| "S1-OC01".to_string());
+    let id = ack
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "S1-OC01".to_string());
     assert!(
         ack_ms < 1000,
         "submit→ack took {ack_ms}ms; the ack must not wait for herdr agent-start"
@@ -115,7 +118,10 @@ fn submit_task_acks_before_slow_spawn_and_persists_id() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert!(ids.contains(&id.as_str()), "id {id} not persisted before ack: {reg}");
+    assert!(
+        ids.contains(&id.as_str()),
+        "id {id} not persisted before ack: {reg}"
+    );
 
     // Spawn continues asynchronously: after the gate opens the pane appears.
     let mut pane_attached = false;
@@ -128,7 +134,11 @@ fn submit_task_acks_before_slow_spawn_and_persists_id() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert!(pane_attached, "async spawn never attached the pane: {}", session_snapshot(&daemon, &id));
+    assert!(
+        pane_attached,
+        "async spawn never attached the pane: {}",
+        session_snapshot(&daemon, &id)
+    );
 }
 
 /// A background spawn failure must NOT turn the ack into an error: it is
@@ -157,7 +167,11 @@ fn background_spawn_failure_surfaces_in_snapshot_warnings() {
     );
     let ack_ms = t.elapsed().as_millis();
     let _ = tx.send(());
-    assert!(ack.ok, "fast ack contract: spawn failures are post-ack: {:?}", ack.error);
+    assert!(
+        ack.ok,
+        "fast ack contract: spawn failures are post-ack: {:?}",
+        ack.error
+    );
     assert!(ack_ms < 1000, "failure path also blocked {ack_ms}ms");
     let id = ack.session_id.unwrap_or_else(|| "S1-OC01".to_string());
 
@@ -176,5 +190,8 @@ fn background_spawn_failure_surfaces_in_snapshot_warnings() {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    assert!(warned, "spawn failure must surface via snapshot warning + failed status");
+    assert!(
+        warned,
+        "spawn failure must surface via snapshot warning + failed status"
+    );
 }

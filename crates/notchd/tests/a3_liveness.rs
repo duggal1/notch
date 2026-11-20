@@ -30,7 +30,10 @@ fn phase0_mono_is_monotonic_and_shares_one_epoch() {
     let c = SystemClock.mono_ms();
     assert!(b >= a, "mono_ms must never go backwards: {a} -> {b}");
     assert!(c >= b, "mono_ms must never go backwards: {b} -> {c}");
-    assert!(c - b < 5_000, "separate Clock instances share one OnceLock anchor");
+    assert!(
+        c - b < 5_000,
+        "separate Clock instances share one OnceLock anchor"
+    );
 }
 
 #[test]
@@ -44,10 +47,18 @@ fn phase0_fake_mono_ignores_wall_clock_jumps() {
     assert_eq!(c.now_ms(), T0 + 3_600_000);
 
     c.set(T0 - 3_600_000); // wall -1h
-    assert_eq!(c.mono_ms(), T0, "mono must not follow a backwards wall jump");
+    assert_eq!(
+        c.mono_ms(),
+        T0,
+        "mono must not follow a backwards wall jump"
+    );
 
     c.advance_ms(5_000); // real elapsed time
-    assert_eq!(c.mono_ms(), T0 + 5_000, "mono advances only with elapsed time");
+    assert_eq!(
+        c.mono_ms(),
+        T0 + 5_000,
+        "mono advances only with elapsed time"
+    );
     assert_eq!(c.now_ms(), T0 - 3_600_000 + 5_000);
 }
 
@@ -65,17 +76,45 @@ fn obs(quiet_ms: u64) -> Obs {
 #[test]
 fn classify_alive_when_not_working_or_revision_changed_or_oc_busy() {
     let w = Watchdog::new(15);
-    assert_eq!(w.classify(obs(20_000)), Liveness::Suspect, "sanity: quiet working session");
-    assert_eq!(w.classify(Obs { status: Status::Idle, ..obs(60_000) }), Liveness::Alive);
-    assert_eq!(w.classify(Obs { status: Status::Done, ..obs(60_000) }), Liveness::Alive);
-    assert_eq!(w.classify(Obs { status: Status::Failed, ..obs(60_000) }), Liveness::Alive);
     assert_eq!(
-        w.classify(Obs { revision_changed_now: true, ..obs(60_000) }),
+        w.classify(obs(20_000)),
+        Liveness::Suspect,
+        "sanity: quiet working session"
+    );
+    assert_eq!(
+        w.classify(Obs {
+            status: Status::Idle,
+            ..obs(60_000)
+        }),
+        Liveness::Alive
+    );
+    assert_eq!(
+        w.classify(Obs {
+            status: Status::Done,
+            ..obs(60_000)
+        }),
+        Liveness::Alive
+    );
+    assert_eq!(
+        w.classify(Obs {
+            status: Status::Failed,
+            ..obs(60_000)
+        }),
+        Liveness::Alive
+    );
+    assert_eq!(
+        w.classify(Obs {
+            revision_changed_now: true,
+            ..obs(60_000)
+        }),
         Liveness::Alive,
         "revision changed in THIS poll means the old timestamp is irrelevant"
     );
     assert_eq!(
-        w.classify(Obs { oc_busy: Some(true), ..obs(60_000) }),
+        w.classify(Obs {
+            oc_busy: Some(true),
+            ..obs(60_000)
+        }),
         Liveness::Alive,
         "oc_busy is a second opinion that rescues a frozen revision"
     );
@@ -85,17 +124,32 @@ fn classify_alive_when_not_working_or_revision_changed_or_oc_busy() {
 fn classify_suspect_at_threshold_stuck_at_double_threshold() {
     let w = Watchdog::new(15);
     assert_eq!(w.classify(obs(14_999)), Liveness::Alive);
-    assert_eq!(w.classify(obs(15_000)), Liveness::Suspect, "threshold is inclusive");
+    assert_eq!(
+        w.classify(obs(15_000)),
+        Liveness::Suspect,
+        "threshold is inclusive"
+    );
     assert_eq!(w.classify(obs(29_999)), Liveness::Suspect);
-    assert_eq!(w.classify(obs(30_000)), Liveness::Stuck, "Stuck requires 2x threshold");
-    assert_eq!(w.classify(obs(u64::MAX)), Liveness::Stuck, "no overflow panic");
+    assert_eq!(
+        w.classify(obs(30_000)),
+        Liveness::Stuck,
+        "Stuck requires 2x threshold"
+    );
+    assert_eq!(
+        w.classify(obs(u64::MAX)),
+        Liveness::Stuck,
+        "no overflow panic"
+    );
 }
 
 #[test]
 fn oc_busy_false_is_not_a_rescue() {
     let w = Watchdog::new(15);
     assert_eq!(
-        w.classify(Obs { oc_busy: Some(false), ..obs(60_000) }),
+        w.classify(Obs {
+            oc_busy: Some(false),
+            ..obs(60_000)
+        }),
         Liveness::Stuck,
         "only Some(true) counts; Some(false) and None are not evidence of life"
     );
@@ -104,32 +158,57 @@ fn oc_busy_false_is_not_a_rescue() {
 #[test]
 fn pane_close_defaults_on_and_only_for_stuck() {
     let mut w = Watchdog::new(15);
-    assert!(w.kill_on_stuck(), "production default kills verified stuck sessions");
+    assert!(
+        w.kill_on_stuck(),
+        "production default kills verified stuck sessions"
+    );
     assert!(w.should_close_pane(Liveness::Stuck));
-    assert!(!w.should_close_pane(Liveness::Suspect), "Suspect is nudge-only");
+    assert!(
+        !w.should_close_pane(Liveness::Suspect),
+        "Suspect is nudge-only"
+    );
     assert!(!w.should_close_pane(Liveness::Alive));
     w.set_kill_on_stuck(false);
-    assert!(!w.should_close_pane(Liveness::Stuck), "operators can opt out");
+    assert!(
+        !w.should_close_pane(Liveness::Stuck),
+        "operators can opt out"
+    );
 }
 
 #[test]
 fn stall_gap_is_strictly_greater_than_three_poll_intervals() {
     assert!(!Watchdog::is_stall_gap(6_000, 2_000));
     assert!(Watchdog::is_stall_gap(6_001, 2_000));
-    assert!(!Watchdog::is_stall_gap(0, 0), "zero interval never trips the guard");
+    assert!(
+        !Watchdog::is_stall_gap(0, 0),
+        "zero interval never trips the guard"
+    );
 }
 
 #[test]
 fn suspect_action_is_once_per_episode_and_reset_on_revision_change() {
     let mut w = Watchdog::new(15);
     assert_eq!(w.note_poll(1_000), None);
-    assert_eq!(w.note_poll(3_000), Some(2_000), "gap reported for stall guard");
+    assert_eq!(
+        w.note_poll(3_000),
+        Some(2_000),
+        "gap reported for stall guard"
+    );
     assert!(w.take_suspect_action("S1-OC01", 20_000));
-    assert!(!w.take_suspect_action("S1-OC01", 25_000), "no nudge spam every tick");
+    assert!(
+        !w.take_suspect_action("S1-OC01", 25_000),
+        "no nudge spam every tick"
+    );
     w.mark_revision_change("S1-OC01", 30_000);
-    assert!(w.take_suspect_action("S1-OC01", 50_000), "new episode re-arms nudge");
+    assert!(
+        w.take_suspect_action("S1-OC01", 50_000),
+        "new episode re-arms nudge"
+    );
     assert!(w.take_stuck_action("S1-OC01", 70_000));
-    assert!(!w.take_stuck_action("S1-OC01", 75_000), "stuck escalation is once per episode");
+    assert!(
+        !w.take_stuck_action("S1-OC01", 75_000),
+        "stuck escalation is once per episode"
+    );
 }
 
 // ---------- section 3.8: blocked is waiting on a human ----------
@@ -139,9 +218,14 @@ fn blocked_is_needs_human_on_first_and_later_failures() {
     for count in [0, 1, 7] {
         match decide_on_failure_with_reason(Some("blocked_waiting"), count, Some("tail".into())) {
             FailureAction::NeedsHuman { reason } => {
-                assert!(reason.contains("blocked_waiting"), "reason carries the cause: {reason}");
+                assert!(
+                    reason.contains("blocked_waiting"),
+                    "reason carries the cause: {reason}"
+                );
             }
-            other => panic!("blocked must never reprompt or plain-escalate (count {count}): {other:?}"),
+            other => {
+                panic!("blocked must never reprompt or plain-escalate (count {count}): {other:?}")
+            }
         }
     }
 }
@@ -210,16 +294,20 @@ impl FakeHerdr {
     fn close_count(&self) -> usize {
         self.calls()
             .iter()
-            .filter(|c| c.get(1).map(String::as_str) == Some("pane")
-                && c.get(2).map(String::as_str) == Some("close"))
+            .filter(|c| {
+                c.get(1).map(String::as_str) == Some("pane")
+                    && c.get(2).map(String::as_str) == Some("close")
+            })
             .count()
     }
 
     fn prompts(&self) -> Vec<String> {
         self.calls()
             .iter()
-            .filter(|c| c.get(1).map(String::as_str) == Some("agent")
-                && c.get(2).map(String::as_str) == Some("prompt"))
+            .filter(|c| {
+                c.get(1).map(String::as_str) == Some("agent")
+                    && c.get(2).map(String::as_str) == Some("prompt")
+            })
             .map(|c| c.get(4).cloned().unwrap_or_default())
             .collect()
     }
@@ -342,7 +430,12 @@ fn plan(root: &Path, n: usize) -> PathBuf {
     path
 }
 
-fn spawn(root: &Path, fake: &Arc<FakeHerdr>, clock: Arc<FakeClock>, n: usize) -> (Daemon, Vec<String>) {
+fn spawn(
+    root: &Path,
+    fake: &Arc<FakeHerdr>,
+    clock: Arc<FakeClock>,
+    n: usize,
+) -> (Daemon, Vec<String>) {
     let daemon = build(root, fake, clock);
     assert!(daemon.run_plan(&plan(root, n)).ok);
     let panes = (1..=n).map(|i| format!("wT:p{i}")).collect();
@@ -391,11 +484,25 @@ fn stalled_hour_plus_revision_change_in_same_poll_never_kills() {
     daemon.poll_once();
 
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Working, "revision change wins over stalled timestamp");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Working,
+        "revision change wins over stalled timestamp"
+    );
     assert_eq!(snap.sessions[0].failure_reason, None);
-    assert_eq!(fake.close_count(), 0, "no pane close on a stalled hour + revision change");
-    assert!(!escalation_kinds(&daemon).iter().any(|k| k == "stuck" || k == "stuck_suspect"));
-    assert!(snap.warnings.iter().any(|w| w.contains("watchdog stall")), "stall logged: {:?}", snap.warnings);
+    assert_eq!(
+        fake.close_count(),
+        0,
+        "no pane close on a stalled hour + revision change"
+    );
+    assert!(!escalation_kinds(&daemon)
+        .iter()
+        .any(|k| k == "stuck" || k == "stuck_suspect"));
+    assert!(
+        snap.warnings.iter().any(|w| w.contains("watchdog stall")),
+        "stall logged: {:?}",
+        snap.warnings
+    );
 }
 
 #[test]
@@ -412,8 +519,15 @@ fn stall_alone_grants_grace_without_killing() {
     daemon.poll_once();
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Working);
     assert_eq!(fake.close_count(), 0);
-    assert!(escalation_kinds(&daemon).is_empty(), "stall grants grace, no escalation");
-    assert!(daemon.snapshot().warnings.iter().any(|w| w.contains("grace granted")));
+    assert!(
+        escalation_kinds(&daemon).is_empty(),
+        "stall grants grace, no escalation"
+    );
+    assert!(daemon
+        .snapshot()
+        .warnings
+        .iter()
+        .any(|w| w.contains("grace granted")));
 }
 
 // ---------- action ladder ----------
@@ -435,7 +549,10 @@ fn suspect_nudges_and_escalates_once_without_closing_pane() {
     assert!(escalation_kinds(&daemon).contains(&"stuck_suspect".to_string()));
     let prompts = fake.prompts();
     assert_eq!(prompts.len(), 1, "one nudge, not one per tick: {prompts:?}");
-    assert!(!prompts[0].contains("Diagnose and continue"), "nudge is not a failure re-prompt");
+    assert!(
+        !prompts[0].contains("Diagnose and continue"),
+        "nudge is not a failure re-prompt"
+    );
 
     daemon.poll_once(); // same instant: no repeat nudge
     assert_eq!(fake.prompts().len(), 1, "nudge deduped within an episode");
@@ -454,10 +571,17 @@ fn stuck_escalates_but_keeps_pane_when_kill_is_off() {
 
     tick_to(&clock, &daemon, 30_000); // 2x threshold in poll-sized steps
     let snap = daemon.snapshot();
-    assert_eq!(snap.sessions[0].status, Status::Working, "Stuck with kill disabled is not failed");
+    assert_eq!(
+        snap.sessions[0].status,
+        Status::Working,
+        "Stuck with kill disabled is not failed"
+    );
     assert_eq!(fake.close_count(), 0);
     assert!(escalation_kinds(&daemon).contains(&"stuck".to_string()));
-    assert!(snap.warnings.iter().any(|w| w.contains("kill_on_stuck is OFF")));
+    assert!(snap
+        .warnings
+        .iter()
+        .any(|w| w.contains("kill_on_stuck is OFF")));
 }
 
 #[test]
@@ -482,8 +606,20 @@ fn stuck_with_kill_on_stuck_snapshots_wip_before_close() {
         );
     };
     run_git(&["-C", cwd.to_str().unwrap(), "init", "-q"]);
-    run_git(&["-C", cwd.to_str().unwrap(), "config", "user.email", "a3@example.test"]);
-    run_git(&["-C", cwd.to_str().unwrap(), "config", "user.name", "A3 Test"]);
+    run_git(&[
+        "-C",
+        cwd.to_str().unwrap(),
+        "config",
+        "user.email",
+        "a3@example.test",
+    ]);
+    run_git(&[
+        "-C",
+        cwd.to_str().unwrap(),
+        "config",
+        "user.name",
+        "A3 Test",
+    ]);
     std::fs::write(cwd.join("README.md"), "initial\n").unwrap();
     run_git(&["-C", cwd.to_str().unwrap(), "add", "-A"]);
     run_git(&["-C", cwd.to_str().unwrap(), "commit", "-qm", "initial"]);
@@ -508,7 +644,10 @@ fn stuck_with_kill_on_stuck_snapshots_wip_before_close() {
     );
     assert_eq!(fake.close_count(), 1, "opt-in kill closes exactly one pane");
     assert_eq!(daemon.snapshot().sessions[0].status, Status::Failed);
-    assert_eq!(daemon.snapshot().sessions[0].failure_reason.as_deref(), Some("stuck"));
+    assert_eq!(
+        daemon.snapshot().sessions[0].failure_reason.as_deref(),
+        Some("stuck")
+    );
 }
 
 // ---------- section 3.8 at the poll level ----------
@@ -531,9 +670,20 @@ fn blocked_keeps_pane_and_temp_and_never_types_a_prompt() {
     daemon.poll_once();
 
     let snap = daemon.snapshot();
-    assert!(!snap.sessions[0].status.is_terminal(), "blocked is not failed: {}", snap.sessions[0].status);
-    assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("blocked_waiting"));
-    assert_eq!(fake.prompts(), Vec::<String>::new(), "never type into a permission prompt");
+    assert!(
+        !snap.sessions[0].status.is_terminal(),
+        "blocked is not failed: {}",
+        snap.sessions[0].status
+    );
+    assert_eq!(
+        snap.sessions[0].failure_reason.as_deref(),
+        Some("blocked_waiting")
+    );
+    assert_eq!(
+        fake.prompts(),
+        Vec::<String>::new(),
+        "never type into a permission prompt"
+    );
     assert_eq!(fake.close_count(), 0, "pane kept for the human");
     assert!(temp.exists(), "temp dir kept for the human");
     assert!(escalation_kinds(&daemon).contains(&"needs_you".to_string()));
@@ -566,7 +716,11 @@ fn stuck_default_config_closes_pane_after_escalation_is_recorded() {
 
     tick_to(&clock, &daemon, 30_000); // 2x threshold => verified Stuck
 
-    assert_eq!(fake.close_count(), 1, "default config closes a verified stuck pane");
+    assert_eq!(
+        fake.close_count(),
+        1,
+        "default config closes a verified stuck pane"
+    );
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions[0].status, Status::Failed);
     assert_eq!(snap.sessions[0].failure_reason.as_deref(), Some("stuck"));
@@ -656,22 +810,43 @@ fn twenty_sessions_one_truly_stuck_zero_false_positives() {
 
     let snap = daemon.snapshot();
     assert_eq!(snap.sessions.len(), 20);
-    assert_eq!(snap.sessions[7].status, Status::Failed, "default config kills the verified stuck session");
+    assert_eq!(
+        snap.sessions[7].status,
+        Status::Failed,
+        "default config kills the verified stuck session"
+    );
     let escalated: Vec<&str> = snap
         .escalations
         .iter()
         .filter(|e| e.kind == "stuck" || e.kind == "stuck_suspect")
         .map(|e| e.session.as_str())
         .collect();
-    assert!(escalated.contains(&"S1-OC08"), "the one truly stuck session was flagged: {escalated:?}");
-    assert_eq!(escalated.iter().filter(|s| **s != "S1-OC08").count(), 0, "zero false positives: {escalated:?}");
-    assert_eq!(fake.close_count(), 1, "default config closes the one verified stuck pane");
+    assert!(
+        escalated.contains(&"S1-OC08"),
+        "the one truly stuck session was flagged: {escalated:?}"
+    );
+    assert_eq!(
+        escalated.iter().filter(|s| **s != "S1-OC08").count(),
+        0,
+        "zero false positives: {escalated:?}"
+    );
+    assert_eq!(
+        fake.close_count(),
+        1,
+        "default config closes the one verified stuck pane"
+    );
 
     ticks.sort();
     let p99 = ticks[ticks.len() - 1]; // 20 samples: worst == p99 here
     let bound = Duration::from_millis(2 * config(&root).poll_interval_ms);
-    assert!(p99 <= bound, "tick gap p99 {p99:?} exceeded 2x poll interval {bound:?}");
-    eprintln!("A3 T3: 20 sessions, 20 ticks, p99={}ms, false_positives=0", p99.as_millis());
+    assert!(
+        p99 <= bound,
+        "tick gap p99 {p99:?} exceeded 2x poll interval {bound:?}"
+    );
+    eprintln!(
+        "A3 T3: 20 sessions, 20 ticks, p99={}ms, false_positives=0",
+        p99.as_millis()
+    );
 }
 
 // ---------- T4: clock chaos ----------
