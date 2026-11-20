@@ -9,6 +9,7 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
+use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::Message;
 
 #[test]
@@ -175,39 +176,51 @@ fn ws_disconnect_and_reconnect_gets_a_fresh_hello() {
 #[test]
 fn ws_client_count_is_bounded() {
     let server = WsDaemon::start("cap");
-    // The harness's readiness probe just disconnected; give the server a tick
-    // to free that slot before filling all of them.
-    std::thread::sleep(Duration::from_millis(150));
+    // Deterministic readiness: wait on the server's admitted-client counter,
+    // not on a fixed sleep. The harness readiness probe has disconnected by
+    // the time start() returns, but the server may not have reaped it yet.
+    assert!(
+        server.wait_for_active(0, Duration::from_secs(5)),
+        "readiness probe slot was never released"
+    );
     let mut clients = Vec::new();
-    for _ in 0..MAX_CLIENTS {
+    for n in 1..=MAX_CLIENTS {
         let mut c = server.connect();
-        let hello = c.read_value_within(Duration::from_secs(2));
+        let hello = c.read_value_within(Duration::from_secs(5));
         assert_eq!(hello.as_ref().and_then(|v| v["event"].as_str()), Some("hello"));
         clients.push(c);
+        assert!(
+            server.wait_for_active(n, Duration::from_secs(5)),
+            "admitted count did not reach {n}"
+        );
     }
     // Every admitted client still works.
     let pong = clients[0].rpc_ack("ping", &json!({"cmd":"ping"}));
     assert_eq!(pong["ok"], true);
 
-    // One more connection completes the HTTP upgrade but is immediately
-    // closed with a WS Close frame — it never receives a hello.
-    let extra_url = server.url();
-    let extra = std::thread::spawn(move || match tungstenite::connect(&extra_url) {
-        Err(_) => true,
+    // The 17th client is authenticated so it reaches the capacity check (an
+    // unauthenticated one would be rejected at handshake for a different
+    // reason). It must get WS Close 1012 (Restart) and never a hello.
+    match server.connect_raw_with_auth() {
+        Err(e) => panic!("17th client should complete the upgrade, got {e}"),
         Ok((mut ws, _)) => match ws.read() {
-            Ok(Message::Close(_)) => true,
-            Err(_) => true,
-            Ok(_) => false,
+            Ok(Message::Close(Some(frame))) => {
+                assert_eq!(frame.code, CloseCode::Restart, "capacity close must be 1012");
+            }
+            other => panic!("17th client must be closed with 1012, got {other:?}"),
         },
-    });
-    assert!(extra.join().unwrap_or(false), "client {} must be rejected", MAX_CLIENTS + 1);
+    }
+    assert_eq!(server.active(), MAX_CLIENTS, "rejected client must not consume a slot");
 
-    // Freeing a slot allows a new client in.
+    // Freeing a slot allows a new client in — again wait on the counter.
     clients[0].close();
-    std::thread::sleep(Duration::from_millis(150));
+    assert!(
+        server.wait_for_active(MAX_CLIENTS - 1, Duration::from_secs(5)),
+        "disconnected slot was never released"
+    );
     let mut c = server.connect();
     assert_eq!(
-        c.read_value_within(Duration::from_secs(2))
+        c.read_value_within(Duration::from_secs(5))
             .as_ref()
             .and_then(|v| v["event"].as_str()),
         Some("hello")
