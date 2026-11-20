@@ -88,12 +88,12 @@ fn mode_frame_table_with_notch() {
 #[test]
 fn mode_frame_table_fallback_notchless() {
     let rest = frame_for_mode(Mode::Rest, 1920.0, None);
-    assert_eq!((rest.width, rest.height), (320.0, 44.0));
+    assert_eq!((rest.width, rest.height), (288.0, 44.0));
     assert_eq!(rest.y, 0.0);
-    assert!((rest.x - (1920.0 - 320.0) / 2.0).abs() < 0.001);
+    assert!((rest.x - (1920.0 - 288.0) / 2.0).abs() < 0.001);
 
     let peek = frame_for_mode(Mode::Peek, 1920.0, None);
-    assert_eq!((peek.width, peek.height), (440.0, 76.0));
+    assert_eq!((peek.width, peek.height), (296.0, 44.0));
 
     // Open is the same everywhere — the shell hangs from the bar at its size.
     let open = frame_for_mode(Mode::Open, 1920.0, None);

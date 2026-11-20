@@ -15,7 +15,6 @@ export function EmptyState({ onNewTask }: { onNewTask: () => void }) {
 
   return (
     <div className="empty">
-      <p className="muted">Describe the first task — it opens in the dashboard composer.</p>
       <div className="start-row">
         <span className="label">Start from</span>
         <div className="start-chips">
@@ -36,10 +35,11 @@ export function EmptyState({ onNewTask }: { onNewTask: () => void }) {
           aria-label="First task"
           spellCheck={false}
         />
-        <button className="btn-primary empty-go ripple" type="submit" aria-label="Assign the first task">
+        <button className="btn-primary empty-go ripple" type="submit" disabled={!draft.trim()} aria-label="Assign the first task">
           Assign
         </button>
       </form>
+      <button className="empty-dashboard" onClick={onNewTask}>Open dashboard</button>
     </div>
   );
 }

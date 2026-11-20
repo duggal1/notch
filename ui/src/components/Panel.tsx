@@ -1,7 +1,6 @@
 // Panel.tsx — header (logo + status only) · state · supervisors · sessions · latency · footer.
 // Idle is a separate, short layout: sphere + "Idle" + the first-task composer. No zeros, no empty cards.
-import { useEffect, useState, type MutableRefObject, type Ref } from 'react';
-import { DistortionWave, type DistortionWaveHandle, type PaletteName } from '../vendor/distortion-waves/src';
+import { useEffect, useState, type MutableRefObject } from 'react';
 import { NumberRoll } from './NumberRoll';
 import { HeartbeatField } from './HeartbeatField';
 import { Drift } from './Drift';
@@ -12,10 +11,8 @@ import { PixelIcon } from './PixelIcon';
 import { PixelMeter } from './pixel/PixelMeter';
 import { PixelSphere } from './pixel/PixelSphere';
 import type { Session, Supervisor, Decision, Escalation } from '../lib/bridge';
-import { pad2 } from '../lib/format';
 import type { Status } from '../lib/tokens';
 
-const WAVE_PAL: Record<Status, PaletteName> = { working: 'ocean', failed: 'sunset', done: 'mono', idle: 'mono' };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 type PanelProps = {
@@ -32,7 +29,6 @@ type PanelProps = {
   killingIds: Set<string>;
   sweepSent: boolean;
   epsRef: MutableRefObject<number>;
-  waveRef: Ref<DistortionWaveHandle>;
   logs: (s: Session) => void;
   reprompt: (s: Session) => void;
   focus: (id: string) => void;
@@ -67,7 +63,7 @@ function IdlePanel({ openDashboard }: { openDashboard: () => void }) {
 
 export function Panel(props: PanelProps) {
   const { open, top, wcount, eps, load, booted, sessions, supervisors, decisions, escalations,
-    killingIds, sweepSent, epsRef, waveRef,
+    killingIds, sweepSent, epsRef,
     logs, reprompt, focus, kill, onCleanup,
     openDashboard, onMessageSupervisor, onTogglePause, onKillSupervisor, onOpenTarget } = props;
 
@@ -123,20 +119,11 @@ export function Panel(props: PanelProps) {
         </span>
       </header>
 
-      {/* state: the wave passes across both cards when the top status flips */}
-      <DistortionWave
-        ref={waveRef}
-        type="center"
-        palette={WAVE_PAL[top]}
-        cornerRadius={0}
-        prewarm={false}
-        style={{ height: 150, flex: 'none' }}
-      >
         <div className="state">
           <div className="card state-num">
-            <PixelSphere size={40} cell={2} live={open} className="state-num-mark" />
+            <PixelSphere size={40} cell={2} live={open && wcount > 0} className="state-num-mark" />
             <div className="state-num-read">
-              <NumberRoll value={wcount} format={(n) => pad2(Math.round(n))} className="num-xl" />
+              <NumberRoll value={wcount} format={(n) => String(Math.round(n))} className="num-xl" />
               <span className="label">In flight</span>
             </div>
           </div>
@@ -145,7 +132,7 @@ export function Panel(props: PanelProps) {
               <span className="label">Events / sec</span>
               <span className="label label--pale num">{eps.toFixed(1)}</span>
             </div>
-            <HeartbeatField epsRef={epsRef} active={open} />
+            <HeartbeatField epsRef={epsRef} active={open && eps > 0} />
             <div className="row-between">
               <span className="label">Load</span>
               <span className="label num">{Math.round(load * 100)}%</span>
@@ -153,7 +140,7 @@ export function Panel(props: PanelProps) {
             <PixelMeter value={load} cells={22} tone="hot" label="Load" />
           </div>
         </div>
-      </DistortionWave>
+
 
       {/* supervisors */}
       <section className="card sup-card">
@@ -181,7 +168,7 @@ export function Panel(props: PanelProps) {
       </section>
 
       {/* sessions */}
-      <section className="sess">
+      <section className="sess card">
         <div className="sec-head">
           <span className="label">Sessions</span>
           <span className="label num">{sessions.length}</span>

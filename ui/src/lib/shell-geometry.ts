@@ -7,11 +7,11 @@ export const notch: Notch =
   (typeof window !== 'undefined' && (window as unknown as { __NOTCH__?: Notch }).__NOTCH__) || { w: 200, h: 32 };
 
 export function frameFor(mode: Mode, contentH = 640, n: Notch = notch) {
-  const wing = 60; // one metric per wing
+  const wing = 44;
   switch (mode) {
     // the whole rest/peek pill is one real button — never smaller than 44px tall (P0)
     case 'rest': return { w: n.w + wing * 2, h: Math.max(n.h, 44), r: 12, e: 10 };
-    case 'peek': return { w: n.w + wing * 2 + 120, h: Math.max(n.h + 44, 72), r: 20, e: 10 };
+    case 'peek': return { w: n.w + wing * 2 + 8, h: Math.max(n.h + 8, 44), r: 16, e: 10 };
     case 'open': return { w: 560, h: contentH, r: 28, e: 12 };
   }
 }
