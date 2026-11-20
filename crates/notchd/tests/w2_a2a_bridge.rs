@@ -5,9 +5,11 @@ use notchd::mcp_bridge::{BridgeBackend, BridgeMessage, McpBridge, TOOL_NAMES};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+type Enqueue = (String, String, String, String, String); // id, from, to, kind, body
+
 #[derive(Default)]
 struct Recorder {
-    enqueues: Mutex<Vec<(String, String, String, String, String)>>, // id, from, to, kind, body
+    enqueues: Mutex<Vec<Enqueue>>,
     peers: Vec<String>,
     messages: Vec<BridgeMessage>,
 }
