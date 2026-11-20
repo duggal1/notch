@@ -593,6 +593,37 @@ fn default_config_stall_grants_grace_and_kills_nobody() {
     assert!(escalation_kinds(&daemon).is_empty());
 }
 
+// ---------- persistent slow poll must not disable the watchdog ----------
+
+#[test]
+fn persistent_slow_poll_must_not_disable_watchdog_forever() {
+    let root = tmp_root("slow-poll");
+    let fake = FakeHerdr::new();
+    let clock = Arc::new(FakeClock::new(T0));
+    let (daemon, panes) = spawn(&root, &fake, clock.clone(), 1);
+    let pane = &panes[0];
+    fake.set_agents(vec![agent(pane, "working", 7)]);
+    daemon.poll_once(); // prime
+    fake.clear_calls();
+
+    // A bounded subprocess call makes EVERY poll take 8 s — larger than 3x
+    // the 2 s poll interval. Grace must cover a one-off stall, not an
+    // indefinitely slow loop: the frozen revision must eventually be killed.
+    for _ in 0..12 {
+        clock.advance_ms(8_000);
+        daemon.poll_once();
+    }
+
+    let snap = daemon.snapshot();
+    assert_eq!(
+        fake.close_count(),
+        1,
+        "a permanently slow poll loop must still kill a verified stuck session"
+    );
+    assert_eq!(snap.sessions[0].status, Status::Failed);
+    assert!(escalation_kinds(&daemon).contains(&"stuck".to_string()));
+}
+
 // ---------- T3: 20 sessions, one truly stuck ----------
 
 #[test]
