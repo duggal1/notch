@@ -4,9 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Shell } from './components/Shell';
 import { Panel } from './components/Panel';
 import { LogsPanel } from './components/LogsPanel';
-import { DitherField } from './components/pixel/DitherField';
 import type { DistortionWaveHandle } from './vendor/distortion-waves/src';
-import { send, logs as fetchLogs } from './lib/bridge';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { send, logs as fetchLogs, isTauri } from './lib/bridge';
 import type { Session, LogsPayload } from './lib/bridge';
 import { topStatus, workingCount, normalizeEps, pad2, fmtEps } from './lib/format';
 import { useSnapshot } from './lib/use-snapshot';
@@ -22,6 +23,7 @@ export default function App() {
   const [logsPayload, setLogsPayload] = useState<LogsPayload | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [sweepSent, setSweepSent] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   const shellRef = useRef<HTMLDivElement>(null);
   const waveRef = useRef<DistortionWaveHandle>(null);
@@ -32,6 +34,9 @@ export default function App() {
 
   const sessions = useMemo(() => snapshot?.sessions ?? [], [snapshot]);
   const supervisors = useMemo(() => snapshot?.supervisors ?? [], [snapshot]);
+  // idle drives both the concise layout and the shorter open silhouette (<= 420px)
+  const idle = sessions.length === 0;
+  const contentH = idle ? 420 : 640;
   const eps = snapshot?.eps ?? 0;
   useEffect(() => {
     epsRef.current = eps;
@@ -61,10 +66,10 @@ export default function App() {
     intentTimer.current = window.setTimeout(() => {
       modeRef.current = m;
       setMode(m);
-      send({ cmd: 'set_frame', mode: m });
+      send({ cmd: 'set_frame', mode: m, contentH });
       if (m === 'open') send({ cmd: 'haptic', kind: 'alignment' });
     }, ms);
-  }, []);
+  }, [contentH]);
   const onEnter = useCallback(() => { if (modeRef.current === 'rest') go('peek', 60); }, [go]);
   const onLeave = useCallback(() => { if (modeRef.current !== 'open') go('rest', 240); }, [go]);
   const onTap = useCallback(() => { if (modeRef.current !== 'open') go('open', 0); }, [go]);
@@ -81,6 +86,23 @@ export default function App() {
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('blur', onBlur); };
   }, [go, logsOpen]);
 
+  // native focus loss closes the popover (the dashboard stealing focus is deliberate)
+  useEffect(() => {
+    if (!isTauri()) return;
+    let off: (() => void) | undefined;
+    let alive = true;
+    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused && modeRef.current !== 'rest') go('rest', 0);
+    }).then((fn) => { if (alive) off = fn; else fn(); }).catch(() => undefined);
+    return () => { alive = false; off?.(); };
+  }, [go]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 2800);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
   // ---------- actions ----------
   const kill = useCallback((id: string) => {
     send({ cmd: 'kill', id });
@@ -95,14 +117,24 @@ export default function App() {
     window.setTimeout(() => setSweepSent(false), 1200);
   }, []);
 
+  const invokeOpenDashboard = useCallback(async () => {
+    try {
+      if (isTauri()) await invoke('open_dashboard');
+      else send({ cmd: 'open_dashboard' }); // browser demos record the command
+      go('rest', 0); // collapse once the dashboard is shown
+    } catch (e) {
+      console.error('[notch] open_dashboard failed', e);
+      setToast('Could not open the dashboard');
+    }
+  }, [go]);
   const openDashboardTarget = useCallback((kind: 'supervisor' | 'session', id: string) => {
     try { localStorage.setItem('notch.target', JSON.stringify({ kind, id })); } catch { /* storage may be unavailable */ }
-    send({ cmd: 'open_dashboard' });
-  }, []);
+    void invokeOpenDashboard();
+  }, [invokeOpenDashboard]);
   const openDashboard = useCallback(() => {
     try { localStorage.setItem('notch.target', JSON.stringify({ kind: 'none' })); } catch { /* storage may be unavailable */ }
-    send({ cmd: 'open_dashboard' });
-  }, []);
+    void invokeOpenDashboard();
+  }, [invokeOpenDashboard]);
 
   const logs = useCallback((s: Session) => {
     fetchLogs(s.id).then((p) => { setLogsPayload(p); setLogsOpen(true); });
@@ -120,26 +152,31 @@ export default function App() {
   const peek = frameFor('peek');
 
   return (
-    <Shell mode={mode} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
-      {/* rest wings */}
-      <div className="wings pointer-events-none absolute top-0 flex items-center justify-between"
-        style={{ left: '50%', transform: 'translateX(-50%)', width: rest.w, height: rest.h }} aria-hidden={open}>
-        <div className="wing"><span className="wing-num">{pad2(wcount)}</span></div>
-        <div className="wing"><span className="wing-num">{fmtEps(Math.min(eps, 99.9))}</span></div>
-      </div>
-      {/* peek */}
-      <div className="peek-center" aria-hidden="true"
-        style={{ left: '50%', transform: 'translateX(-50%)', width: peek.w, top: peek.h - 44 }}>
-        <span className="peek-num num">{pad2(wcount)}</span>
-        <span className="label">In flight</span>
-      </div>
-
-      {/* open: the one atmospheric dither, rising from the bottom edge */}
-      {open && (
-        <div className="open-dither" aria-hidden="true">
-          <DitherField mode="radial" cx={0.5} cy={1.18} cell={3} floor={0.62} animate period={11000} />
+    <Shell mode={mode} contentH={contentH} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
+      {/* rest / peek: idle is only the logo and a calm dot — zeros are noise */}
+      {idle ? (
+        <div className="rest-idle" aria-hidden={open}>
+          <span className="brand-logo" />
+          <i className="live-dot live-dot--idle" />
         </div>
+      ) : (
+        <>
+          <div className="wings pointer-events-none absolute top-0 flex items-center justify-between"
+            style={{ left: '50%', transform: 'translateX(-50%)', width: rest.w, height: rest.h }} aria-hidden={open}>
+            <div className="wing"><span className="wing-num">{pad2(wcount)}</span></div>
+            <div className="wing"><span className="wing-num">{fmtEps(Math.min(eps, 99.9))}</span></div>
+          </div>
+          <div className="peek-center" aria-hidden="true"
+            style={{ left: '50%', transform: 'translateX(-50%)', width: peek.w, top: peek.h - 44 }}>
+            <span className="peek-num num">{pad2(wcount)}</span>
+            <span className="label">In flight</span>
+          </div>
+        </>
       )}
+
+      {/* No dither behind the popover text: the only fields here are the sphere, the
+          logo and the idle hero. The radial backdrop was removed — it sat behind
+          "Sessions", the rows and the footer buttons (DESIGN §5 keep-out). */}
 
       <Panel
           open={open}
@@ -169,6 +206,7 @@ export default function App() {
         />
 
       <LogsPanel open={logsOpen} payload={logsPayload} onClose={() => setLogsOpen(false)} />
+      {toast && <div className="toast" role="status">{toast}</div>}
     </Shell>
   );
 }

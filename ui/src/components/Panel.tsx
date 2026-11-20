@@ -1,4 +1,5 @@
-// Panel.tsx — header strip (status only, no logo) · state · supervisors · sessions · latency · footer.
+// Panel.tsx — header (logo + status only) · state · supervisors · sessions · latency · footer.
+// Idle is a separate, short layout: sphere + "Idle" + the first-task composer. No zeros, no empty cards.
 import { useEffect, useState, type MutableRefObject, type Ref } from 'react';
 import { DistortionWave, type DistortionWaveHandle, type PaletteName } from '../vendor/distortion-waves/src';
 import { NumberRoll } from './NumberRoll';
@@ -10,7 +11,6 @@ import { EmptyState } from './EmptyState';
 import { PixelIcon } from './PixelIcon';
 import { PixelMeter } from './pixel/PixelMeter';
 import { PixelSphere } from './pixel/PixelSphere';
-import { DitherField } from './pixel/DitherField';
 import type { Session, Supervisor, Decision, Escalation } from '../lib/bridge';
 import { pad2 } from '../lib/format';
 import type { Status } from '../lib/tokens';
@@ -18,10 +18,7 @@ import type { Status } from '../lib/tokens';
 const WAVE_PAL: Record<Status, PaletteName> = { working: 'ocean', failed: 'sunset', done: 'mono', idle: 'mono' };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-export function Panel({ open, top, wcount, eps, load, booted, sessions, supervisors, decisions, escalations,
-  killingIds, sweepSent, epsRef, waveRef,
-  logs, reprompt, focus, kill, onCleanup,
-  openDashboard, onMessageSupervisor, onTogglePause, onKillSupervisor, onOpenTarget }: {
+type PanelProps = {
   open: boolean;
   top: Status;
   wcount: number;
@@ -46,7 +43,34 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
   onTogglePause: (sup: Supervisor) => void;
   onKillSupervisor: (id: string) => void;
   onOpenTarget: (kind: 'supervisor' | 'session', id: string) => void;
-}) {
+};
+
+/** The short idle form. The composer is the hero; nothing else earns space. */
+function IdlePanel({ openDashboard }: { openDashboard: () => void }) {
+  return (
+    <div className="panel panel--idle">
+      <header className="p-head">
+        <span className="p-brand">
+          <span className="p-mark" aria-hidden="true"><span className="brand-logo" /></span>
+          <span className="p-status"><i className="live-dot live-dot--idle" /><span>Idle</span></span>
+        </span>
+      </header>
+      <div className="idle-body">
+        <div className="idle-hero" aria-hidden="true">
+          <PixelSphere size={56} cell={3} live={false} />
+        </div>
+        <EmptyState onNewTask={openDashboard} />
+      </div>
+    </div>
+  );
+}
+
+export function Panel(props: PanelProps) {
+  const { open, top, wcount, eps, load, booted, sessions, supervisors, decisions, escalations,
+    killingIds, sweepSent, epsRef, waveRef,
+    logs, reprompt, focus, kill, onCleanup,
+    openDashboard, onMessageSupervisor, onTogglePause, onKillSupervisor, onOpenTarget } = props;
+
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!open) return;
@@ -54,7 +78,24 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
     return () => window.clearInterval(id);
   }, [open]);
 
+  const idle = booted && sessions.length === 0;
   const escCount = escalations?.length ?? 0;
+
+  if (!booted) {
+    return (
+      <div className="panel">
+        <header className="p-head">
+          <span className="p-brand">
+            <span className="p-mark" aria-hidden="true"><span className="brand-logo" /></span>
+            <span className="p-status"><i className="live-dot live-dot--idle" /><span>Connecting</span></span>
+          </span>
+        </header>
+        <div className="empty"><span className="muted">Establishing a session snapshot…</span></div>
+      </div>
+    );
+  }
+
+  if (idle) return <IdlePanel openDashboard={openDashboard} />;
 
   return (
     <div className="panel">
@@ -93,7 +134,6 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
       >
         <div className="state">
           <div className="card state-num">
-            <DitherField className="state-num-crown" mode="linear" angle={0} cell={2} floor={0.22} />
             <PixelSphere size={40} cell={2} live={open} className="state-num-mark" />
             <div className="state-num-read">
               <NumberRoll value={wcount} format={(n) => pad2(Math.round(n))} className="num-xl" />
@@ -147,23 +187,17 @@ export function Panel({ open, top, wcount, eps, load, booted, sessions, supervis
           <span className="label num">{sessions.length}</span>
         </div>
         <div className="sess-body">
-          {!booted ? (
-            <div className="empty"><span className="muted">Connecting to notchd…</span></div>
-          ) : sessions.length === 0 ? (
-            <EmptyState onNewTask={openDashboard} />
-          ) : (
-            <TreeList sessions={sessions} killingIds={killingIds} onLogs={logs} onReprompt={reprompt} onFocus={focus} onKill={kill} />
-          )}
+          <TreeList sessions={sessions} killingIds={killingIds} onLogs={logs} onReprompt={reprompt} onFocus={focus} onKill={kill} />
         </div>
       </section>
 
       <Drift sessions={sessions} />
 
       <footer className="p-foot">
-        <button className="text-btn ripple" onClick={openDashboard}>
+        <button className="btn-primary text-btn ripple" onClick={openDashboard}>
           <PixelIcon name="window" size={15} />Open dashboard
         </button>
-        <button className="text-btn ripple" onClick={onCleanup}>
+        <button className="btn-secondary text-btn ripple" onClick={onCleanup}>
           <PixelIcon name="trash" size={14} />{sweepSent ? 'Sweep sent' : 'Sweep orphans'}
         </button>
       </footer>

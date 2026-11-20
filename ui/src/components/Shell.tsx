@@ -1,19 +1,20 @@
-// Shell.tsx — the notch shell (DESIGN.md §5). The element box is FIXED at the open frame
-// (560×640); only the clip-path silhouette animates on springs — zero layout per morph frame.
+// Shell.tsx — the notch shell (DESIGN.md §5). The element box is FIXED per content mode;
+// only the clip-path silhouette animates on springs — zero layout per morph frame.
 import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { Spring, ticker, reduced } from '../lib/motion';
 import { SPRING } from '../lib/tokens';
 import { frameFor, notchPath, type Mode } from '../lib/shell-geometry';
 
-export function Shell({ mode, shellRef, children, onEnter, onLeave, onTap }: {
+export function Shell({ mode, contentH = 640, shellRef, children, onEnter, onLeave, onTap }: {
   mode: Mode;
+  contentH?: number;
   shellRef: React.RefObject<HTMLDivElement | null>;
   children: ReactNode;
   onEnter: () => void;
   onLeave: () => void;
   onTap: () => void;
 }) {
-  const rest = frameFor('rest');
+  const rest = frameFor('rest', contentH);
   const w = useRef(new Spring(rest.w, SPRING.open));
   const h = useRef(new Spring(rest.h, SPRING.open));
   const r = useRef(new Spring(rest.r, SPRING.open));
@@ -28,12 +29,16 @@ export function Shell({ mode, shellRef, children, onEnter, onLeave, onTap }: {
   };
 
   useLayoutEffect(() => {
+    const el = shellRef.current;
+    el?.style.setProperty('--open-h', `${contentH}px`);
     paint();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    const f = frameFor(mode);
+    const el = shellRef.current;
+    el?.style.setProperty('--open-h', `${contentH}px`);
+    const f = frameFor(mode, contentH);
     e.current = f.e;
     if (reduced) {
       w.current.x = f.w; h.current.x = f.h; r.current.x = f.r; w.current.v = h.current.v = r.current.v = 0;
@@ -46,7 +51,7 @@ export function Shell({ mode, shellRef, children, onEnter, onLeave, onTap }: {
       return !(w.current.settled && h.current.settled && r.current.settled);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, [mode, contentH]);
 
   return (
     <div
@@ -58,9 +63,11 @@ export function Shell({ mode, shellRef, children, onEnter, onLeave, onTap }: {
       aria-label={mode === 'open' ? 'Notch control plane — expanded' : 'Notch control plane — hover to peek, click to open'}
       onPointerEnter={onEnter}
       onPointerLeave={onLeave}
-      onPointerDown={(ev) => { ev.preventDefault(); onTap(); }}
+      onClick={onTap}
       onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onTap(); } }}
     >
+      {/* macOS passes fully transparent pixels through; keep a near-zero-alpha hit layer. */}
+      <span className="hit" aria-hidden="true" />
       {children}
     </div>
   );
