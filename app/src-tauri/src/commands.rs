@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State};
 
+use notchd::approvals::card_digest as engine_card_digest;
 use notchd::daemon::{
     KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, RunPlanAck, SpawnAck, SubmitTaskAck,
 };
@@ -359,8 +360,9 @@ pub struct HarnessOut {
     pub capabilities: Vec<HarnessCapabilityOut>,
 }
 
-/// An approval card derived from the unresolved escalations. `signed: false`
-/// is honest: the ed25519 answer channel is W2-3's work, not the app's.
+/// One answerable card from the engine's signed approval inbox. `signed: true`
+/// means the HMAC answer channel can consume it; the digest is the SHA-256 of
+/// this exact card.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApprovalOut {
@@ -376,17 +378,6 @@ pub struct ApprovalOut {
 
 const PROJECTION: &str = "snapshot-projection";
 const OPTIONAL_READS: &[&str] = &["signIn", "usage", "profiles", "remoteControl"];
-
-/// FNV-1a 64 over the answerable fields — a stable, in-process card digest.
-/// No crypto claim is made; the signed channel is the engine's job (W2-3).
-fn card_digest(id: &str, session: &str, kind: &str, reason: &str, at: u64) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in format!("{id}|{session}|{kind}|{reason}|{at}").bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    format!("{h:016x}")
-}
 
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -448,58 +439,63 @@ fn declare_harnesses() -> Vec<HarnessOut> {
     }]
 }
 
-/// W2-2/W2-3 seam: approval cards from unresolved escalations + blocked
-/// sessions. Oldest first, bounded, one card per session.
-fn approvals_from_snapshot(snap: &Value) -> Vec<ApprovalOut> {
-    let sessions = array_at(snap, "sessions");
+/// Approval cards from the engine's REAL pending inbox, oldest first. The
+/// digest is the engine's SHA-256 of the exact card the UI displays — not a
+/// snapshot projection and not a local FNV hash.
+pub fn approvals_from_engine(daemon: &Daemon) -> Vec<ApprovalOut> {
+    let snap = serde_json::to_value(daemon.snapshot()).unwrap_or_else(|_| json!({}));
     let mut out: Vec<ApprovalOut> = Vec::new();
-    for e in array_at(snap, "escalations") {
-        let session = str_at(e, "session").to_string();
-        let kind = str_at(e, "kind").to_string();
-        if session.is_empty() || (kind != "blocked" && kind != "stuck") {
-            continue;
-        }
-        let id = str_at(e, "id").to_string();
-        let reason = str_at(e, "reason").to_string();
-        let at = u64_at(e, "at");
-        let supervisor = str_at(e, "supervisor").to_string();
+    for card in daemon.pending_approvals() {
+        let supervisor = array_at(&snap, "sessions")
+            .iter()
+            .find(|v| str_at(v, "id") == card.session.as_str())
+            .map(|v| str_at(v, "sup").to_string())
+            .unwrap_or_default();
         out.push(ApprovalOut {
-            digest: card_digest(&id, &session, &kind, &reason, at),
-            id,
-            session,
+            digest: engine_card_digest(&card),
+            id: card.id,
+            session: card.session,
             supervisor,
-            kind,
-            reason,
-            at,
-            signed: false,
-        });
-    }
-    for s in sessions {
-        if str_at(s, "failureReason") != "blocked_waiting" {
-            continue;
-        }
-        let session = str_at(s, "id").to_string();
-        if out.iter().any(|a| a.session == session) {
-            continue;
-        }
-        let id = format!("blocked-{session}");
-        let reason = "The agent is waiting on input only you can give.".to_string();
-        let supervisor = str_at(s, "sup").to_string();
-        let at = u64_at(s, "startedAt");
-        out.push(ApprovalOut {
-            digest: card_digest(&id, &session, "blocked", &reason, at),
-            id,
-            session,
-            supervisor,
-            kind: "blocked".into(),
-            reason,
-            at,
-            signed: false,
+            kind: card.kind,
+            reason: card.reason,
+            at: card.at,
+            signed: true,
         });
     }
     out.sort_by_key(|a| a.at);
     out.truncate(12);
     out
+}
+
+/// Signed answer path shared by the Tauri command and its real-Daemon test.
+/// The digest is recomputed from the same pending card the UI was shown;
+/// invalid, expired and replayed answers surface as an honest error string.
+pub fn answer_approval_payload(
+    daemon: &Daemon,
+    id: &str,
+    allow: bool,
+    note: Option<String>,
+) -> Result<Value, String> {
+    let card = daemon
+        .pending_approvals()
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| format!("unknown approval {id:?}"))?;
+    let digest = engine_card_digest(&card);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let answer = daemon.answer_approval(id, allow, note, at, &digest, "answer")?;
+    Ok(json!({
+        "ok": true,
+        "id": id,
+        "session": card.session,
+        "verdict": if allow { "allow" } else { "deny" },
+        "signed": true,
+        "sig": answer.sig,
+        "source": "engine",
+    }))
 }
 
 /// W2-2/W2-4 seam: the fleet projection — one unit per session, honest words,
@@ -614,18 +610,16 @@ pub async fn list_harnesses() -> Result<Value, String> {
     Ok(json!({ "source": PROJECTION, "harnesses": declare_harnesses() }))
 }
 
-/// `list_approvals` — one decision per card, oldest first, digest bound to the
-/// card actually shown. Never an engine write.
+/// `list_approvals` — one decision per real engine card, oldest first. The
+/// digest is the exact card digest that a signed answer must carry.
 #[tauri::command]
 pub async fn list_approvals(daemon: State<'_, Arc<Daemon>>) -> Result<Value, String> {
-    let snap = daemon.snapshot();
-    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
-    Ok(json!({ "source": PROJECTION, "approvals": approvals_from_snapshot(&value) }))
+    Ok(json!({ "source": "engine", "approvals": approvals_from_engine(&daemon) }))
 }
 
-/// `answer_approval` — today routes an answer through the existing reprompt /
-/// bus commands so the control is real, and is explicitly `signed: false`.
-/// W2-3 replaces the route with the signed answer channel (same wire shape).
+/// `answer_approval` — the ONLY way to answer a `needs_you` card. Signs over the
+/// displayed card's real digest inside the engine and consumes it once; invalid,
+/// expired and replayed answers return an honest error to the UI.
 #[tauri::command]
 pub async fn answer_approval(
     id: String,
@@ -633,47 +627,7 @@ pub async fn answer_approval(
     note: Option<String>,
     daemon: State<'_, Arc<Daemon>>,
 ) -> Result<Value, String> {
-    let snap = daemon.snapshot();
-    let value = serde_json::to_value(&snap).map_err(|e| e.to_string())?;
-    let approval = approvals_from_snapshot(&value)
-        .into_iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| format!("unknown approval {id:?}"))?;
-    let note = note.unwrap_or_default();
-    let text = if allow {
-        format!(
-            "approved: {}",
-            if note.is_empty() { "continue" } else { &note }
-        )
-    } else {
-        format!(
-            "needs you: {}",
-            if note.is_empty() {
-                "answer this request"
-            } else {
-                &note
-            }
-        )
-    };
-    let outcome: Result<Value, String> = if allow {
-        daemon.reprompt(&approval.session, &text).map(|_| json!({}))
-    } else {
-        let ack = daemon.message("ORCH", &approval.session, "escalate", &text);
-        if ack.ok {
-            Ok(json!({}))
-        } else {
-            Err(ack.error.unwrap_or_else(|| "message failed".into()))
-        }
-    };
-    outcome?;
-    Ok(json!({
-        "ok": true,
-        "id": id,
-        "session": approval.session,
-        "verdict": if allow { "allow" } else { "deny" },
-        "signed": false,
-        "source": PROJECTION,
-    }))
+    answer_approval_payload(&daemon, &id, allow, note)
 }
 
 /// `fleet_control` — storm guard. `hold` / `release` reuse the frozen
