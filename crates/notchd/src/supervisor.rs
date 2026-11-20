@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
 type SnapshotFn = fn(&Path, &str, &str) -> Result<Option<String>, String>;
@@ -33,45 +32,33 @@ pub fn snapshot_worktree(wt: &Path, id: &str, reason: &str) -> Result<Option<Str
     if let Some(hook) = SNAPSHOT_HOOK.get() {
         return hook(wt, id, reason);
     }
-    let path = wt.to_string_lossy().to_string();
-    let run = |args: &[&str]| -> Result<std::process::Output, String> {
-        Command::new("git")
-            .args(args)
-            .output()
-            .map_err(|e| format!("git {}: {e}", args.get(1).copied().unwrap_or("")))
-    };
-    let status = run(&["-C", &path, "status", "--porcelain"])?;
-    if !status.status.success() {
+    let status = crate::worktree::git_run(&["status", "--porcelain"], Some(wt))?;
+    if !status.ok {
         return Err(format!(
             "git status failed: {}",
-            crate::model::truncate(String::from_utf8_lossy(&status.stderr).trim(), 160)
+            crate::model::truncate(status.stderr.trim(), 160)
         ));
     }
     if status.stdout.is_empty() {
         return Ok(None);
     }
-    let add = run(&["-C", &path, "add", "-A"])?;
-    if !add.status.success() {
+    let add = crate::worktree::git_run(&["add", "-A"], Some(wt))?;
+    if !add.ok {
         return Err(format!(
             "git add failed: {}",
-            crate::model::truncate(String::from_utf8_lossy(&add.stderr).trim(), 160)
+            crate::model::truncate(add.stderr.trim(), 160)
         ));
     }
     let message = format!("notch: WIP snapshot ({reason}) — {id}");
-    let commit = Command::new("git")
-        .args(["-C", &path, "commit", "-m", &message])
-        .output()
-        .map_err(|e| format!("git commit: {e}"))?;
-    if !commit.status.success() {
+    let commit = crate::worktree::git_run(&["commit", "-m", &message], Some(wt))?;
+    if !commit.ok {
         return Err(format!(
             "git commit failed: {}",
-            crate::model::truncate(String::from_utf8_lossy(&commit.stderr).trim(), 160)
+            crate::model::truncate(commit.stderr.trim(), 160)
         ));
     }
-    let head = run(&["-C", &path, "rev-parse", "HEAD"])?;
-    Ok(Some(
-        String::from_utf8_lossy(&head.stdout).trim().to_string(),
-    ))
+    let head = crate::worktree::git_run(&["rev-parse", "HEAD"], Some(wt))?;
+    Ok(Some(head.stdout.trim().to_string()))
 }
 
 #[derive(Debug)]
