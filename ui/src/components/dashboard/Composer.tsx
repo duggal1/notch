@@ -1,8 +1,7 @@
 // Composer.tsx — the assignment surface. Enter sends; Shift+Enter newlines; Cmd+K focuses.
 // A prompt gutter and a hard 1px well: this is a terminal you type work into, not a chat box.
 // The dither appears only during `sending`: pixels leave the Assign button and fly into the beam.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { VoiceBeam } from '../../vendor/voice-glow/src';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { submitTask, listModels, type Session } from '../../lib/bridge';
 import { PixelIcon } from '../PixelIcon';
 
@@ -34,14 +33,9 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   const [modelOpen, setModelOpen] = useState(false);
   const [state, setState] = useState<'idle' | 'sending' | { ok: boolean; error?: string; id?: string; ms?: number }>('idle');
   const [targetSession, setTargetSession] = useState<string | null>(selection?.kind === 'session' ? selection.id : null);
-  const [assignBtn, setAssignBtn] = useState<HTMLButtonElement | null>(null);
 
   const taRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const sendingRef = useRef(false);
-  sendingRef.current = state === 'sending';
-  const getLevel = useCallback(() => (sendingRef.current ? 0.35 : 0), []);
-
   // follow explicit selection: clicking a session targets it; clicking a supervisor retargets to it
   useEffect(() => {
     setTargetSession(selection?.kind === 'session' ? selection.id : null);
@@ -70,7 +64,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   // click-outside closes the model menu
   useEffect(() => {
     if (!modelOpen) return;
-    const onDown = (e: PointerEvent) => { if (!menuRef.current?.contains(e.target as Node)) setModelOpen(false); };
+    const onDown = (e: PointerEvent) => { if (!menuRef.current?.contains(e.target instanceof Node ? e.target : null)) setModelOpen(false); };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setModelOpen(false); };
     window.addEventListener('pointerdown', onDown);
     window.addEventListener('keydown', onKey);
@@ -132,19 +126,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
 
   return (
     <div className="composer">
-      <VoiceBeam
-        className="composer-beam"
-        look="dither"
-        type="default"
-        theme="dark"
-        colorVariant={error ? 'sunset' : 'ice'}
-        level={getLevel}
-        strength={0.25}
-        pixelGlow={0.08}
-        active={state === 'sending'}
-        pixelExitTarget={error ? null : assignBtn}
-        idle={0}
-      >
+      <div className="composer-beam">
         {targetChipLabel && (
           <div className="composer-target">
             <span>→ {targetChipLabel}</span>
@@ -160,7 +142,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
             ref={taRef}
             className="composer-input"
             rows={1}
-            placeholder="Assign work — Enter to assign, Shift+Enter for a new line"
+            placeholder="What should the agent do?"
             value={task}
             onChange={(e) => { setTask(e.target.value); autosize(); }}
             onKeyDown={onKeyDown}
@@ -169,7 +151,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
         </div>
         <div className="composer-dod">
           <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
-            <PixelIcon name="chevron_down" size={12} className={dodOpen ? 'rotate-180' : ''} />
+            <PixelIcon name="chevron" size={12} className={dodOpen ? 'rotate-180' : ''} />
             Done when…
           </button>
           {dodOpen && (
@@ -179,7 +161,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
         </div>
         <div className="composer-row">
           <label className="cwd-field">
-            <span>cwd</span>
+            <PixelIcon name="folder" size={12} />
             <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
               onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
               spellCheck={false} aria-label="Working directory" />
@@ -187,7 +169,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
           <div ref={menuRef} className="model-picker">
             <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
               <span className="tabular-nums">{model}</span>
-              <PixelIcon name="chevron_down" size={12} />
+              <PixelIcon name="chevron" size={12} />
             </button>
             {modelOpen && (
               <ul className="model-menu" role="listbox" aria-label="Model">
@@ -202,13 +184,13 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
               </ul>
             )}
           </div>
-          <button ref={setAssignBtn} className="assign-btn ripple" onClick={send} disabled={state === 'sending' || !task.trim()}>
+          <button className="assign-btn" data-sending={state === 'sending' || undefined} onClick={send} disabled={state === 'sending' || !task.trim()}>
             {state === 'sending' ? 'Assigning…' : 'Assign'}
           </button>
         </div>
-      </VoiceBeam>
+      </div>
       {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
-      {error && <div className="composer-error" role="alert">{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
+      {error && <div className="composer-error" role="alert"><PixelIcon name="alert" size={12} />{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
       {done && state.id && <div className="composer-ok"><PixelIcon name="check" size={12} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
     </div>
   );

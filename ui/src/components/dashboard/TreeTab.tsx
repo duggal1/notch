@@ -10,6 +10,7 @@ import { Inspector } from './Inspector';
 import { PixelIcon } from '../PixelIcon';
 import { useLogsPoller } from '../../lib/use-logs';
 import { PixelSphere } from '../pixel/PixelSphere';
+import { DitherField } from '../pixel/DitherField';
 import { PixelMeter } from '../pixel/PixelMeter';
 
 export type Selection = ComposerTarget;
@@ -72,82 +73,92 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   const selectedSession = selection?.kind === 'session' ? sessions.find((s) => s.id === selection.id) ?? null : null;
   const selectedSupervisor = selection?.kind === 'supervisor' ? supervisors.find((s) => s.id === selection.id) ?? null : null;
 
-  const header = selectedSession
-    ? { title: selectedSession.title || selectedSession.id,
-        meta: `${selectedSession.id} · ${selectedSession.sup} · ${selectedSession.model?.split('/')[1] ?? 'auto'} · started ${new Date(selectedSession.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` }
-    : selectedSupervisor
-      ? { title: `${selectedSupervisor.id}${selectedSupervisor.paused ? ' — paused' : ''}`,
-          meta: `${sessions.filter((s) => s.sup === selectedSupervisor.id).length} sessions · working ${selectedSupervisor.working} idle ${selectedSupervisor.idle} failed ${selectedSupervisor.failed}` }
-      : { title: 'Orchestrator',
-          meta: `${supervisors.length} supervisors · ${sessions.length} sessions${snapshot ? ` · ${snapshot.eps.toFixed(1)} ev/s` : ''}` };
-
+  const idle = snapshot !== null && sessions.length === 0 && supervisors.length === 0;
+  const hasTarget = Boolean(selectedSession || selectedSupervisor);
+  const title = selectedSession?.title || selectedSession?.id || selectedSupervisor?.id || 'Orchestrator';
+  const meta = selectedSession
+    ? [selectedSession.id, selectedSession.sup, selectedSession.model, new Date(selectedSession.startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })].filter(Boolean).join(' · ')
+    : selectedSupervisor?.paused ? 'Paused' : '';
   const status = selectedSession?.status ?? selectedSupervisor?.status ?? snapshot?.orchestrator.status ?? 'idle';
   const logs = useLogsShim(selectedSession, snapshot);
   const load = snapshot ? Math.min(1, snapshot.eps / 8) : 0;
 
   return (
-    <div className="tree-grid">
-      {/* spine: supervisors + orchestrator — one glass column, the followable spine */}
-      <aside className="spine" aria-label="Supervisors">
-        <div className="spine-head">
+    <div className={`tree-grid${hasTarget ? ' tree-grid--target' : ''}`}>
+      <aside className="sidebar" aria-label="Supervisors">
+        <div className="sidebar-head">
           <span className="label">Supervisors</span>
-          <span className="spine-count tabular-nums">{supervisors.length} supervisors</span>
+          {supervisors.length > 0 && <span className="view-head-count">{supervisors.length}</span>}
         </div>
-        <label className="spine-filter">
-          <PixelIcon name="search" size={12} />
-          <input className="spine-filter-input" placeholder="Filter id or status" value={filter}
-            onChange={(e) => setFilter(e.target.value)} aria-label="Filter by id or status" spellCheck={false} />
-        </label>
-        <button className="orch-root" onClick={() => onSelect(null)} aria-pressed={selection === null}>
-          <i className={`dot dot--${snapshot?.orchestrator.status ?? 'idle'}`} />
-          <span className="tabular-nums">Orchestrator</span>
-          <span className="orch-root-meta tabular-nums">{supervisors.length} sup · {sessions.length} sess</span>
-        </button>
-        <div className="spine-list">
-          {matchedSessions.length > 0 && matchedSessions.map((s) => (
-            <button key={s.id} className={`inspector-session-row ripple${selection?.kind === 'session' && selection.id === s.id ? ' is-selected' : ''}`}
-              onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
-              <i className={`dot dot--${s.status}`} />
-              <span className="tabular-nums">{s.id}</span>
-              <span className="truncate">{s.title}</span>
-            </button>
-          ))}
-          {matchedSupervisors.map((sv) => (
-            <div key={sv.id} className={flashSupId === sv.id ? 'sup-flash' : undefined}>
-              <div className={`sup-row${selection?.kind === 'supervisor' && selection.id === sv.id ? ' is-selected' : ''}`}>
-                <div className="sup-line">
-                  <i className={`dot dot--${sv.status}`} />
-                  <span className="sup-id">{sv.id}{sv.paused ? ' — paused' : ''}</span>
-                  <span className="sup-counts tabular-nums">{sessions.filter((s) => s.sup === sv.id).length} jobs · working {sv.working} idle {sv.idle}</span>
-                </div>
-                <div className="sup-actions">
-                  {sv.paused && (
-                    <button className="act ripple" aria-label={`Resume ${sv.id}`} onClick={() => onTogglePause(sv)}>
-                      <PixelIcon name="play" size={12} />
-                    </button>
-                  )}
-                  <button className="act act--kill ripple" aria-label={`Kill supervisor ${sv.id}`} onClick={() => onKillSupervisor(sv.id)}>
-                    <PixelIcon name="trash" size={12} />
+        <div className="sidebar-body">
+          {!idle && <label className="sidebar-filter">
+            <PixelIcon name="search" size={12} />
+            <input className="sidebar-filter-input" placeholder="Filter id or status" value={filter}
+              onChange={(e) => setFilter(e.target.value)} aria-label="Filter by id or status" spellCheck={false} />
+          </label>}
+          <button className="orch-root" onClick={() => onSelect(null)} aria-pressed={selection === null}>
+            <i className={`dot dot--${snapshot?.orchestrator.status ?? 'idle'}`} />
+            <span className="tabular-nums">Orchestrator</span>
+            
+          </button>
+          <div className="sidebar-scroll">
+            {matchedSessions.length > 0 && (
+              <div className="sidebar-group">
+                <span className="label">Matching sessions</span>
+                {matchedSessions.map((s) => (
+                  <button key={s.id} className="inspector-session-row ripple" onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
+                    <i className={`dot dot--${s.status}`} />
+                    <span className="tabular-nums">{s.id}</span>
+                    <span className="truncate">{s.title}</span>
                   </button>
-                </div>
+                ))}
               </div>
-              {sessions.filter((s) => s.sup === sv.id).slice(0, 5).map((s) => (
-                <button key={s.id} className={`inspector-session-row ripple${selection?.kind === 'session' && selection.id === s.id ? ' is-selected' : ''}`}
-                  onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
-                  <i className={`dot dot--${s.status}`} />
-                  <span className="tabular-nums">{s.id}</span>
-                  <span className="truncate">{s.title}</span>
-                </button>
+            )}
+            <div className="sidebar-group">
+              {matchedSupervisors.map((sv) => (
+                <div key={sv.id} className={flashSupId === sv.id ? 'sup-flash' : undefined}>
+                  <SupervisorRow sup={sv} sessions={sessions} decisions={decisions} now={now}
+                    variant="dashboard"
+                    selected={selectedSupervisor?.id === sv.id}
+                    onMessage={() => { onSelect({ kind: 'supervisor', id: sv.id }); onFocusComposerRequest(); }}
+                    onTogglePause={onTogglePause}
+                    onKill={onKillSupervisor}
+                    onSelect={(id) => {
+                      // Plain click = select + focus: selection is set synchronously before the
+                      // fire-and-forget send; herdr focus is idempotent and opens no window.
+                      onSelect({ kind: 'supervisor', id });
+                      const target = sessions.find((s) => s.sup === id && s.status === 'working')
+                        ?? sessions.find((s) => s.sup === id);
+                      if (target) onOpenHerdr(target.id);
+                    }} />
+                  <div className="spine-sessions">
+                    {sessions.filter((session) => session.sup === sv.id).map((session) => (
+                      <button key={session.id} className="spine-session" aria-pressed={selectedSession?.id === session.id}
+                        title={session.title} onClick={() => onSelect({ kind: 'session', id: session.id })}>
+                        <i className={`dot dot--${session.status}`} />
+                        <span className="truncate">{session.title || session.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
-          ))}
-          {matchedSupervisors.length === 0 && !matchedSessions.length && (
-            <p className="sidebar-empty">{filter.trim() ? `Nothing matches “${filter.trim()}”.` : 'No supervisors — wait for tasks.'}</p>
-          )}
+            {filter.trim() && matchedSupervisors.length === 0 && (
+              <p className="sidebar-empty">{`Nothing matches “${filter.trim()}”.`}</p>
+            )}
+          </div>
+        </div>
+        <div className="sidebar-actions">
+          <button className="sidebar-btn ripple" onClick={() => { onSelect(null); onFocusComposerRequest(); }}>
+            <PixelIcon name="plus" size={12} /><span>New supervisor</span>
+          </button>
+          <button className="sidebar-btn ripple" onClick={() => { const sel = selection?.kind === 'supervisor' ? selection : selectedSession ? { kind: 'supervisor' as const, id: selectedSession.sup } : null; onSelect(sel); onFocusComposerRequest(); }}>
+            <PixelIcon name="plus" size={12} /><span>New session</span>
+          </button>
         </div>
       </aside>
 
-      <section className="center-pane">
+      <section className={`center-pane${idle ? ' center-pane--idle' : ''}`}>
         {snapshot === null ? (
           <div className="dash-connecting" role="status">
             <PixelSphere size={64} cell={3} live />
@@ -155,46 +166,51 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
           </div>
         ) : (
           <>
-            <header className="center-head">
-              <div className="center-head-top">
-                <div style={{ minWidth: 0 }}>
-                  <h1 className="center-title">{header.title}</h1>
-                  <div className="center-meta tabular-nums">{header.meta}</div>
+            {idle ? (
+              <div className="tree-start">
+                <div className="tree-start-art" aria-hidden="true">
+                  <DitherField mode="radial" cell={4} floor={0} ceil={0.42} />
+                  <span className="brand-logo" />
                 </div>
-                <span className={`center-status center-status--${status}`}>
-                  <i className={`dot dot--${status}`} />{status}
-                </span>
-              </div>
-              <div className="center-dither">
-                <PixelMeter value={load} cells={40} tone="hot" label="Event rate" />
-              </div>
-            </header>
-
-            {sessions.length === 0 && supervisors.length === 0 ? (
-              <div className="empty-state">
-                <span className="display">Start from a shape</span>
-                <div className="empty-templates">
-                  {[
-                    { kind: 'build', text: 'Fix the failing test in ui/ and run the suite' },
-                    { kind: 'audit', text: 'Review src for duplicated logic and propose a patch' },
-                    { kind: 'docs', text: 'Write the missing bridge section of the README' },
-                  ].map((t) => (
-                    <button key={t.kind} className="template-pill ripple" onClick={() => onPrefill(t.text)}>
-                      <span>{t.kind}</span>{t.text}
-                    </button>
-                  ))}
+                <div className="tree-start-choices">
+                  <span className="label">Start from</span>
+                  <div className="empty-templates">
+                    {[
+                      { label: 'Fix a test', task: 'Fix the failing test in ui/ and run the suite' },
+                      { label: 'Review a change', task: 'Review the current diff and report correctness issues' },
+                      { label: 'Write docs', task: 'Write the missing bridge section of the README' },
+                    ].map(({ label, task }) => (
+                      <button key={label} className="template-pill" onClick={() => onPrefill(task)}>{label}</button>
+                    ))}
+                  </div>
                 </div>
+                <Composer selection={selection} sessions={sessions} prefill={composerPrefill} focusSignal={composerFocusSignal} />
               </div>
             ) : (
-              <Transcript session={selectedSession} logs={logs} revisionChangedAt={revAtRef.current} />
+              <>
+                <header className="center-head">
+                  <div className="center-head-top">
+                    <div className="center-heading">
+                      <h2 className="center-title">{title}</h2>
+                      {meta && <p className="center-meta">{meta}</p>}
+                    </div>
+                    <span className={`center-status center-status--${status}`}>
+                      <i className={`dot dot--${status}`} />{status[0]?.toUpperCase()}{status.slice(1)}
+                    </span>
+                  </div>
+                  {load > 0 && status === 'working' && (
+                    <div className="center-dither"><PixelMeter value={load} cells={32} tone="hot" label="Event rate" /></div>
+                  )}
+                </header>
+                <Transcript session={selectedSession} logs={logs} revisionChangedAt={revAtRef.current} />
+                <Composer selection={selection} sessions={sessions} prefill={composerPrefill} focusSignal={composerFocusSignal} />
+              </>
             )}
-
-            <Composer selection={selection} sessions={sessions} prefill={composerPrefill} focusSignal={composerFocusSignal} />
           </>
         )}
       </section>
 
-      <Inspector
+      {hasTarget && <Inspector
         selection={selection}
         snapshot={snapshot}
         onReprompt={(id) => { onSelect({ kind: 'session', id }); onFocusComposerRequest(); }}
@@ -203,7 +219,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
         onOpenHerdr={onOpenHerdr}
         onFocusComposer={onFocusComposerRequest}
         onSelectSession={(id) => onSelect({ kind: 'session', id })}
-      />
+      />}
     </div>
   );
 }

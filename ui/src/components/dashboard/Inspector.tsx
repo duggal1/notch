@@ -1,15 +1,10 @@
 // Inspector.tsx — right pane. Session anatomy with the DoD contract in quotes; no invented controls.
 // A single DistortionWave marks a REAL status change of the selected session (one-shot).
-import { useEffect, useRef, useState } from 'react';
-import { DistortionWave, type PaletteName } from '../../vendor/distortion-waves/src';
+import { useEffect, useState } from 'react';
 import type { Session, Supervisor, Snapshot } from '../../lib/bridge';
 import { middleTruncate, fmtElapsed } from '../../lib/format';
 import { PixelIcon } from '../PixelIcon';
 import { PixelMeter } from '../pixel/PixelMeter';
-
-const STATUS_PALETTE: Record<string, PaletteName> = {
-  working: 'ocean', idle: 'mono', failed: 'sunset', done: 'green',
-};
 
 export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKill, onOpenHerdr, onFocusComposer, onSelectSession }: {
   selection: { kind: 'supervisor' | 'session'; id: string } | null;
@@ -34,36 +29,6 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
 
   const session = selection?.kind === 'session' ? sessions.find((s) => s.id === selection.id) ?? null : null;
   const supervisor = selection?.kind === 'supervisor' ? supervisors.find((s) => s.id === selection.id) ?? null : null;
-
-  // Play the wave only when the SELECTED session's status actually changes — never on first paint,
-  // never on selection changes. The block carries an opaque background so the capture is not white.
-  const prev = useRef<{ id: string; status: string } | null>(null);
-  const [wave, setWave] = useState<{ on: boolean; palette: PaletteName }>({ on: false, palette: 'mono' });
-  useEffect(() => {
-    if (!session) { prev.current = null; return; }
-    const p = prev.current;
-    prev.current = { id: session.id, status: session.status };
-    if (p && p.id === session.id && p.status !== session.status) {
-      setWave({ on: true, palette: STATUS_PALETTE[session.status] ?? 'mono' });
-      const t = window.setTimeout(() => setWave((w) => ({ ...w, on: false })), 1200);
-      return () => window.clearTimeout(t);
-    }
-  }, [session?.id, session?.status]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (!session && !supervisor) {
-    return (
-      <aside className="inspector" aria-label="Inspector">
-        <div className="inspector-head">
-          <span className="label">Inspector</span>
-          <span className="label">Nothing selected</span>
-        </div>
-        <div className="empty-state empty-state--start">
-          <span className="display">No target.</span>
-          <p className="empty-line">Pick a session or supervisor. Its anatomy — model, cwd, budget, definition of done, files — lands here.</p>
-        </div>
-      </aside>
-    );
-  }
 
   if (supervisor) {
     const own = sessions.filter((s) => s.sup === supervisor.id);
@@ -120,7 +85,8 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
   }
 
   // session inspector
-  const s = session!;
+  if (!session) return null;
+  const s = session;
   const maxIter = s.maxIterations ?? 8;
   const iter = s.iterations ?? 0;
   const iterPct = Math.min(1, iter / maxIter);
@@ -142,20 +108,10 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
       </div>
       <div className="inspector-body">
         <div className="inspector-id tabular-nums">{s.id}</div>
-        <DistortionWave
-          className="status-wave"
-          revealed={wave.on}
-          type="center"
-          palette={wave.palette}
-          scale="auto"
-          cornerRadius={0}
-          prewarm={false}
-          revealedContent={statusBlock(s.status)}
-        >
-          {statusBlock(s.status)}
-        </DistortionWave>
+        {statusBlock(s.status)}
+        {(s.goal || s.task) && (s.goal || s.task) !== s.title && <div className="inspector-goal"><span className="label">Goal</span><p>{s.goal || s.task}</p></div>}
         <div className="anatomy meta-grid">
-          <div className="meta-row"><span>model</span><b title={s.model ?? undefined}>{s.model ?? '—'}</b></div>
+          <div className="meta-row"><span>Model</span><b title={s.model ?? undefined}>{s.model ?? '—'}</b></div>
           <div className="meta-row"><span>supervisor</span><b>{s.sup}</b></div>
           <div className="meta-row"><span>cwd</span><b title={s.cwd}>{middleTruncate(s.cwd, 28)}</b></div>
           <div className="meta-row"><span>started</span><b>{new Date(s.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b></div>
@@ -185,7 +141,7 @@ export function Inspector({ selection, snapshot, onReprompt, onTogglePause, onKi
 
         {myConflicts.length > 0 && (
           <div className="inspector-list conflict-list">
-            <span className="label" style={{ paddingBottom: 6, color: 'var(--f4)' }}>Conflicts</span>
+            <span className="label" style={{ paddingBottom: 6, color: 'var(--f5)' }}>Conflicts</span>
             {myConflicts.map((c, i) => (
               <div key={i} className="conflict-row">
                 <span className="tabular-nums truncate">{c.file}</span>

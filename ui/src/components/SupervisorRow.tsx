@@ -4,7 +4,7 @@ import type { Supervisor, Session, Decision } from '../lib/bridge';
 import { fmtAge, capitalizeSentence } from '../lib/format';
 import { PixelIcon } from './PixelIcon';
 
-export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisions, now, onMessage, onTogglePause, onKill, onSelect, variant }: {
+export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisions, now, onMessage, onTogglePause, onKill, onSelect, variant, selected }: {
   sup: Supervisor;
   sessions: Session[];
   decisions?: Decision[];
@@ -12,6 +12,7 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
   onMessage: (supId: string) => void;
   onTogglePause: (sup: Supervisor) => void;
   onKill: (supId: string) => void;
+  selected?: boolean;
   onSelect: (supId: string) => void;
   variant: 'popover' | 'dashboard';
 }) {
@@ -39,6 +40,7 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
   return (
     <div className={`item ${dash ? 'item--row-tall' : 'item--row'} sup-row`} role="row" tabIndex={0}
       data-sv={sup.id} aria-label={`${sup.id} — ${charter}`}
+      aria-pressed={selected}
       onClick={() => onSelect(sup.id)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSelect(sup.id); } }}>
       <div className="sup-line">
