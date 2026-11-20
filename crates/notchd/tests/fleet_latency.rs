@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tungstenite::client::ClientRequestBuilder;
 use tungstenite::stream::MaybeTlsStream;
@@ -31,34 +31,30 @@ fn tmp_root(tag: &str) -> PathBuf {
     p
 }
 
-/// Fake herdr whose reported status/revision can be flipped between polls.
+/// Fake herdr whose pane revision is bumped between polls. A revision bump is
+/// a real agent heartbeat mutation: poll_once writes `lastRevision` and fires
+/// the same change/snapshot pipeline a live status update does, WITHOUT
+/// pushing the session through the idle-decider/escalation path (which would
+/// make it ineligible long before 100 samples).
 struct TogglingHerdr {
-    status: Mutex<String>,
     revision: AtomicU64,
 }
 
 impl TogglingHerdr {
     fn new() -> Arc<Self> {
-        Arc::new(Self {
-            status: Mutex::new("working".to_string()),
-            revision: AtomicU64::new(1),
-        })
+        Arc::new(Self { revision: AtomicU64::new(1) })
     }
     fn herdr(self: &Arc<Self>) -> Herdr {
         let fake = Arc::clone(self);
         Herdr::with_runner(move |args: &[String]| fake.run(args))
     }
-    fn flip(self: &Arc<Self>) -> String {
-        let mut s = self.status.lock().unwrap();
-        let next = if *s == "working" { "idle" } else { "working" }.to_string();
-        *s = next.clone();
-        self.revision.fetch_add(1, Ordering::SeqCst);
-        next
+    fn bump(self: &Arc<Self>) -> u64 {
+        self.revision.fetch_add(1, Ordering::SeqCst) + 1
     }
     fn run(&self, args: &[String]) -> Result<String, HerdrError> {
         let sub = args.get(1).map(String::as_str).unwrap_or("");
         let sub2 = args.get(2).map(String::as_str).unwrap_or("");
-        let status = self.status.lock().unwrap().clone();
+        let status = "working";
         let rev = self.revision.load(Ordering::SeqCst);
         match (sub, sub2) {
             ("agent", "list") | ("pane", "list") => Ok(json!({
@@ -114,7 +110,7 @@ impl FleetClient {
             }
         }
     }
-    fn wait_fleet_status(&mut self, status: &str, timeout: Duration) -> bool {
+    fn wait_fleet_revision(&mut self, rev: u64, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -127,7 +123,7 @@ impl FleetClient {
                         if v["event"].as_str() == Some("fleet") {
                             let units = v["fleet"]["units"].as_array();
                             if units.map(|u| {
-                                u.iter().any(|x| x["id"] == "S1-OC01" && x["status"] == status)
+                                u.iter().any(|x| x["id"] == "S1-OC01" && x["revision"].as_u64() == Some(rev))
                             }).unwrap_or(false) {
                                 return true;
                             }
@@ -219,16 +215,16 @@ fn fleet_frame_latency_p50_p95_over_100_real_status_mutations() {
 
     let url = format!("ws://127.0.0.1:{port}");
     let mut client = FleetClient::connect(&url, &token);
-    // Consume hello and any seed snapshot frames.
-    client.wait_fleet_status("working", Duration::from_secs(5));
+    // Stale hello/seed frames are skipped by the revision predicate below;
+    // no fixed-sleep synchronization is used.
 
     let mut samples: Vec<f64> = Vec::with_capacity(128);
     for i in 0..128 {
-        let expected = herdr.flip();
+        let rev = herdr.bump();
         let t0 = Instant::now();
         daemon.poll_once();
-        let got = client.wait_fleet_status(&expected, Duration::from_secs(3));
-        assert!(got, "no fleet frame with status `{expected}` at sample {i}");
+        let got = client.wait_fleet_revision(rev, Duration::from_secs(3));
+        assert!(got, "no fleet frame with revision {rev} at sample {i}");
         samples.push(t0.elapsed().as_secs_f64() * 1000.0);
     }
 

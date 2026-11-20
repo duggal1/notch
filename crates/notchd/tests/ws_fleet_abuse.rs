@@ -143,8 +143,15 @@ fn fleet_ws_100k_frames_and_256kb_boundary_leave_daemon_responsive() {
         c.send(&json!({"cmd":"ping","pad":pad}));
     }
     for i in 0..n {
-        let v = c.read_value_within(Duration::from_secs(10))
-            .unwrap_or_else(|| panic!("missing ack {i}/{n} after 100k-frame flood"));
+        // The connect-time `fleet` frame (and any change push) can interleave;
+        // a command's reply is the ack frame, so skip non-acks.
+        let v = loop {
+            let x = c.read_value_within(Duration::from_secs(10))
+                .unwrap_or_else(|| panic!("missing ack {i}/{n} after 100k-frame flood"));
+            if x["event"] == "ack" {
+                break x;
+            }
+        };
         assert_eq!(v["event"], "ack", "flood ack {i}: {v}");
         assert_eq!(v["cmd"], "ping", "flood ack {i}: {v}");
         assert_eq!(v["ok"], true, "flood ack {i}: {v}");
