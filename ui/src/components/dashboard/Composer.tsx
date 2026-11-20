@@ -44,7 +44,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   // prefills (escalations "Re-prompt fresh"): replace contents and focus
   useEffect(() => {
     if (prefill) {
-      setTask((p) => (p.trim() ? p : prefill.text));
+      setTask(prefill.text);
       taRef.current?.focus();
     }
   }, [prefill?.at]); // eslint-disable-line react-hooks/exhaustive-deps
