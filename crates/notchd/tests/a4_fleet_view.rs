@@ -91,10 +91,22 @@ fn top_status_uses_rollup_precedence_working_beats_failed() {
 #[test]
 fn top_status_full_precedence_matrix() {
     assert_eq!(fleet_view(&snap_with(&[]), 0, 0)["topStatus"], "idle");
-    assert_eq!(fleet_view(&snap_with(&["failed"]), 0, 0)["topStatus"], "failed");
-    assert_eq!(fleet_view(&snap_with(&["done", "done"]), 0, 0)["topStatus"], "done");
-    assert_eq!(fleet_view(&snap_with(&["idle", "done"]), 0, 0)["topStatus"], "idle");
-    assert_eq!(fleet_view(&snap_with(&["working", "done"]), 0, 0)["topStatus"], "working");
+    assert_eq!(
+        fleet_view(&snap_with(&["failed"]), 0, 0)["topStatus"],
+        "failed"
+    );
+    assert_eq!(
+        fleet_view(&snap_with(&["done", "done"]), 0, 0)["topStatus"],
+        "done"
+    );
+    assert_eq!(
+        fleet_view(&snap_with(&["idle", "done"]), 0, 0)["topStatus"],
+        "idle"
+    );
+    assert_eq!(
+        fleet_view(&snap_with(&["working", "done"]), 0, 0)["topStatus"],
+        "working"
+    );
 }
 
 #[test]
@@ -117,13 +129,19 @@ fn fence_moves_with_real_ledger_not_with_generated_at() {
     let base = snap_with(&["working"]);
     let a = fleet_view(&base, 41, 7);
     let b = fleet_view(&base, 42, 7);
-    assert_ne!(a["ledger"]["fence"], b["ledger"]["fence"], "seq moved -> fence moved");
+    assert_ne!(
+        a["ledger"]["fence"], b["ledger"]["fence"],
+        "seq moved -> fence moved"
+    );
     assert_ne!(a["ledger"]["seq"], b["ledger"]["seq"]);
 
     let mut newer = base.clone();
     newer["generatedAt"] = json!(1763520000001u64);
     let c = fleet_view(&newer, 41, 7);
-    assert_eq!(a["ledger"]["fence"], c["ledger"]["fence"], "generatedAt must not change fence");
+    assert_eq!(
+        a["ledger"]["fence"], c["ledger"]["fence"],
+        "generatedAt must not change fence"
+    );
     assert_eq!(a["topStatus"], c["topStatus"]);
 }
 

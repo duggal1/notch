@@ -46,9 +46,18 @@ fn list_harnesses_reports_registry_truth() {
         .find(|h| h["id"] == "opencode")
         .expect("opencode stays resolvable for legacy records");
 
-    assert!(supported(herdr, "spawn"), "herdr is the sole spawn-capable engine");
-    assert!(!supported(herdr, "models"), "herdr has no optional Models read");
-    assert!(!supported(opencode, "spawn"), "opencode cannot create a managed pane");
+    assert!(
+        supported(herdr, "spawn"),
+        "herdr is the sole spawn-capable engine"
+    );
+    assert!(
+        !supported(herdr, "models"),
+        "herdr has no optional Models read"
+    );
+    assert!(
+        !supported(opencode, "spawn"),
+        "opencode cannot create a managed pane"
+    );
     assert!(supported(opencode, "status") && supported(opencode, "models"));
     for action in ["read", "prompt", "kill", "focus"] {
         assert!(!supported(opencode, action), "opencode has no {action}");
