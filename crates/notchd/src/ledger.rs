@@ -58,17 +58,12 @@ fn now_ms() -> u64 {
 
 /// Who wrote a line. `System` is the daemon/checkpoint writer and is never
 /// fenced; `Agent` is a worker under a claim epoch and is fenced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
+    #[default]
     System,
     Agent,
-}
-
-impl Default for Source {
-    fn default() -> Self {
-        Source::System
-    }
 }
 
 /// One ledger operation. `Upsert`/`Remove` carry a full entity, keyed by id,
@@ -418,7 +413,7 @@ impl Ledger {
         target: &str,
         op: Op,
         ts: u64,
-    ) -> Result<u64, ParkedWrite> {
+    ) -> Result<u64, Box<ParkedWrite>> {
         let _guard = ledger_guard();
         self.refresh();
         let current = self.epochs.get(target).copied().unwrap_or(0);
@@ -438,20 +433,22 @@ impl Ledger {
             },
         };
         self.append_locked(line.clone())
-            .map_err(|e| ParkedWrite {
-                seq: line.seq,
-                ts: line.ts,
-                target: line.target.clone(),
-                holder: line.holder.clone(),
-                epoch: line.epoch,
-                reason: format!("append failed: {e}"),
-                op: line.op.clone(),
-                file: None,
+            .map_err(|e| {
+                Box::new(ParkedWrite {
+                    seq: line.seq,
+                    ts: line.ts,
+                    target: line.target.clone(),
+                    holder: line.holder.clone(),
+                    epoch: line.epoch,
+                    reason: format!("append failed: {e}"),
+                    op: line.op.clone(),
+                    file: None,
+                })
             })?;
         if refused {
             let parked = parked_from_line(&line, "stale_epoch");
             let _ = park(&self.dir, &parked);
-            return Err(parked);
+            return Err(Box::new(parked));
         }
         Ok(line.seq)
     }

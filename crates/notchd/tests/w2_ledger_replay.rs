@@ -9,7 +9,7 @@ use notchd::herdr::Herdr;
 use notchd::ledger::{replay, replay_over_checkpoint, Ledger, Op, Source};
 use notchd::model::StateFile;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -128,7 +128,7 @@ fn fake_herdr() -> Herdr {
     })
 }
 
-fn daemon(dir: &PathBuf) -> Daemon {
+fn daemon(dir: &Path) -> Daemon {
     Daemon::open(
         Config {
             state_dir: dir.join("state"),
