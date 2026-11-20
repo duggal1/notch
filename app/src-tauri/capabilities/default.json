@@ -3,10 +3,12 @@
   "identifier": "default",
   "description": "Notch popover. The webview may ONLY listen to backend events. Every privileged action is a typed command (app-defined commands bypass the ACL; no fs/shell/http/dialog permissions exist or are needed). Nothing can run arbitrary commands.",
   "windows": [
-    "main"
+    "main",
+    "dashboard"
   ],
   "permissions": [
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging"
   ]
 }

@@ -12,6 +12,7 @@ import { installProbe } from './lib/probe';
 const surface = new URLSearchParams(window.location.search).get('surface') ?? 'popover';
 
 if (!isTauri()) document.body.classList.add('dev-stage');
+document.body.dataset.surface = surface;
 document.documentElement.style.background = 'transparent';
 installProbe();
 

@@ -148,6 +148,15 @@ export function ListIcon({ size = 13, className }: P) {
   );
 }
 
+export function AlertIcon({ size = 14, className }: P) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M12 4.5 20.5 19.5H3.5Z" />
+      <path d="M12 10v4.2" /><path d="M12 17.2v.1" />
+    </svg>
+  );
+}
+
 export function PlusIcon({ size = 12, className }: P) {
   return (
     <svg {...base(size, 2)} className={className}>

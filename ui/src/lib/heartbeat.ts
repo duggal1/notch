@@ -27,11 +27,12 @@ export class Heartbeat {
       const lit = c === cols - 1 ? hd : (this.vals[c] ?? 0);
       for (let r = 0; r < rows; r++) {
         const on = Math.max(0, Math.min(1, lit - r)); // fractional last dot = partial alpha
-        ctx.fillStyle = `rgba(255,255,255,${((0.22 + 0.74 * on) * fade).toFixed(3)})`;
-        ctx.beginPath(); ctx.arc(x, (rows - 1 - r + 0.5) * pitch, 1.5, 0, 7); ctx.fill();
+        ctx.fillStyle = `rgba(245,208,254,${((0.18 + 0.78 * on) * fade).toFixed(3)})`;
+        ctx.fillRect(Math.round(x) - 1.5, Math.round((rows - 1 - r + 0.5) * pitch) - 1.5, 3, 3);
       }
-      if (c === cols - 1 && lit > 0) { // head dot
-        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, (rows - 1 - lit + 0.5) * pitch - pitch, 2.6, 0, 7); ctx.fill();
+      if (c === cols - 1 && lit > 0) { // head pixel
+        ctx.fillStyle = '#D946EF';
+        ctx.fillRect(Math.round(x) - 2, Math.round((rows - 1 - lit + 0.5) * pitch) - pitch - 2, 4, 4);
       }
     }
     return !(this.off.settled && this.head.settled);
