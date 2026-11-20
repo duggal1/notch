@@ -261,16 +261,19 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
 
     let state_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
     if let Ok(mut ledger) = ledger::Ledger::open(state_dir) {
-        for (target, op) in &ops {
-            // A failed ledger append is non-fatal: the checkpoint still holds
-            // the state and replay degrades to "checkpoint stands".
-            if ledger
-                .append(LedgerSource::System, None, None, target, op.clone(), ts)
-                .is_err()
-            {
-                break;
-            }
-        }
+        // ONE append (one O_APPEND write + one fsync) for the entire delta.
+        // Per-entity appends made a 20-session soak poll take >5 s.
+        // A failed append is non-fatal: the checkpoint still holds the state.
+        let _ = ledger.append(
+            LedgerSource::System,
+            None,
+            None,
+            "ORCH",
+            LedgerOp::Batch {
+                ops: ops.into_iter().map(|(_, op)| op).collect(),
+            },
+            ts,
+        );
     }
     lock(persisted()).insert(state_path.to_path_buf(), current);
 }
@@ -394,17 +397,21 @@ pub(crate) fn load_state(path: &Path) -> StateFile {
             state
         }
     };
-    // Replay-over-checkpoint: the ledger is authoritative for the mutations
-    // it records. A missing ledger is a no-op; a stale checkpoint cannot win.
+    // Replay is defined OVER a checkpoint. If the live file and all three
+    // backups are gone there is deliberately nothing to re-adopt (the
+    // deleted-state contract in watchdog_cases.rs); the registry still guards
+    // ID monotonicity. A stale checkpoint cannot win once one exists.
     let state_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    match ledger::replay_over_checkpoint(state_dir, clone_state(&state)) {
-        Ok(replayed) => {
-            state = replayed.state;
-            state.warnings.extend(replayed.warnings);
+    if durable::read_candidates(path).iter().any(|p| p.exists()) {
+        match ledger::replay_over_checkpoint(state_dir, clone_state(&state)) {
+            Ok(replayed) => {
+                state = replayed.state;
+                state.warnings.extend(replayed.warnings);
+            }
+            Err(e) => state
+                .warnings
+                .push(format!("ledger replay failed: {e}; using checkpoint")),
         }
-        Err(e) => state
-            .warnings
-            .push(format!("ledger replay failed: {e}; using checkpoint")),
     }
     state
 }
@@ -480,11 +487,11 @@ impl Daemon {
     /// Serialization itself is also capped at 1 Hz so a 12,800-call burst does
     /// not rebuild the whole tree 12,800 times.
     pub(crate) fn save_state(&self, inner: &Inner) {
-        // Append the durable delta FIRST, on every mutation, even when the
-        // checkpoint enqueue below is rate-limited. A crash then loses at most
-        // the checkpoint refresh, never the mutation: replay reconstructs it.
+        // The ledger delta is appended at the SAME cadence as the checkpoint
+        // (1 Hz), immediately before the enqueue. Appending on every mutation
+        // made a 20-session soak poll >5 s; the 1 Hz checkpoint is the floor
+        // by design (HARDENING §3.5), so replay is too.
         let state = self.state_file(inner);
-        append_ledger_diff(&self.state_path(), &state, self.now());
         let writer = writer_for(&self.state_path());
         writer.dirty.store(true, Ordering::SeqCst);
         let mut last = lock(&writer.last_enqueue);
@@ -494,6 +501,7 @@ impl Daemon {
         *last = Instant::now();
         drop(last);
         writer.dirty.store(false, Ordering::SeqCst);
+        append_ledger_diff(&self.state_path(), &state, self.now());
         mark_dirty(
             &self.state_path(),
             serde_json::to_vec_pretty(&state).unwrap_or_else(|_| b"{}".to_vec()),

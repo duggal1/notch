@@ -92,6 +92,9 @@ pub enum Op {
     /// Epoch high-water marks carried across a ledger rotation so fencing
     /// stays correct after old lines are dropped.
     EpochAnchor { epochs: Vec<(String, u64)> },
+    /// A checkpoint delta as ONE append: one O_APPEND write and one fsync for
+    /// the whole diff instead of one syscall per changed entity.
+    Batch { ops: Vec<Op> },
 }
 
 /// One append-only line. `refused` marks a write the fence rejected: it is
@@ -197,10 +200,24 @@ fn note_claim(
     epochs: &mut HashMap<String, u64>,
     claims: &mut HashMap<String, (String, u64)>,
 ) {
+    note_op(line, &line.op, epochs, claims);
+}
+
+fn note_op(
+    line: &Line,
+    op: &Op,
+    epochs: &mut HashMap<String, u64>,
+    claims: &mut HashMap<String, (String, u64)>,
+) {
     if line.refused.is_some() {
         return;
     }
-    match &line.op {
+    match op {
+        Op::Batch { ops } => {
+            for child in ops {
+                note_op(line, child, epochs, claims);
+            }
+        }
         Op::Claim {
             holder,
             lease_until_ms,
@@ -500,6 +517,13 @@ pub fn park(state_dir: &Path, parked: &ParkedWrite) -> io::Result<PathBuf> {
     let holder = safe_component(parked.holder.as_deref().unwrap_or("unknown"), 40);
     let reason = safe_component(&parked.reason, 24);
     let name = format!("{:020}-{}-{}.json", parked.seq, holder, reason);
+    // A collected message has already been delivered to a legitimate holder.
+    // Replay re-parks refused ledger lines on every startup, so without this
+    // check a collected write would resurrect in the pending queue forever.
+    let collected = dir.join("collected").join(&name);
+    if collected.exists() {
+        return Ok(collected);
+    }
     let file = dir.join(name);
     let bytes = serde_json::to_vec_pretty(parked)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("park encode: {e}")))?;
@@ -655,6 +679,48 @@ fn remove_entity(state: &mut StateFile, entity: &str, id: &str, warnings: &mut V
     }
 }
 
+/// Apply one op to the fold. Returns true when the epoch fence refused it.
+fn apply_op(
+    line: &Line,
+    op: &Op,
+    state: &mut StateFile,
+    epochs: &mut HashMap<String, u64>,
+    claims: &mut HashMap<String, (String, u64)>,
+    warnings: &mut Vec<String>,
+) -> bool {
+    let current = epochs.get(&line.target).copied().unwrap_or(0);
+    if line.source == Source::Agent && line.epoch.is_some_and(|e| e < current) {
+        return true;
+    }
+    match op {
+        Op::Batch { ops } => {
+            let mut refused = false;
+            for child in ops {
+                refused |= apply_op(line, child, state, epochs, claims, warnings);
+            }
+            refused
+        }
+        Op::Claim { .. } | Op::Release | Op::Heartbeat { .. } | Op::EpochAnchor { .. } => {
+            note_op(line, op, epochs, claims);
+            false
+        }
+        Op::Upsert { entity, id, value } => {
+            upsert_entity(state, entity, value, warnings);
+            let _ = id; // the value carries the same id; validated in upsert_entity
+            false
+        }
+        Op::Remove { entity, id } => {
+            remove_entity(state, entity, id, warnings);
+            false
+        }
+        Op::SetSeq { esc_seq, msg_seq } => {
+            state.esc_seq = *esc_seq;
+            state.msg_seq = *msg_seq;
+            false
+        }
+    }
+}
+
 /// Fold every line over a checkpoint. Pure: the same `(base, lines)` always
 /// yields the same state, so replay is safe after a crash or a stale checkpoint.
 pub fn replay(base: StateFile, lines: &[Line]) -> ReplayResult {
@@ -679,26 +745,16 @@ pub fn replay(base: StateFile, lines: &[Line]) -> ReplayResult {
             refused.push(parked_from_line(line, reason));
             continue;
         }
-        let current = epochs.get(&line.target).copied().unwrap_or(0);
-        if line.source == Source::Agent
-            && line.epoch.is_some_and(|e| e < current)
-        {
+        if apply_op(
+            line,
+            &line.op,
+            &mut state,
+            &mut epochs,
+            &mut claims,
+            &mut warnings,
+        ) {
             refused.push(parked_from_line(line, "stale_epoch"));
             continue;
-        }
-        match &line.op {
-            Op::Claim { .. } | Op::Release | Op::Heartbeat { .. } | Op::EpochAnchor { .. } => {
-                note_claim(line, &mut epochs, &mut claims)
-            }
-            Op::Upsert { entity, id, value } => {
-                upsert_entity(&mut state, entity, value, &mut warnings);
-                let _ = id; // the value carries the same id; validated in upsert_entity
-            }
-            Op::Remove { entity, id } => remove_entity(&mut state, entity, id, &mut warnings),
-            Op::SetSeq { esc_seq, msg_seq } => {
-                state.esc_seq = *esc_seq;
-                state.msg_seq = *msg_seq;
-            }
         }
         applied += 1;
     }
