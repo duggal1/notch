@@ -179,3 +179,28 @@ fn a5_isolation_survives_adversarial_cross_edits_and_conflicts() {
         Some("notch/S1-OC02".to_string())
     );
 }
+
+#[test]
+fn attribution_preserves_exact_paths_in_dirty_and_committed_work() {
+    let root = tmp_root("artifact-paths");
+    let (repo, _) = init_repo(&root);
+    git_ok(&["config", "status.renames", "true"], &repo);
+    let work = worktree::create(&repo, "S1-OC01", &root.join("tmp"))
+        .unwrap()
+        .unwrap();
+
+    let renamed = " renamed -> final.txt ";
+    let nested = "artifacts/雪\nnotes.txt";
+    git_ok(&["mv", "base.txt", renamed], &work.path);
+    std::fs::create_dir(work.path.join("artifacts")).unwrap();
+    std::fs::write(work.path.join(nested), "output\n").unwrap();
+    let dirty = worktree::sample_files(&work);
+
+    worktree::snapshot(&work.path, "S1-OC01", "test attribution")
+        .unwrap()
+        .expect("dirty artifacts committed");
+    let committed = worktree::sample_files(&work);
+
+    let expected = vec![renamed.to_string(), nested.to_string()];
+    assert_eq!((dirty, committed), (expected.clone(), expected));
+}
