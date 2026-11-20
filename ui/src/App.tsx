@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Shell } from './components/Shell';
 import { Panel } from './components/Panel';
 import { LogsPanel } from './components/LogsPanel';
-import type { DistortionWaveHandle } from './vendor/distortion-waves/src';
 import { DitherField } from './components/pixel/DitherField';
+import type { DistortionWaveHandle } from './vendor/distortion-waves/src';
 import { send, logs as fetchLogs } from './lib/bridge';
 import type { Session, LogsPayload } from './lib/bridge';
 import { topStatus, workingCount, normalizeEps, pad2, fmtEps } from './lib/format';
@@ -134,12 +134,13 @@ export default function App() {
         <span className="label">In flight</span>
       </div>
 
-      {/* open: the brand dither is the only backdrop; the panel sits above it */}
+      {/* open: the one atmospheric dither, rising from the bottom edge */}
       {open && (
         <div className="open-dither" aria-hidden="true">
           <DitherField mode="radial" cx={0.5} cy={1.18} cell={3} floor={0.62} animate period={11000} />
         </div>
       )}
+
       <Panel
           open={open}
           top={top}

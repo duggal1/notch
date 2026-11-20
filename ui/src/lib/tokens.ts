@@ -64,7 +64,7 @@ export const EASE = {
   out: 'cubic-bezier(.16, 1, .3, 1)', // expo-out: anything that arrives
   inOut: 'cubic-bezier(.65, 0, .35, 1)',
   snap: 'cubic-bezier(.2, .9, .1, 1)',
-  release: 'cubic-bezier(.34, 1.56, .64, 1)', // spring back from a press
+  release: 'cubic-bezier(.16, 1, .3, 1)', // no overshoot: back to 1 on expo-out
   step: 'steps(4, end)', // reserved for the dither wipe only
 } as const;
 
