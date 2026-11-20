@@ -1,7 +1,6 @@
 //! B2 command-level regression: the Tauri approval commands must use the
 //! engine's signed channel and the engine's real pending cards. Real in-process
-//! `Daemon`; the only fake is the herdr runner (no herdr in CI), which never
-//! touches the approval path.
+//! `Daemon` with an isolated state directory.
 //!
 //! Written BEFORE the fix: fails against the snapshot-projection / reprompt
 //! implementation (compile RED because the engine-backed helpers do not exist).
@@ -34,11 +33,7 @@ fn daemon() -> Daemon {
     let r = std::env::temp_dir().join(format!("notch-b2wire-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&r);
     std::fs::create_dir_all(&r).unwrap();
-    let herdr = Herdr::with_runner(|args: &[String]| match args.get(1).map(String::as_str) {
-        Some("agent") => Ok(r#"{"result":{"agents":[]}}"#.to_string()),
-        _ => Ok(r#"{"result":{"type":"ok"}}"#.to_string()),
-    });
-    Daemon::open(config(&r), herdr, Arc::new(SystemClock)).unwrap()
+    Daemon::open(config(&r), Herdr::from_env(), Arc::new(SystemClock)).unwrap()
 }
 
 fn issue(d: &Daemon, id: &str) -> String {
@@ -70,8 +65,8 @@ fn list_approvals_reads_engine_cards_with_the_real_digest() {
 #[test]
 fn answer_approval_uses_the_signed_channel_and_consumes_once() {
     let d = daemon();
-    issue(&d, "esc_answer");
-    let res = answer_approval_payload(&d, "esc_answer", true, Some("ok".into()))
+    let digest = issue(&d, "esc_answer");
+    let res = answer_approval_payload(&d, "esc_answer", true, Some("ok".into()), &digest)
         .expect("honest answer succeeds");
     assert_eq!(res["signed"], true, "the command reports a signed answer");
     assert_eq!(res["source"], "engine");
@@ -84,7 +79,7 @@ fn answer_approval_uses_the_signed_channel_and_consumes_once() {
         "the card is consumed exactly once"
     );
 
-    let replay = answer_approval_payload(&d, "esc_answer", true, Some("ok".into()));
+    let replay = answer_approval_payload(&d, "esc_answer", true, Some("ok".into()), &digest);
     assert!(replay.is_err(), "replayed answer returns an honest error");
 }
 
@@ -92,6 +87,24 @@ fn answer_approval_uses_the_signed_channel_and_consumes_once() {
 fn unknown_id_returns_an_honest_error() {
     let d = daemon();
     let err =
-        answer_approval_payload(&d, "esc_nope", true, None).expect_err("no such card -> error");
+        answer_approval_payload(&d, "esc_nope", true, None, "").expect_err("no such card -> error");
     assert!(!err.is_empty(), "error string reaches the UI");
+}
+
+#[test]
+fn stale_displayed_digest_cannot_consume_the_new_card() {
+    let d = daemon();
+    let old = issue(&d, "esc_reissued");
+    answer_approval_payload(&d, "esc_reissued", true, None, &old).unwrap();
+    let new = d
+        .issue_approval("esc_reissued", "S1-OC01", "needs_you", "A changed request")
+        .unwrap();
+
+    let stale = answer_approval_payload(&d, "esc_reissued", true, None, &old);
+    assert!(
+        stale.is_err(),
+        "the old digest must not authorize the new card"
+    );
+    assert_eq!(approvals_from_engine(&d)[0].digest, new);
+    answer_approval_payload(&d, "esc_reissued", true, None, &new).unwrap();
 }

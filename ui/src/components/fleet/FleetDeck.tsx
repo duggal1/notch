@@ -7,7 +7,7 @@ import type { Snapshot } from '../../lib/bridge';
 import { send } from '../../lib/bridge';
 import {
   loadFleet, registerFleetEvents, sendFleet, EMPTY_FLEET_STATE,
-  type FleetData, type FleetUnit,
+  type FleetCommand, type FleetData, type FleetUnit,
 } from '../../lib/fleet-wiring';
 import { DitherField } from '../pixel/DitherField';
 import {
@@ -18,19 +18,25 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
   const [data, setData] = useState<FleetData>(() => ({
     state: EMPTY_FLEET_STATE, approvals: [], harnesses: [],
   }));
+  const [actionError, setActionError] = useState('');
   const [stageIndex, setStageIndex] = useState(0);
   const deckRef = useRef<HTMLDivElement>(null);
 
-  // One load from the backend view; live `fleet` events take it from here.
   useEffect(() => {
     let alive = true;
-    loadFleet().then((next) => { if (alive) setData(next); });
-    return () => { alive = false; };
+    let receivedEvent = false;
+    const stop = registerFleetEvents((state, approvals) => {
+      if (!alive) return;
+      receivedEvent = true;
+      setData((prev) => ({ ...prev, state, approvals: approvals ?? prev.approvals }));
+    });
+    loadFleet().then((next) => {
+      if (alive) {
+        setData((prev) => receivedEvent ? { ...prev, harnesses: next.harnesses } : next);
+      }
+    });
+    return () => { alive = false; stop(); };
   }, []);
-
-  useEffect(() => registerFleetEvents((state) => {
-    setData((prev) => ({ ...prev, state }));
-  }), []);
 
   const units = data.state.units;
   const activity = useMemo(() => deriveActivity(snapshot), [snapshot]);
@@ -39,10 +45,17 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
   const sup = snapshot?.supervisors?.[0]?.id ?? 'SV-1';
   const harness = data.harnesses[0];
 
+  const act = useCallback((command: FleetCommand) => {
+    setActionError('');
+    void sendFleet(command).catch((error: unknown) => {
+      setActionError(typeof error === 'string' ? error : 'Fleet command failed.');
+    });
+  }, []);
+
   const answer = useCallback((allow: boolean) => {
     if (!card) return;
-    sendFleet({ cmd: 'answer_approval', id: card.id, allow });
-  }, [card]);
+    act({ cmd: 'answer_approval', id: card.id, allow, digest: card.digest });
+  }, [act, card]);
 
   const advance = useCallback((dir: 1 | -1) => {
     setStageIndex((i) => stepStage(cards, i, dir));
@@ -149,6 +162,7 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
             <span className="view-head-count">{String(Math.max(0, cards.length)).padStart(2, '0')}</span>
           </div>
           <div className="inspector-body">
+            {actionError && <p role="alert">{actionError}</p>}
             {!card ? (
               <p className="inspector-empty">Nothing needs an answer right now.</p>
             ) : (
@@ -187,8 +201,8 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
         ))}
         <span className="sl-item fleet-ledger">seq {data.state.ledger.seq} · fence {data.state.ledger.fence.slice(0, 8)}</span>
         <span className="sl-item">storm {data.state.storm.guard} · {data.state.storm.holds} held</span>
-        <button type="button" className="esc-btn" data-storm="hold" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'hold', id: sup })}>Hold</button>
-        <button type="button" className="esc-btn" data-storm="release" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'release', id: sup })}>Release</button>
+        <button type="button" className="esc-btn" data-storm="hold" onClick={() => act({ cmd: 'fleet_control', action: 'hold', id: sup })}>Hold</button>
+        <button type="button" className="esc-btn" data-storm="release" onClick={() => act({ cmd: 'fleet_control', action: 'release', id: sup })}>Release</button>
         <span className="sl-dither"><DitherField mode="linear" angle={0} cell={2} floor={0.18} /></span>
       </div>
     </div>

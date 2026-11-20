@@ -10,16 +10,16 @@ export type FleetCommand =
   | { cmd: 'fleet_state' }
   | { cmd: 'list_harnesses' }
   | { cmd: 'list_approvals' }
-  | { cmd: 'answer_approval'; id: string; allow: boolean; note?: string }
+  | { cmd: 'answer_approval'; id: string; allow: boolean; digest: string; note?: string }
   | { cmd: 'fleet_control'; action: 'hold' | 'release' | 'kill_all'; id?: string };
 
-/** Fire-and-forget with the same headless recorder used by bridge.ts `send`. */
-export function sendFleet(a: FleetCommand): void {
+/** Send a fleet command and let its caller display any error. */
+export async function sendFleet(a: FleetCommand): Promise<void> {
   const log = (window as unknown as { __notchActions?: unknown[] }).__notchActions;
   if (Array.isArray(log)) log.push({ ...a, at: Date.now() });
   if (!isTauri()) return;
   const { cmd, ...args } = a;
-  invoke(cmd, args).catch(() => undefined);
+  await invoke(cmd, args);
 }
 
 export interface FleetUnit {
@@ -71,7 +71,7 @@ export async function loadFleet(): Promise<FleetData> {
  * plus the raw fleet view. WS browser mode delivers the same view via FLEET_STATE_EVENT.
  * Returned disposer is idempotent.
  */
-export function registerFleetEvents(onFleet?: (state: FleetState) => void): () => void {
+export function registerFleetEvents(onFleet?: (state: FleetState, approvals?: Approval[]) => void): () => void {
   const onWsState = (e: Event) => {
     const detail = (e as CustomEvent<FleetState>).detail;
     if (detail && Array.isArray(detail.units)) onFleet?.(detail);
@@ -81,11 +81,11 @@ export function registerFleetEvents(onFleet?: (state: FleetState) => void): () =
 
   let stop: (() => void) | null = null;
   let disposed = false;
-  listen<{ snapshot: Snapshot; fleet: FleetState }>('fleet', (e) => {
+  listen<{ snapshot: Snapshot; fleet: FleetState; approvals: Approval[] }>('fleet', (e) => {
     const payload = e.payload;
     if (!payload?.snapshot) return;
     window.dispatchEvent(new CustomEvent(FLEET_EVENT, { detail: payload.snapshot }));
-    onFleet?.(payload.fleet);
+    onFleet?.(payload.fleet, payload.approvals);
   }).then((fn) => { if (disposed) fn(); else stop = fn; }).catch(() => undefined);
   return () => {
     disposed = true;

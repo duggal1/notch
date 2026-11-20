@@ -380,9 +380,13 @@ fn declare_harnesses() -> Vec<HarnessOut> {
 /// snapshot projection and not a local FNV hash.
 pub fn approvals_from_engine(daemon: &Daemon) -> Vec<ApprovalOut> {
     let snap = serde_json::to_value(daemon.snapshot()).unwrap_or_else(|_| json!({}));
+    approval_cards(daemon, &snap)
+}
+
+fn approval_cards(daemon: &Daemon, snap: &Value) -> Vec<ApprovalOut> {
     let mut out: Vec<ApprovalOut> = Vec::new();
     for card in daemon.pending_approvals() {
-        let supervisor = array_at(&snap, "sessions")
+        let supervisor = array_at(snap, "sessions")
             .iter()
             .find(|v| str_at(v, "id") == card.session.as_str())
             .map(|v| str_at(v, "sup").to_string())
@@ -404,25 +408,24 @@ pub fn approvals_from_engine(daemon: &Daemon) -> Vec<ApprovalOut> {
 }
 
 /// Signed answer path shared by the Tauri command and its real-Daemon test.
-/// The digest is recomputed from the same pending card the UI was shown;
-/// invalid, expired and replayed answers surface as an honest error string.
+/// Verify the digest supplied by the UI against the current pending card.
 pub fn answer_approval_payload(
     daemon: &Daemon,
     id: &str,
     allow: bool,
     note: Option<String>,
+    digest: &str,
 ) -> Result<Value, String> {
     let card = daemon
         .pending_approvals()
         .into_iter()
         .find(|c| c.id == id)
         .ok_or_else(|| format!("unknown approval {id:?}"))?;
-    let digest = engine_card_digest(&card);
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    let answer = daemon.answer_approval(id, allow, note, at, &digest, "answer")?;
+    let answer = daemon.answer_approval(id, allow, note, at, digest, "answer")?;
     Ok(json!({
         "ok": true,
         "id": id,
@@ -475,9 +478,10 @@ pub async fn answer_approval(
     id: String,
     allow: bool,
     note: Option<String>,
+    digest: String,
     daemon: State<'_, Arc<Daemon>>,
 ) -> Result<Value, String> {
-    answer_approval_payload(&daemon, &id, allow, note)
+    answer_approval_payload(&daemon, &id, allow, note, &digest)
 }
 
 /// `fleet_control` — storm guard. `hold` / `release` reuse the frozen
@@ -541,7 +545,11 @@ pub fn spawn_fleet_emit_thread(app: AppHandle, rx: Receiver<String>, daemon: Arc
                     if last.elapsed() >= Duration::from_millis(150) {
                         if let Ok((seq, epoch)) = ledger_numbers(&daemon) {
                             let fleet = fleet_view(&snap, seq, epoch);
-                            let _ = app.emit("fleet", json!({ "snapshot": snap, "fleet": fleet }));
+                            let approvals = approval_cards(&daemon, &snap);
+                            let _ = app.emit(
+                                "fleet",
+                                json!({ "snapshot": snap, "fleet": fleet, "approvals": approvals }),
+                            );
                             last = Instant::now();
                         }
                     } else {
