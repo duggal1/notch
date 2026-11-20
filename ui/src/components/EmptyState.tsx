@@ -31,7 +31,7 @@ export function EmptyState({ onNewTask }: { onNewTask: () => void }) {
           className="empty-input"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="What should the first agent do?"
+          placeholder="Describe the first task"
           aria-label="First task"
           spellCheck={false}
         />

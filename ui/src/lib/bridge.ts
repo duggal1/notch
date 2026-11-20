@@ -111,14 +111,14 @@ export type UiAction =
 
 /** Fire-and-forget send — errors are logged, never thrown into the render path. */
 export function send(a: UiAction): void {
-  // Headless interaction probe: records the command only when a harness installs
-  // window.__notchActions. No array → no work, no allocation in the shipped app.
-  const log = (window as unknown as { __notchActions?: unknown[] }).__notchActions;
-  if (Array.isArray(log)) log.push({ ...a, at: Date.now() });
   invokeInner(a).catch((err) => console.warn('[notch] invoke failed', a.cmd, err));
 }
 
 async function invokeInner(a: UiAction): Promise<unknown> {
+  // Headless interaction probe: records EVERY command (including invokePayload calls
+  // such as message/reprompt) when a harness installs window.__notchActions.
+  const log = (window as unknown as { __notchActions?: unknown[] }).__notchActions;
+  if (Array.isArray(log)) log.push({ ...a, at: Date.now() });
   if (isTauri()) {
     const { cmd, ...args } = a;
     return invoke(cmd, args);

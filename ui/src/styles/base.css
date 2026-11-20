@@ -207,7 +207,7 @@ button:active:not(:disabled), [role='button']:active, .item:active {
 
 /* ---------- rows: a soft card that wipes to hot fuchsia from the pointer entry point ---------- */
 .item {
-  position: relative; isolation: isolate; border-radius: var(--r-m); color: var(--t1);
+  position: relative; isolation: isolate; overflow: hidden; border-radius: var(--r-m); color: var(--t1);
   background: var(--panel);  --hx: 50%; --hy: 50%;  user-select: none;
 }
 .item::before {
@@ -220,7 +220,7 @@ button:active:not(:disabled), [role='button']:active, .item:active {
 .item[data-hot]::before { transform: scaleX(1); }
 .item[data-hot] .label, .item[data-hot] .dim { color: rgba(0, 0, 0, .62); }
 .item--row { height: 46px; }
-.item--row-tall { height: 62px; }
+.item--row-tall { height: 72px; }
 
 /* status squares — 8px, square, no glow. This is a pixel glyph, not chrome. */
 .dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 8px; transition: none; }

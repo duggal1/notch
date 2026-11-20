@@ -83,7 +83,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   const load = snapshot ? Math.min(1, snapshot.eps / 40) : 0;
 
   return (
-    <div className={`tree-grid${hasTarget ? ' tree-grid--target' : ''}`}>
+    <div className={`tree-grid${idle ? ' tree-grid--idle' : ''}${hasTarget ? ' tree-grid--target' : ''}`}>
       <aside className="sidebar" aria-label="Supervisors">
         <div className="sidebar-head">
           <span className="label">Supervisors</span>

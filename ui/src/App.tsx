@@ -131,7 +131,7 @@ export default function App() {
   const rest = frameFor('rest', contentH);
 
   return (
-    <Shell mode={mode} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
+    <Shell mode={mode} content={idle ? 'idle' : 'active'} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
       {!open && (
         <div className="rest-indicators" style={{ width: rest.w }} aria-hidden="true">
           <span className="rest-brand"><span className="brand-logo" /><i className={`live-dot live-dot--${top}`} aria-hidden="true" /></span>

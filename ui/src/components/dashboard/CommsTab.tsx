@@ -10,7 +10,10 @@ export function CommsTab({ snapshot, onJumpToTree }: {
 }) {
   const [filter, setFilter] = useState('');
   const [route, setRoute] = useState<RouteFilter | null>(null);
-  const supervisors = useMemo(() => new Map(snapshot?.sessions.map((session) => [session.id, session.sup])), [snapshot]);
+  const supervisors = useMemo(() => new Map([
+    ...(snapshot?.supervisors ?? []).map(({ id }): [string, string] => [id, id]),
+    ...(snapshot?.sessions ?? []).map(({ id, sup }): [string, string] => [id, sup]),
+  ]), [snapshot]);
   const messages = snapshot?.busMessages ?? [];
   const scope = (from: string, to: string) => {
     const sender = supervisors.get(from);
