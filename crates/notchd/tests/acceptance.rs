@@ -913,11 +913,11 @@ fn empty_tree_is_legal_and_serializes_cleanly() {
     assert_eq!(v["supervisors"].as_array().unwrap().len(), 0);
     assert_eq!(v["sessions"].as_array().unwrap().len(), 0);
     assert_eq!(v["eps"], 0.0);
-    // A fresh state dir has no checkpoint; A4's strict loader records exactly
-    // that recovery notice as the sole warning.
+    // A4's strict loader is silent for a GENUINE fresh start (no live file and
+    // no backups); "state unrecoverable" warnings are reserved for corrupt files
+    // and proven by a4's load_state tests.
     let warnings = v["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1, "expected only the fresh-state recovery notice: {warnings:?}");
-    assert!(warnings[0].as_str().unwrap().contains("state unrecoverable"));
+    assert_eq!(warnings.len(), 0, "fresh state must not warn: {warnings:?}");
 }
 
 // ---------- 9. Socket / NDJSON roundtrip ----------
