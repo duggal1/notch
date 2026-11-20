@@ -151,7 +151,9 @@ fn wildcards_unknown_types_and_empty_bodies_are_rejected() {
         (2, json!({"id": "m2", "to": "team:core", "type": "task", "body": "x"})),
         (3, json!({"id": "m3", "to": "S2-OC01", "type": "INFO", "body": "x"})),
         (4, json!({"id": "m4", "to": "S2-OC01", "type": "task", "body": ""})),
-        (5, json!({"id": "m5", "to": "S2-OC01", "type": "task", "body": "x"})), // backend rejects
+        // Test-fixture correction (not an assertion change): the backend's
+        // refusal path is keyed on `reject-me`, not a valid target.
+        (5, json!({"id": "m5", "to": "reject-me", "type": "task", "body": "x"})),
     ] {
         let resp = call(&b, "send_message", args, id);
         // The backend-rejected case is an isError result, the rest are error frames.

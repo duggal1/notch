@@ -179,32 +179,90 @@ impl Default for OrchestratorBus {
 /// can write), so a worker can ask the orchestrator to route a message but can
 /// never deliver to, read, or mutate another session directly.
 pub struct A2aBridgeIngress {
-    _clock: Arc<dyn Clock>,
-    _tx: mpsc::Sender<BusMessage>,
+    clock: Arc<dyn Clock>,
+    tx: mpsc::Sender<BusMessage>,
+    /// session id -> owning supervisor id, refreshed by daemon glue.
+    routes: Mutex<HashMap<String, String>>,
+    /// ids a worker may address. Exact match only; no wildcards.
+    known: Mutex<HashSet<String>>,
+    policy: A2aRegistry,
+    submitted: AtomicU64,
 }
 
 impl A2aBridgeIngress {
     pub fn new(clock: Arc<dyn Clock>, tx: mpsc::Sender<BusMessage>) -> Self {
-        Self { _clock: clock, _tx: tx }
+        Self {
+            policy: A2aRegistry::new(clock.clone()),
+            clock,
+            tx,
+            routes: Mutex::new(HashMap::new()),
+            known: Mutex::new(HashSet::new()),
+            submitted: AtomicU64::new(0),
+        }
     }
-    pub fn set_routes(&self, _routes: HashMap<String, String>) {
-        todo!("RED: set_routes unimplemented")
+
+    pub fn set_routes(&self, routes: HashMap<String, String>) {
+        *self.routes.lock().unwrap_or_else(|e| e.into_inner()) = routes;
     }
-    pub fn set_known(&self, _known: HashSet<String>) {
-        todo!("RED: set_known unimplemented")
+
+    pub fn set_known(&self, known: HashSet<String>) {
+        *self.known.lock().unwrap_or_else(|e| e.into_inner()) = known;
     }
+
+    /// Accept a worker message and enqueue it for the ORCHESTRATOR only. The
+    /// FROM/TO session pair travels as metadata; delivery is by `drain` into
+    /// the target supervisor's mailbox. No caller can read a mailbox here.
     pub fn submit(
         &self,
-        _id: &str,
-        _from: &str,
-        _to: &str,
-        _kind: &str,
-        _body: &str,
+        id: &str,
+        from: &str,
+        to: &str,
+        kind: &str,
+        body: &str,
     ) -> Result<(), NotchError> {
-        todo!("RED: submit unimplemented")
+        if id.is_empty() || id.len() > 128 {
+            return Err(NotchError::Protocol("message id must be 1..128 chars".into()));
+        }
+        if body.trim().is_empty() || body.chars().count() > 4000 {
+            return Err(NotchError::Protocol("body must be non-empty and <=4000 chars".into()));
+        }
+        let known = self.known.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !known.contains(from) {
+            return Err(NotchError::NotFound(format!("unknown sender `{from}`")));
+        }
+        self.policy.validate(kind, to, &known)?;
+        if self.policy.is_duplicate(id) {
+            return Err(NotchError::Protocol(format!("duplicate message id `{id}`")));
+        }
+        let routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+        let from_sup = routes
+            .get(from)
+            .ok_or_else(|| NotchError::NotFound(format!("no supervisor route for `{from}`")))?
+            .clone();
+        let to_sup = routes
+            .get(to)
+            .ok_or_else(|| NotchError::NotFound(format!("no supervisor route for `{to}`")))?
+            .clone();
+        drop(routes);
+
+        let msg = BusMessage {
+            seq: 0, // assigned by the orchestrator at drain time
+            from: from_sup,
+            to: to_sup,
+            session: Some(to.to_string()),
+            kind: kind.to_string(),
+            detail: format!("{from}->{to} {body}"),
+            ts: self.clock.now_ms(),
+        };
+        self.tx
+            .send(msg)
+            .map_err(|_| NotchError::Protocol("orchestrator inbox closed".into()))?;
+        self.submitted.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
+
     pub fn submitted_count(&self) -> u64 {
-        todo!("RED: submitted_count unimplemented")
+        self.submitted.load(Ordering::SeqCst)
     }
 }
 
