@@ -512,12 +512,12 @@ impl Daemon {
 
     /// Allocate + persist under the registry mutex, BEFORE the id escapes.
     #[allow(dead_code)] // contract API: wired by A5 in daemon/spawn.rs
-    pub(crate) fn alloc_session(&self, supervisor_number: u32) -> String {
+    pub(crate) fn alloc_session(&self, supervisor_number: u32) -> io::Result<String> {
         crate::registry::allocate_session_at(&self.registry_path(), supervisor_number)
     }
 
     #[allow(dead_code)] // contract API: wired by A5 in daemon/spawn.rs
-    pub(crate) fn alloc_supervisor(&self) -> String {
+    pub(crate) fn alloc_supervisor(&self) -> io::Result<String> {
         crate::registry::allocate_supervisor_at(&self.registry_path())
     }
 
@@ -649,7 +649,7 @@ mod a4_tests {
         };
         let daemon = Daemon::open(
             config,
-            crate::herdr::Herdr::with_runner(|_| Ok("[]".to_string())),
+            crate::herdr::Herdr::from_env(),
             Arc::new(crate::clock::SystemClock),
         )
         .unwrap();

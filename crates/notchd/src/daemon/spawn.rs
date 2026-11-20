@@ -194,14 +194,32 @@ impl Daemon {
         let mut prompts: Vec<(String, String)> = Vec::new(); // (session id, prompt)
 
         for sessions in &parsed.supervisors {
-            let sup_id = self.alloc_supervisor();
+            let sup_id = match self.alloc_supervisor() {
+                Ok(id) => id,
+                Err(e) => {
+                    return RunPlanAck {
+                        ok: false,
+                        spawned: Vec::new(),
+                        error: Some(format!("registry: {e}")),
+                    }
+                }
+            };
             let sup_number: u32 = sup_id
                 .strip_prefix("SV-")
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(1);
             new_supervisor_ids.push((sup_id.clone(), plan_title.clone()));
             for ses in sessions {
-                let id = self.alloc_session(sup_number);
+                let id = match self.alloc_session(sup_number) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return RunPlanAck {
+                            ok: false,
+                            spawned: Vec::new(),
+                            error: Some(format!("registry: {e}")),
+                        }
+                    }
+                };
                 let session = SessionState {
                     id: id.clone(),
                     sup: sup_id.clone(),
@@ -438,7 +456,16 @@ impl Daemon {
                 error: Some(format!("unknown supervisor `{supervisor}`")),
             };
         };
-        let id = self.alloc_session(sup_number);
+        let id = match self.alloc_session(sup_number) {
+            Ok(id) => id,
+            Err(e) => {
+                return SpawnAck {
+                    ok: false,
+                    id: None,
+                    error: Some(format!("registry: {e}")),
+                }
+            }
+        };
         let now = self.now();
         let mut session = SessionState {
             id: id.clone(),
@@ -586,7 +613,17 @@ impl Daemon {
                     .map(|t| truncate_words(t, 48))
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| truncate_words(task_trim, 48));
-                let sup_id = self.alloc_supervisor();
+                let sup_id = match self.alloc_supervisor() {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return SubmitTaskAck {
+                            ok: false,
+                            supervisor_id: None,
+                            session_id: None,
+                            error: Some(format!("registry: {e}")),
+                        }
+                    }
+                };
                 let sup_number: u32 = sup_id
                     .strip_prefix("SV-")
                     .and_then(|n| n.parse().ok())
@@ -594,7 +631,17 @@ impl Daemon {
                 (sup_id, sup_number, title_final, true)
             }
         };
-        let session_id = self.alloc_session(sup_number);
+        let session_id = match self.alloc_session(sup_number) {
+            Ok(id) => id,
+            Err(e) => {
+                return SubmitTaskAck {
+                    ok: false,
+                    supervisor_id: None,
+                    session_id: None,
+                    error: Some(format!("registry: {e}")),
+                }
+            }
+        };
 
         let now = self.now();
         let supervisor = SupervisorMeta {

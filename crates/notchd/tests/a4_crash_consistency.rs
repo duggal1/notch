@@ -36,8 +36,8 @@ fn t5_writer_child() {
     let path = dir.join("registry.json");
     let mut reg = Registry::load(&path, &SystemClock);
     if reg.ids().is_empty() {
-        reg.allocate_supervisor();
-        let _ = reg.allocate_session(1);
+        reg.allocate_supervisor().unwrap();
+        let _ = reg.allocate_session(1).unwrap();
     }
     // Establish live + bak1 before signalling readiness, so a kill at any
     // later instant always leaves a recoverable snapshot.
@@ -123,9 +123,9 @@ fn t5_1000_sigkills_no_repeats_no_tmp_adoption() {
                     );
                 }
                 if recovered.ids().is_empty() {
-                    recovered.allocate_supervisor();
+                    recovered.allocate_supervisor().unwrap();
                 }
-                let id = recovered.allocate_session(1);
+                let id = recovered.allocate_session(1).unwrap();
                 assert!(
                     handed_out.insert(id.clone()),
                     "duplicate id across crashes: {id}"
@@ -137,8 +137,8 @@ fn t5_1000_sigkills_no_repeats_no_tmp_adoption() {
                 // gone. With bak1 established before READY this should be rare.
                 hard_errors += 1;
                 let mut fresh = Registry::load(&dir.join("never-existed.json"), &SystemClock);
-                fresh.allocate_supervisor();
-                let id = fresh.allocate_session(1);
+                fresh.allocate_supervisor().unwrap();
+                let id = fresh.allocate_session(1).unwrap();
                 assert!(
                     handed_out.insert(id.clone()),
                     "duplicate id after hard error: {id}"
@@ -177,8 +177,8 @@ fn t5_total_corruption_is_a_hard_error_not_a_reset() {
     let dir = tmp_root("t5hard");
     let path = dir.join("registry.json");
     let mut reg = Registry::load(&dir.join("never-existed.json"), &SystemClock);
-    reg.allocate_supervisor();
-    reg.allocate_session(1);
+    reg.allocate_supervisor().unwrap();
+    reg.allocate_session(1).unwrap();
     reg.save(&path).unwrap();
     std::fs::write(&path, b"{corrupt").unwrap();
     for n in 1..=3 {
