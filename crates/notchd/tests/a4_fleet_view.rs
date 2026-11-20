@@ -11,7 +11,7 @@ use notchd::daemon::Daemon;
 use notchd::herdr::Herdr;
 use notchd::snapshot::fleet_view;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ fn fake_herdr() -> Herdr {
     })
 }
 
-fn real_daemon(dir: &PathBuf) -> Daemon {
+fn real_daemon(dir: &Path) -> Daemon {
     Daemon::open(
         Config {
             state_dir: dir.join("state"),

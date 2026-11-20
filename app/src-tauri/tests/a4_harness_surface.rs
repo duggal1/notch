@@ -4,22 +4,15 @@
 
 use std::future::Future;
 use std::pin::pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::{Context, Poll};
 
 fn block_on<F: Future>(f: F) -> F::Output {
-    struct Noop;
-    impl Wake for Noop {
-        fn wake(self: Arc<Self>) {}
-    }
-    let waker = Waker::from(Arc::new(Noop));
-    let mut cx = Context::from_waker(&waker);
+    let waker = std::task::Waker::noop();
+    let mut cx = Context::from_waker(waker);
     let mut f = pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => return v,
-            Poll::Pending => panic!("future unexpectedly pending"),
-        }
+    match f.as_mut().poll(&mut cx) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("future unexpectedly pending"),
     }
 }
 
