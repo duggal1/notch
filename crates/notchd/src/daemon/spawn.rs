@@ -25,6 +25,15 @@ const BUSY_RETRY_DELAYS_MS: &[u64] = &[250, 500, 750];
 /// full SpawnOutcome is applied on poll — never a fabricated id.
 const PANE_ID_ACK_WAIT: Duration = Duration::from_millis(750);
 
+/// Early signal from the detached worker, before the full SpawnOutcome.
+pub(crate) enum PaneEvent {
+    /// herdr returned a real pane id — publish it before the ack/snapshots.
+    Ready(String),
+    /// herdr pane split failed for good — release the ack immediately; the
+    /// failure still lands honestly via the SpawnOutcome on the next poll.
+    Failed,
+}
+
 /// Does this herdr failure look like a transient busy state?
 /// `agent_pane_busy` is the observed live string; "busy" also covers other
 /// herdr busy spellings without swallowing real failures.
@@ -58,7 +67,7 @@ pub(crate) fn spawn_detached(
     herdr: Herdr,
     tmp_dir: std::path::PathBuf,
     sessions: Vec<SessionState>,
-    pane_tx: Option<Sender<(String, String)>>,
+    pane_tx: Option<Sender<PaneEvent>>,
 ) -> SpawnOutcome {
     let mut warnings = Vec::new();
     match cleanup::enforce_budget(&tmp_dir, &sessions, cleanup::max_tmp_bytes()) {
@@ -68,6 +77,9 @@ pub(crate) fn spawn_detached(
     let tmp = match crate::worktree::ensure_layout(&tmp_dir, &session.id) {
         Ok(t) => t,
         Err(e) => {
+            if let Some(tx) = &pane_tx {
+                let _ = tx.send(PaneEvent::Failed);
+            }
             return SpawnOutcome {
                 session,
                 warnings,
@@ -106,6 +118,9 @@ pub(crate) fn spawn_detached(
     let pane = match retry_busy(|| herdr.pane_split(&session.cwd, &env)) {
         Ok(p) => p,
         Err(e) => {
+            if let Some(tx) = &pane_tx {
+                let _ = tx.send(PaneEvent::Failed);
+            }
             warnings.push(format!(
                 "{}: pane split failed after bounded busy retry: {e}",
                 session.id
@@ -122,7 +137,7 @@ pub(crate) fn spawn_detached(
     // slower agent-start/prompt work. `submit_task` uses this to keep the
     // paneId in emitted snapshots correct under fast-ack (conformance).
     if let Some(tx) = &pane_tx {
-        let _ = tx.send((session.id.clone(), pane.clone()));
+        let _ = tx.send(PaneEvent::Ready(pane.clone()));
     }
     session.pane_id = pane.clone();
     let agent_name = agent_target(&session.id);
@@ -626,7 +641,7 @@ impl Daemon {
         let tmp_dir = self.config.tmp_dir.clone();
         let existing = { lock(&self.inner).sessions.clone() };
         let tx = self.spawn_sender();
-        let (pane_tx, pane_rx) = mpsc::channel::<(String, String)>();
+        let (pane_tx, pane_rx) = mpsc::channel::<PaneEvent>();
         std::thread::spawn(move || {
             let outcome = spawn_detached(
                 spawn_session,
@@ -661,12 +676,15 @@ impl Daemon {
         // SpawnOutcome still applies it on poll and the conformance test
         // fails rather than being weakened.
         match pane_rx.recv_timeout(PANE_ID_ACK_WAIT) {
-            Ok((pane_session, pane_id)) => {
+            Ok(PaneEvent::Ready(pane_id)) => {
                 let mut inner = lock(&self.inner);
-                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == pane_session) {
+                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == session_id) {
                     s.pane_id = pane_id;
                     self.save_now(&inner);
                 }
+            }
+            Ok(PaneEvent::Failed) => {
+                // Failure lands via SpawnOutcome; do not hold the ack.
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let _ = self.event_log.append(
