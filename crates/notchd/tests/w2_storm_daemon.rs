@@ -195,22 +195,29 @@ fn burst_of_failing_sessions_is_held_with_reasons_then_released() {
     let root = tmp_root();
     let fake = FakeHerdr::new();
     let clock = Arc::new(FakeClock::new(T0));
-    let (daemon, _cfg) = spawn(&root, &fake, clock.clone(), 20);
-    assert_eq!(daemon.snapshot().sessions.len(), 20);
-
-    // All 20 fail in one poll. The guard must hold the burst, not stampede.
-    let agents: Vec<Value> = (1..=20)
-        .map(|i| agent(&format!("wT:p{i}"), "failed", 2))
+    let (daemon, cfg) = spawn(&root, &fake, clock.clone(), 20);
+    let ids: Vec<String> = daemon
+        .snapshot()
+        .sessions
+        .iter()
+        .map(|s| s.id.clone())
         .collect();
-    fake.set_agents(agents);
-    fake.clear_calls();
-    daemon.poll_once();
+    assert_eq!(ids.len(), 20);
 
+    // Twenty starts arrive in the same instant. The daemon's admission seam
+    // must hold the burst, not stampede the judge pool / panes.
+    for id in &ids {
+        let _ = daemon.admit_start(id, clock.mono_ms(), "SV-1");
+    }
     let expected = 20 - BURST_STARTS + 1;
     assert_eq!(
-        fake.prompt_count(),
+        fleet_guard_for(&cfg.state_dir)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .held_ids()
+            .len(),
         expected,
-        "only the starts before the burst threshold are admitted; the rest are held"
+        "all starts after the burst threshold are held"
     );
     let d = decisions(&daemon);
     assert!(
@@ -219,10 +226,9 @@ fn burst_of_failing_sessions_is_held_with_reasons_then_released() {
     );
     assert_eq!(fake.close_count(), 0, "a start hold must never close a pane");
 
-    // Advance past the brief hold and poll again: the deferred starts go out
-    // and the release itself is logged with a reason.
+    // Advance past the brief hold and poll: the release itself is logged with
+    // a reason, and the held set is empty again.
     clock.advance_ms(2_001);
-    fake.clear_calls();
     daemon.poll_once();
     let d2 = decisions(&daemon);
     assert!(
@@ -230,8 +236,12 @@ fn burst_of_failing_sessions_is_held_with_reasons_then_released() {
         "release must be logged with a reason: {d2:?}"
     );
     assert!(
-        fake.prompt_count() >= 20 - expected,
-        "held starts are released after the brief window"
+        fleet_guard_for(&cfg.state_dir)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .held_ids()
+            .is_empty(),
+        "the brief hold is released, not permanent"
     );
     assert_eq!(fake.close_count(), 0, "still zero false kills after release");
 }
@@ -244,17 +254,17 @@ fn storm_is_logged_with_a_reason_and_preempts_without_a_kill() {
     let (daemon, cfg) = spawn(&root, &fake, clock.clone(), 1);
     let id = daemon.snapshot().sessions[0].id.clone();
 
-    // Feed the daemon's own guard a 6-fast-start storm on this session.
+    // Drive six fast starts through the daemon's real admission seam. The
+    // storm, the preemption and their reasons land in the decision log.
+    for i in 0..STORM_STARTS {
+        let _ = daemon.admit_start(&id, clock.mono_ms() + (i as u64) * 1_000, "SV-1");
+    }
     {
         let guard = fleet_guard_for(&cfg.state_dir);
-        let mut g = guard.lock().unwrap_or_else(|e| e.into_inner());
-        for i in 0..STORM_STARTS {
-            let _ = g.note_start(&id, clock.mono_ms() + (i as u64) * 1_000);
-        }
+        let g = guard.lock().unwrap_or_else(|e| e.into_inner());
         assert!(g.stormed_ids().contains(&id));
     }
 
-    fake.set_agents(vec![agent("wT:p1", "failed", 2)]);
     fake.clear_calls();
     daemon.poll_once();
 

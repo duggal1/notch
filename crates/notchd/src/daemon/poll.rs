@@ -12,7 +12,9 @@ use crate::attribution;
 use crate::cleanup;
 use crate::model::truncate;
 use crate::status::Status;
-use crate::supervisor::{decide_on_failure_with_reason, reprompt_text, FailureAction};
+use crate::supervisor::{
+    decide_on_failure_with_reason, fleet_guard_for, reprompt_text, FailureAction, StartGate,
+};
 use crate::watchdog::{Liveness, Obs, Watchdog};
 use std::collections::HashSet;
 use std::path::Path;
@@ -36,6 +38,46 @@ impl Daemon {
     /// and for tests that must observe a just-committed field on disk.
     pub fn flush_state(&self) {
         self.shutdown_save();
+    }
+
+    /// Admission point for a start / re-prompt. The decider loop calls this
+    /// before every re-prompt; the failure path below calls it too. Every
+    /// non-admit outcome is written to the real decision log with a reason.
+    pub fn admit_start(&self, id: &str, mono: u64, supervisor: &str) -> StartGate {
+        let gate = {
+            let guard = fleet_guard_for(&self.config.state_dir);
+            let mut g = guard.lock().unwrap_or_else(|e| e.into_inner());
+            g.note_start(id, mono)
+        };
+        match &gate {
+            StartGate::Hold { reason, first, .. } => {
+                if *first {
+                    let mut inner = lock(&self.inner);
+                    self.log_decision(&mut inner, supervisor, id, "start_hold", reason);
+                }
+            }
+            StartGate::Storm { reason } => {
+                let victim = {
+                    let guard = fleet_guard_for(&self.config.state_dir);
+                    let g = guard.lock().unwrap_or_else(|e| e.into_inner());
+                    g.preempt_victim(mono)
+                };
+                let preason = victim
+                    .map(|(_, r)| r)
+                    .unwrap_or_else(|| format!("fleet storm preempt: {id} stopped"));
+                let mut inner = lock(&self.inner);
+                self.log_decision(&mut inner, supervisor, id, "storm", reason);
+                self.log_decision(&mut inner, supervisor, id, "preempt", &preason);
+            }
+            StartGate::Preempt { reason, first } => {
+                if *first {
+                    let mut inner = lock(&self.inner);
+                    self.log_decision(&mut inner, supervisor, id, "preempt", reason);
+                }
+            }
+            StartGate::Admit => {}
+        }
+        gate
     }
 
     /// One watchdog + supervision pass. `run_poll_loop` drives it every
@@ -90,6 +132,19 @@ impl Daemon {
             self.save_state(&inner);
             drop(inner);
             self.notify_change();
+        }
+
+        // Fleet start-hold (steal #5): release any burst hold whose brief
+        // window has elapsed and log the release with a reason. No liveness
+        // decision is touched here — this is purely an admission gate.
+        let released = {
+            let guard = fleet_guard_for(&self.config.state_dir);
+            let mut g = guard.lock().unwrap_or_else(|e| e.into_inner());
+            g.release_due(mono)
+        };
+        for (id, reason) in released {
+            let mut inner = lock(&self.inner);
+            self.log_decision(&mut inner, "ORCH", &id, "start_hold_released", &reason);
         }
 
         let agents = match self.herdr.agent_list() {
@@ -147,6 +202,7 @@ impl Daemon {
         struct Seed {
             idx: usize,
             id: String,
+            sup: String,
             pane_id: String,
             cwd: String,
             task_head: String,
@@ -166,6 +222,7 @@ impl Daemon {
                 .map(|(idx, s)| Seed {
                     idx,
                     id: s.id.clone(),
+                    sup: s.sup.clone(),
                     pane_id: s.pane_id.clone(),
                     cwd: s.cwd.clone(),
                     task_head: s.task.clone(),
@@ -239,6 +296,15 @@ impl Daemon {
                     let tail = self.herdr.agent_read(&agent_target(&seed.id), 20).ok();
                     match decide_on_failure_with_reason(reason.as_deref(), seed.failure_count, tail) {
                         FailureAction::Reprompt { tail } => {
+                            // Fleet admission gate (steal #5). Purely additive:
+                            // a held/preempted start leaves session state and
+                            // every watchdog timestamp exactly as they were.
+                            if !matches!(
+                                self.admit_start(&seed.id, mono, &seed.sup),
+                                StartGate::Admit
+                            ) {
+                                continue;
+                            }
                             let text = reprompt_text(&seed.task_head, &tail);
                             match self.herdr.agent_prompt(&agent_target(&seed.id), &text) {
                                 Ok(()) => effects.push(Effect::Update(Box::new(UpdateEffect {
@@ -605,6 +671,42 @@ impl Daemon {
                 self.save_state(&inner);
             }
         }
+
+        // Fleet preemption: a worker whose starts formed a storm is held out
+        // of the decision loop with an honest reason. Pane and temp dir are
+        // kept; no kill path is involved. Settled once per storm episode so a
+        // bad worker cannot be escalated on every tick.
+        let victims = {
+            let guard = fleet_guard_for(&self.config.state_dir);
+            let g = guard.lock().unwrap_or_else(|e| e.into_inner());
+            g.preempted_victims(mono)
+        };
+        for (id, reason) in victims {
+            let eligible = {
+                let inner = lock(&self.inner);
+                inner
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| !s.escalated && !s.status.is_terminal())
+                    .unwrap_or(false)
+            };
+            if !eligible {
+                continue;
+            }
+            {
+                let mut inner = lock(&self.inner);
+                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
+                    s.status = Status::Idle;
+                    s.failure_reason = Some(reason.clone());
+                }
+            }
+            self.escalate_session(&id, "fleet_storm", &reason);
+            let guard = fleet_guard_for(&self.config.state_dir);
+            let mut g = guard.lock().unwrap_or_else(|e| e.into_inner());
+            g.settle(&id);
+        }
+
         self.supervise_once(api_sessions.as_deref());
         self.notify_change();
     }
