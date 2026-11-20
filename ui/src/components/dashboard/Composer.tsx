@@ -126,68 +126,66 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
 
   return (
     <div className="composer">
-      <div className="composer-beam">
-        {targetChipLabel && (
-          <div className="composer-target">
-            <span>→ {targetChipLabel}</span>
-            <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
-              onClick={() => setTargetSession(null)}>
-              <PixelIcon name="close" size={12} />
-            </button>
-          </div>
-        )}
-        <div className="composer-box">
-          <span className="composer-prompt" aria-hidden="true">›</span>
-          <textarea
-            ref={taRef}
-            className="composer-input"
-            rows={1}
-            placeholder="What should the agent do?"
-            value={task}
-            onChange={(e) => { setTask(e.target.value); autosize(); }}
-            onKeyDown={onKeyDown}
-            aria-label="Assign work to a session"
-          />
-        </div>
-        <div className="composer-dod">
-          <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
-            <PixelIcon name="chevron" size={12} className={dodOpen ? 'rotate-180' : ''} />
-            Done when…
+      {targetChipLabel && (
+        <div className="composer-target">
+          <span>→ {targetChipLabel}</span>
+          <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
+            onClick={() => setTargetSession(null)}>
+            <PixelIcon name="close" size={12} />
           </button>
-          {dodOpen && (
-            <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
-              placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
+        </div>
+      )}
+      <div className="composer-box">
+        <span className="composer-prompt" aria-hidden="true">›</span>
+        <textarea
+          ref={taRef}
+          className="composer-input"
+          rows={1}
+          placeholder="What should the agent do?"
+          value={task}
+          onChange={(e) => { setTask(e.target.value); autosize(); }}
+          onKeyDown={onKeyDown}
+          aria-label="Assign work to a session"
+        />
+      </div>
+      <div className="composer-dod">
+        <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
+          <PixelIcon name="chevron" size={12} className={dodOpen ? 'rotate-180' : ''} />
+          Done when…
+        </button>
+        {dodOpen && (
+          <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
+            placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
+        )}
+      </div>
+      <div className="composer-row">
+        <label className="cwd-field">
+          <PixelIcon name="folder" size={12} />
+          <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
+            onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
+            spellCheck={false} aria-label="Working directory" />
+        </label>
+        <div ref={menuRef} className="model-picker">
+          <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
+            <span className="tabular-nums">{model}</span>
+            <PixelIcon name="chevron" size={12} />
+          </button>
+          {modelOpen && (
+            <ul className="model-menu" role="listbox" aria-label="Model">
+              {models.map((m) => (
+                <li key={m} role="option" aria-selected={m === model}>
+                  <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
+                    <span className="tabular-nums">{m}</span>
+                    {m === model && <PixelIcon name="check" size={12} />}
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
-        <div className="composer-row">
-          <label className="cwd-field">
-            <PixelIcon name="folder" size={12} />
-            <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
-              onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
-              spellCheck={false} aria-label="Working directory" />
-          </label>
-          <div ref={menuRef} className="model-picker">
-            <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
-              <span className="tabular-nums">{model}</span>
-              <PixelIcon name="chevron" size={12} />
-            </button>
-            {modelOpen && (
-              <ul className="model-menu" role="listbox" aria-label="Model">
-                {models.map((m) => (
-                  <li key={m} role="option" aria-selected={m === model}>
-                    <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
-                      <span className="tabular-nums">{m}</span>
-                      {m === model && <PixelIcon name="check" size={12} />}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <button className="assign-btn" data-sending={state === 'sending' || undefined} onClick={send} disabled={state === 'sending' || !task.trim()}>
-            {state === 'sending' ? 'Assigning…' : 'Assign'}
-          </button>
-        </div>
+        <button className="assign-btn" data-sending={state === 'sending' || undefined} onClick={send} disabled={state === 'sending' || !task.trim()}>
+          {state === 'sending' ? 'Assigning…' : 'Assign'}
+        </button>
       </div>
       {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
       {error && <div className="composer-error" role="alert"><PixelIcon name="alert" size={12} />{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}

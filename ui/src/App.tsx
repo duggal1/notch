@@ -1,5 +1,4 @@
-// App.tsx — the popover. Silhouette morph only: rest → peek → open. No glow anywhere.
-// Open = flat dark cards over the libraries.dev dither (load = height, status = palette) + a DistortionWave on status flips.
+// App.tsx — the popover. Static shell: rest → peek → open.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Shell } from './components/Shell';
 import { Panel } from './components/Panel';
@@ -24,20 +23,16 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
 
   const shellRef = useRef<HTMLDivElement>(null);
-  const epsRef = useRef(0);
   const modeRef = useRef<Mode>('rest');
   const intentTimer = useRef(0);
-  const prevTopRef = useRef<Status | null>(null);
 
   const sessions = useMemo(() => snapshot?.sessions ?? [], [snapshot]);
   const supervisors = useMemo(() => snapshot?.supervisors ?? [], [snapshot]);
-  // idle drives both the concise layout and the shorter open silhouette (<= 420px)
   const idle = sessions.length === 0;
   const contentH = idle ? 320 : 640;
   const eps = snapshot?.eps ?? 0;
-  useEffect(() => {
-    epsRef.current = eps;
-  }, [eps]);
+  const epsRef = useRef(eps);
+  epsRef.current = eps;
 
   const top = useMemo(() => (snapshot ? topStatus(sessions) : 'idle'), [snapshot, sessions]);
   const wcount = useMemo(() => workingCount(sessions), [sessions]);
@@ -46,17 +41,7 @@ export default function App() {
   const escalations = snapshot?.escalations;
   const decisions = snapshot?.decisions;
 
-  // top status flip → haptic + distortion wave across the state cards (never on first paint)
-  useEffect(() => {
-    if (!snapshot) return;
-    const prev = prevTopRef.current;
-    if (prev === top) return;
-    prevTopRef.current = top;
-    if (prev === null) return;
-    send({ cmd: 'haptic', kind: top === 'failed' ? 'levelChange' : 'alignment' });
-  }, [top, snapshot]);
-
-  // ---------- intent machine ----------
+  // intent machine: peek 60ms on hover, rest 240ms on leave, snap-open on click
   const go = useCallback((m: Mode, ms: number) => {
     window.clearTimeout(intentTimer.current);
     intentTimer.current = window.setTimeout(() => {
@@ -82,7 +67,6 @@ export default function App() {
     return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('blur', onBlur); };
   }, [go, logsOpen]);
 
-  // native focus loss closes the popover (the dashboard stealing focus is deliberate)
   useEffect(() => {
     if (!isTauri()) return;
     let off: (() => void) | undefined;
@@ -116,8 +100,8 @@ export default function App() {
   const invokeOpenDashboard = useCallback(async () => {
     try {
       if (isTauri()) await invoke('open_dashboard');
-      else send({ cmd: 'open_dashboard' }); // browser demos record the command
-      go('rest', 0); // collapse once the dashboard is shown
+      else send({ cmd: 'open_dashboard' });
+      go('rest', 0);
     } catch (e) {
       console.error('[notch] open_dashboard failed', e);
       setToast('Could not open the dashboard');
@@ -144,41 +128,41 @@ export default function App() {
   useRipple(shellRef);
 
   const open = mode === 'open';
-  const rest = frameFor('rest');
+  const rest = frameFor('rest', contentH);
 
   return (
-    <Shell mode={mode} contentH={contentH} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
+    <Shell mode={mode} shellRef={shellRef} onEnter={onEnter} onLeave={onLeave} onTap={onTap}>
       {!open && (
         <div className="rest-indicators" style={{ width: rest.w }} aria-hidden="true">
-          <span className="rest-brand"><span className="brand-logo" /><i className={`live-dot live-dot--${top}`} /></span>
+          <span className="rest-brand"><span className="brand-logo" /><i className={`live-dot live-dot--${top}`} aria-hidden="true" /></span>
         </div>
       )}
 
       <Panel
-          open={open}
-          top={top}
-          wcount={wcount}
-          eps={eps}
-          load={load}
-          booted={booted}
-          sessions={sessions}
-          supervisors={supervisors}
-          decisions={decisions}
-          escalations={escalations}
-          killingIds={killingIds}
-          sweepSent={sweepSent}
-          epsRef={epsRef}
-          logs={logs}
-          reprompt={reprompt}
-          focus={focus}
-          kill={kill}
-          onCleanup={cleanup}
-          openDashboard={openDashboard}
-          onMessageSupervisor={(id) => openDashboardTarget('supervisor', id)}
-          onTogglePause={onTogglePause}
-          onKillSupervisor={onKillSupervisor}
-          onOpenTarget={openDashboardTarget}
-        />
+        open={open}
+        top={top}
+        wcount={wcount}
+        eps={eps}
+        epsRef={epsRef}
+        load={load}
+        booted={booted}
+        sessions={sessions}
+        supervisors={supervisors}
+        decisions={decisions}
+        escalations={escalations}
+        killingIds={killingIds}
+        sweepSent={sweepSent}
+        logs={logs}
+        reprompt={reprompt}
+        focus={focus}
+        kill={kill}
+        onCleanup={cleanup}
+        openDashboard={openDashboard}
+        onMessageSupervisor={(id) => openDashboardTarget('supervisor', id)}
+        onTogglePause={onTogglePause}
+        onKillSupervisor={onKillSupervisor}
+        onOpenTarget={openDashboardTarget}
+      />
 
       <LogsPanel open={logsOpen} payload={logsPayload} onClose={() => setLogsOpen(false)} />
       {toast && <div className="toast" role="status">{toast}</div>}

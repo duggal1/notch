@@ -14,11 +14,11 @@ import { FleetDeck } from './fleet/FleetDeck';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
 
-const TABS: { id: Tab; label: string; title: string; icon: PixelIconName }[] = [
-  { id: 'tree', label: 'Tree', title: 'Tree', icon: 'tree' },
-  { id: 'multiplexer', label: 'Mux', title: 'Mux', icon: 'grid' },
-  { id: 'comms', label: 'Comms', title: 'Comms', icon: 'bubble' },
-  { id: 'escalations', label: 'Alarms', title: 'Alarms', icon: 'alert' },
+const TABS: { id: Tab; label: string; icon: PixelIconName }[] = [
+  { id: 'tree', label: 'Tree', icon: 'tree' },
+  { id: 'multiplexer', label: 'Mux', icon: 'grid' },
+  { id: 'comms', label: 'Comms', icon: 'bubble' },
+  { id: 'escalations', label: 'Alarms', icon: 'alert' },
 ];
 
 function readStorage<T>(key: string): T | null {
@@ -36,8 +36,6 @@ export function Dashboard() {
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
-  // W2-5: opt-in fleet surface. Default is absent from the DOM, so every
-  // existing tab renders the exact same pixels as before this change.
   const [fleetOpen, setFleetOpen] = useState(() =>
     new URLSearchParams(window.location.search).get('fleet') === '1');
   const armTimer = useRef(0);
@@ -52,8 +50,6 @@ export function Dashboard() {
   const top = topStatus(sessions);
   const active = workingCount(sessions);
 
-
-  // target handoff from the popover: consume once
   useEffect(() => {
     if (!snapshot || initialPicked.current) return;
     initialPicked.current = true;
@@ -70,6 +66,7 @@ export function Dashboard() {
   }, []);
 
   const switchTab = useCallback((t: Tab) => {
+    if (t !== tab) send({ cmd: 'haptic', kind: 'levelChange' });
     setTab(t);
     try { localStorage.setItem('notch.dashboardTab', JSON.stringify(t)); } catch { /* storage may be unavailable */ }
   }, []);
@@ -95,6 +92,12 @@ export function Dashboard() {
     return () => window.removeEventListener('keydown', onKey);
   }, [switchTab]);
 
+  // Re-prompt changes the running session in place; it is not a new assignment.
+  const repromptSession = useCallback((id: string, overrideText?: string) => {
+    const s = sessions.find((x) => x.id === id);
+    send({ cmd: 'reprompt', id, text: overrideText ?? s?.goal ?? s?.task ?? s?.title ?? 'continue' });
+  }, [sessions]);
+
   const togglePause = useCallback((sup: Supervisor) =>
     send({ cmd: sup.paused ? 'resume_supervisor' : 'pause_supervisor', id: sup.id }), []);
   const killSession = useCallback((id: string) => send({ cmd: 'kill', id }), []);
@@ -103,7 +106,6 @@ export function Dashboard() {
   }, [sessions]);
   const openHerdr = useCallback((id: string) => send({ cmd: 'focus', id }), []);
 
-  // kill switch: first click arms (2.6 s), second click fires the one-shot wave
   const killSwitch = useCallback(() => {
     if (active === 0) return;
     if (!armed) {
@@ -130,16 +132,15 @@ export function Dashboard() {
   const view = TABS.find((t) => t.id === tab) ?? TABS[0]!;
   const rate = snapshot?.eps ?? 0;
   const readouts = [
-    { value: active, unit: 'in flight' },
-    { value: rate, unit: 'ev/s', precision: 1 },
-    { value: supervisors.length, unit: supervisors.length === 1 ? 'supervisor' : 'supervisors' },
+    { value: active, unit: 'in flight', key: 'inflight' },
+    { value: rate, unit: 'ev/s', precision: 1, key: 'evs' },
+    { value: supervisors.length, unit: supervisors.length === 1 ? 'supervisor' : 'supervisors', key: 'sup' },
   ].filter(({ value }) => value > 0);
   const railIndex = TABS.findIndex((item) => item.id === tab);
 
   return (
     <MotionConfig reducedMotion="user">
       <div className="dash" ref={dashRef}>
-        {/* ---------- rail ---------- */}
         <nav className="rail" aria-label="Dashboard">
           <div className="rail-mark" title="notch">
             <span className="brand-logo" aria-hidden="true" />
@@ -166,34 +167,47 @@ export function Dashboard() {
                     if (e.key === 'ArrowUp') { e.preventDefault(); switchTab(order[(i - 1 + order.length) % order.length]!); }
                   }}
                 >
-                  <span className="rail-glyph"><PixelIcon name={t.icon} size={24} /></span>
+                  <PixelIcon name={t.icon} size={24} />
                   <span className="rail-label">{t.label}</span>
                   {isEsc && <span className="rail-badge" aria-label={`${escalations.length} unresolved escalations`}>{escalations.length}</span>}
                 </button>
               );
             })}
           </div>
-          <div className="rail-foot">
-            <span className="rail-live"><i className={`dot dot--${top}`} aria-hidden="true" />{top[0]?.toUpperCase()}{top.slice(1)}</span>
+          <div className="rail-foot" data-tauri-drag-region>
+            <span className="rail-live" aria-label="Status">
+              <i className={`dot dot--${top}`} aria-hidden="true" />
+              {top === 'idle' ? 'Idle' : top[0]?.toUpperCase() + top.slice(1)}
+            </span>
           </div>
         </nav>
 
-        {/* ---------- stage ---------- */}
         <div className="stage">
           <header className="topbar" data-tauri-drag-region>
-            <h1>{view.title}</h1>
+            <h1>{view.label}</h1>
+            {(snapshot?.warnings?.length ?? 0) > 0 && (
+              <span className="topbar-warn" role="status" title={snapshot!.warnings.join(' · ')}
+                aria-label={`${snapshot!.warnings.length} warnings`}>
+                <PixelIcon name="alert" size={12} />{snapshot!.warnings.length}
+              </span>
+            )}
             <div className="topbar-spacer" data-tauri-drag-region />
-            {sessions.length > 0 && readouts.length > 0 && (
+            {sessions.length === 0 ? (
+              <span className="topbar-idle" aria-label="Idle">
+                <i className="live-dot live-dot--idle" aria-hidden="true" />
+                Idle
+              </span>
+            ) : readouts.length > 0 ? (
               <div className="stats" aria-label="Live counters">
-                {readouts.map(({ value, unit, precision }) => (
-                  <span className="stat" key={unit}>
-                    <span className="stat-v" key={value}>{value.toFixed(precision ?? 0)}</span>
-                    <span className="label">{unit}</span>
+                {readouts.map(({ value, unit, precision, key }) => (
+                  <span className="stat" key={key}>
+                    <span className="stat-num tabular-nums" key={value}>{value.toFixed(precision ?? 0)}</span>
+                    <span className="stat-unit">{unit}</span>
                   </span>
                 ))}
               </div>
-            )}
-            <button className="killswitch" data-ripple disabled={active === 0}
+            ) : null}
+            <button className="killswitch ripple" disabled={active === 0}
               onClick={killSwitch} aria-pressed={armed && active > 0}
               title="Close all managed panes and stop running sessions">
               <PixelIcon name="power" size={12} />
@@ -221,6 +235,7 @@ export function Dashboard() {
                   onKillSupervisor={killSupervisor}
                   onKillSession={killSession}
                   onOpenHerdr={openHerdr}
+                  onReprompt={repromptSession}
                   onFocusComposerRequest={() => setComposerFocusSignal((n) => n + 1)}
                   onPrefill={(text) => {
                     setComposerPrefill({ text, at: Date.now() });
@@ -242,10 +257,8 @@ export function Dashboard() {
                 <EscalationsTab
                   snapshot={snapshot}
                   onRepromptFresh={(sessionId, goal) => {
-                    switchTab('tree');
-                    select({ kind: 'session', id: sessionId });
+                    repromptSession(sessionId, `Fresh take on the goal: ${goal}`);
                     setComposerPrefill({ text: `Fresh take on the goal: ${goal}`, at: Date.now() });
-                    setComposerFocusSignal((n) => n + 1);
                   }}
                   onReassign={onReassign}
                   onKill={killSession}
@@ -254,11 +267,8 @@ export function Dashboard() {
               )}
             </motion.main>
           </AnimatePresence>
-
-
         </div>
 
-        {/* W2-5: fleet management surface, composed around the four owned tabs. */}
         {fleetOpen && <FleetDeck snapshot={snapshot} onClose={() => setFleetOpen(false)} />}
       </div>
     </MotionConfig>

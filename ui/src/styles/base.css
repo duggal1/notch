@@ -12,11 +12,11 @@
   --s0: #000000; --s1: #0F0618; --s2: #1A0B28; --s3: #271239;
 
   /* the ramp */
-  --f1: #2A0A33;
-  --f2: #701A75;
-  --f3: #A21CAF;
-  --f4: #D946EF;
-  --f5: #F5D0FE;
+  --f0: #2A0A33;
+  --f1: #701A75;
+  --f2: #A21CAF;
+  --f3: #D946EF;
+  --f4: #F5D0FE;
 
   /* hairlines — neutral, never fuchsia-tinted (§2). Crisp, never dithered. */
   --line: rgba(255, 255, 255, .14);
@@ -35,9 +35,9 @@
   --card-solid: var(--panel);
   --raise: var(--panel-2);
   --raise-2: var(--well);
-  --lilac: var(--f5);
-  --red: var(--f5);
-  --pink: var(--f5);
+  --lilac: var(--f4);
+  --red: var(--f4);
+  --pink: var(--f4);
 
   /* radii — continuous, large, pill. Nothing here is 0. */
   --r-s: 12px;
@@ -96,8 +96,8 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
   font: 450 12px/1 var(--font); letter-spacing: 0;
   color: var(--t3); font-variant-numeric: tabular-nums;
 }
-.label--hot { color: var(--f4); }
-.label--pale { color: var(--f5); }
+.label--hot { color: var(--f3); }
+.label--pale { color: var(--f4); }
 .dim { color: var(--t3); }
 .num { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1, 'zero' 1; }
 .num-xl { font: 500 88px/.84 var(--font); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
@@ -110,7 +110,7 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 /* ---------- texture primitives ---------- */
 .dither-field { display: block; width: 100%; height: 100%; image-rendering: pixelated; pointer-events: none; }
 .pixel-sphere { display: block; image-rendering: pixelated; pointer-events: none; }
-.pixel-wordmark { display: block; color: var(--f5); }
+.pixel-wordmark { display: block; color: var(--f4); }
 .brand-logo {
   display: block; width: 100%; height: 100%; background: currentColor;
   -webkit-mask: url('/logo.svg') center / contain no-repeat;
@@ -118,20 +118,20 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
 }
 
 .pixel-meter { display: flex; gap: 3px; align-items: stretch; height: 6px; }
-.pm-cell { flex: 1; min-width: 1px; background: var(--f1); border-radius: var(--r-pill); }
-.pm-cell--on { background: var(--f4); }
-.pixel-meter--pale .pm-cell--on { background: var(--f5); }
+.pm-cell { flex: 1; min-width: 1px; background: var(--f0); border-radius: var(--r-pill); }
+.pm-cell--on { background: var(--f3); }
+.pixel-meter--pale .pm-cell--on { background: var(--f4); }
 .pixel-meter--dim .pm-cell { background: rgba(245, 208, 254, .1); }
-.pixel-meter--dim .pm-cell--on { background: var(--f2); }
+.pixel-meter--dim .pm-cell--on { background: var(--f1); }
 /* the lit run carries a checkerboard so the bar itself is dithered */
-.pixel-meter--hot .pm-cell--on:nth-child(2n) { background: var(--f3); }
-.pixel-meter--pale .pm-cell--on:nth-child(2n) { background: var(--f4); }
+.pixel-meter--hot .pm-cell--on:nth-child(2n) { background: var(--f2); }
+.pixel-meter--pale .pm-cell--on:nth-child(2n) { background: var(--f3); }
 
 /* ---------- shell ---------- */
 .shell {
   position: absolute; top: 0; left: 50%; transform: translateX(-50%);
   width: 560px; height: var(--open-h); /* fixed frame; only the clip-path silhouette animates */
-  background: #000; overflow: hidden; cursor: pointer; 
+  background: #000; overflow: hidden; cursor: pointer;
   -webkit-user-select: none; user-select: none;
 }
 .shell[data-mode='open'] { cursor: default; }
@@ -144,34 +144,34 @@ input, textarea { cursor: text; -webkit-user-select: text; user-select: text; }
   background: var(--glass-fill);
   -webkit-backdrop-filter: blur(24px) saturate(1.6);
   backdrop-filter: blur(24px) saturate(1.6);
-  
+
 }
 
 /* primary/secondary buttons: depth from inset shadows only. No outer shadow, no glow. */
 .btn-primary {
-   border-radius: var(--r-pill); background: var(--f4); color: var(--ink);
+   border-radius: var(--r-pill); background: var(--f3); color: var(--ink);
   font: 500 15px/1 var(--font); letter-spacing: -.01em;
-  
+
   transition: transform 160ms var(--ease);
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
 .btn-primary:active:not(:disabled) {
   transform: scale(.96);
-  
+
 }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; filter: none; transform: none; }
 .btn-secondary {
    border-radius: var(--r-pill); color: var(--t1);
   background: var(--glass-fill); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6);
-  
+
   transition: transform 160ms var(--ease);
 }
 .btn-secondary:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
 .btn-secondary:active:not(:disabled) { transform: scale(.96); }
 
-.list-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--f2) transparent; }
+.list-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--f1) transparent; }
 .list-scroll::-webkit-scrollbar { width: 6px; }
-.list-scroll::-webkit-scrollbar-thumb { background: var(--f2); border-radius: var(--r-pill); }
+.list-scroll::-webkit-scrollbar-thumb { background: var(--f1); border-radius: var(--r-pill); }
 .list-scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* SF Symbols, rasterised by the host; mask + currentColor = free hover flip */
@@ -211,7 +211,7 @@ button:active:not(:disabled), [role='button']:active, .item:active {
   background: var(--panel);  --hx: 50%; --hy: 50%;  user-select: none;
 }
 .item::before {
-  content: ''; position: absolute; inset: 0; z-index: -1; background: var(--f4);
+  content: ''; position: absolute; inset: 0; z-index: -1; background: var(--f3);
   border-radius: inherit; transform: scaleX(0); transform-origin: left center;
   transition: transform 220ms var(--ease);
 }
@@ -224,10 +224,10 @@ button:active:not(:disabled), [role='button']:active, .item:active {
 
 /* status squares — 8px, square, no glow. This is a pixel glyph, not chrome. */
 .dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 8px; transition: none; }
-.dot--working { background: var(--f4); }
-.dot--idle { background: var(--f2); }
-.dot--failed { background: var(--f5); animation: dot-failed 1.4s steps(2, end) infinite; }
-.dot--done { background: var(--f3); }
+.dot--working { background: var(--f3); }
+.dot--idle { background: var(--f1); }
+.dot--failed { background: var(--f4); animation: dot-failed 1.4s steps(2, end) infinite; }
+.dot--done { background: var(--f2); }
 .item[data-hot] .dot--working { background: var(--ink); }
 .item[data-hot] .dot--idle { background: rgba(0, 0, 0, .42); }
 .item[data-hot] .dot--done { background: rgba(0, 0, 0, .55); }
@@ -284,12 +284,12 @@ button:active:not(:disabled), [role='button']:active, .item:active {
   outline: none; box-shadow: 0 0 0 2px #FFFFFF;
 }
 :where(.dash, .shell) :is(button, input, textarea, select) { border: 0; outline: none; }
-:where(.dash, .shell) :is(input, textarea) { caret-color: var(--f4); }
+:where(.dash, .shell) :is(input, textarea) { caret-color: var(--f3); }
 :where(.dash, .shell) :is(input, textarea)::placeholder { color: var(--t3); }
 :where(.dash, .shell) button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
 .press-ripple {
   position: absolute; aspect-ratio: 1; pointer-events: none; z-index: -1;
-  background: var(--f5); border-radius: var(--r-pill);
+  background: var(--f4); border-radius: var(--r-pill);
   clip-path: inset(0 round var(--r-pill)); animation: press-ripple 420ms var(--ease) both;
 }
 @keyframes press-ripple {

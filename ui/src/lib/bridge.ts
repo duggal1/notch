@@ -31,6 +31,7 @@ export interface Session {
 
 export interface Supervisor {
   id: string;
+  title?: string; // v1.2 additive display title; id stays the stable key
   status: Status;
   working: number;
   idle: number;
@@ -103,7 +104,10 @@ export type UiAction =
   | { cmd: 'pause_supervisor'; id: string }
   | { cmd: 'resume_supervisor'; id: string }
   | { cmd: 'kill_switch' }
-  | { cmd: 'list_models' };
+  | { cmd: 'list_models' }
+  | { cmd: 'spawn'; supervisor: string; prompt: string; cwd: string; title: string }
+  | { cmd: 'run_plan'; path: string }
+  | { cmd: 'symbol'; name: string; pt?: number; weight?: string };
 
 /** Fire-and-forget send — errors are logged, never thrown into the render path. */
 export function send(a: UiAction): void {
@@ -137,6 +141,15 @@ export const submitTask = (a: Omit<Extract<UiAction, { cmd: 'submit_task' }>, 'c
   invokePayload<{ ok: boolean; supervisorId?: string; sessionId?: string; error?: string }>({ cmd: 'submit_task', ...a }, { ok: false, error: 'submit_task unavailable outside the app' });
 export const listModels = () =>
   invokePayload<{ models: string[]; error?: string }>({ cmd: 'list_models' }, { models: [], error: 'list_models unavailable outside the app' });
+
+/** Agent-to-agent bus ingress (commands.rs `message`). The only way a bus message reaches a supervisor. */
+export const sendMessage = (from: string, to: string, type: BusMessageType, body: string) =>
+  invokePayload<{ ok: boolean; messageId?: string; error?: string }>({ cmd: 'message', from, to, type, body },
+    { ok: false, error: 'message unavailable outside the app' });
+
+/** Re-prompt an existing session in place (commands.rs `reprompt`). */
+export const repromptSession = (id: string, text: string) =>
+  invokePayload<{ ok: boolean; error?: string }>({ cmd: 'reprompt', id, text }, { ok: false, error: 'reprompt unavailable outside the app' });
 
 // Demo provider hook — demos.ts registers itself here in browser mode.
 let demoInvoke: ((a: UiAction) => unknown) | null = null;

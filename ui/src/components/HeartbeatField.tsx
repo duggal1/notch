@@ -11,7 +11,7 @@ export function HeartbeatField({ epsRef, active }: { epsRef: React.MutableRefObj
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
-    const beat = new Heartbeat(cv, 11, 9);
+    const beat = new Heartbeat(cv, 11, 5);
     beatRef.current = beat;
     beat.drawOnce(); // paint the empty field immediately (dots at 22%)
   }, []);

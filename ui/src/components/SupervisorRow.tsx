@@ -20,13 +20,14 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
   const last = useMemo(() => decisions?.find((d) => d.supervisor === sup.id) ?? null, [decisions, sup.id]);
 
   const charter = useMemo(() => {
+    if (sup.title) return sup.title;
     if (last) return capitalizeSentence(last.reason);
     const working = own.find((s) => s.status === 'working');
     if (working?.lastAction) return `${working.id} ${working.lastAction}`;
     if (sup.paused) return 'Paused — live sessions keep running';
     if (own.length === 0) return 'No sessions assigned';
     return 'Idle — no decisions yet';
-  }, [last, own, sup.paused]);
+  }, [last, own, sup.paused, sup.title]);
 
   const model = useMemo(() => own.find((s) => s.model)?.model ?? null, [own]);
   const age = last ? fmtAge(last.at, now) : '—';
@@ -42,12 +43,12 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
       data-sv={sup.id} aria-label={`${sup.id} — ${charter}`}
       aria-pressed={selected}
       onClick={() => onSelect(sup.id)}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onSelect(sup.id); } }}>
+      onKeyDown={(e) => { if (e.currentTarget === e.target && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopPropagation(); onSelect(sup.id); } }}>
       <div className="sup-line">
         <i className={`dot dot--${sup.status}`} aria-hidden="true" />
         <span className="sup-id">{sup.id}{sup.paused && <span className="dim sup-paused">Paused</span>}</span>
         <span className="sup-right" style={{ ['--rw' as string]: dash ? '84px' : '150px' }}>
-          <span className="sup-rest dim" data-rest>{dash ? age : summary}</span>
+          <span className="sup-rest dim" data-rest>{dash && last ? age : summary}</span>
           <span className="sup-actions" data-actions>
             <button className="act" aria-label={`Message ${sup.id}`} title="Message supervisor"
               onClick={(e) => { e.stopPropagation(); onMessage(sup.id); }}>
@@ -68,7 +69,7 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
         <span>{charter}</span>
         {model && <span> · {model.split('/')[1] ?? model}</span>}
       </div>
-      {dash && <div className="label dim sup-counts">{`working ${sup.working} · idle ${sup.idle} · failed ${sup.failed}`}</div>}
+      {dash && <div className="label dim sup-counts">{summary}</div>}
     </div>
   );
 });

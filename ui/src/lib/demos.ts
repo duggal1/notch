@@ -258,6 +258,12 @@ export async function installDemo({ onSnapshot }: { onSnapshot: (s: Snapshot) =>
         return { ok: true };
       case 'list_models':
         return { models: ['opencode/hy4-flash-free', 'opencode/kimi-k2', 'auto'] };
+      case 'spawn':
+        return { ok: true, sessionId: `S${(tick % 3) + 1}-OC${(tick % 8) + 10}`, supervisorId: a.supervisor };
+      case 'run_plan':
+        return { ok: true, path: a.path };
+      case 'symbol':
+        return { ok: true, name: a.name };
       case 'set_frame':
         return { ok: true, mode: a.mode, rect: { w: 560, h: 640 } };
       case 'haptic':

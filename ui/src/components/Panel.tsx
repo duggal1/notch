@@ -9,6 +9,7 @@ import { TreeList } from './TreeList';
 import { EmptyState } from './EmptyState';
 import { PixelIcon } from './PixelIcon';
 import { PixelMeter } from './pixel/PixelMeter';
+import { DitherField } from './pixel/DitherField';
 import { PixelSphere } from './pixel/PixelSphere';
 import type { Session, Supervisor, Decision, Escalation } from '../lib/bridge';
 import type { Status } from '../lib/tokens';
@@ -53,6 +54,7 @@ function IdlePanel({ openDashboard }: { openDashboard: () => void }) {
       </header>
       <div className="idle-body">
         <div className="idle-hero" aria-hidden="true">
+          <DitherField mode="radial" cell={4} floor={0} ceil={0.24} />
           <PixelSphere size={56} cell={3} live={false} />
         </div>
         <EmptyState onNewTask={openDashboard} />
@@ -132,7 +134,7 @@ export function Panel(props: PanelProps) {
               <span className="label">Events / sec</span>
               <span className="label label--pale num">{eps.toFixed(1)}</span>
             </div>
-            <HeartbeatField epsRef={epsRef} active={open && eps > 0} />
+            {eps > 0 && <HeartbeatField epsRef={epsRef} active={open} />}
             <div className="row-between">
               <span className="label">Load</span>
               <span className="label num">{Math.round(load * 100)}%</span>

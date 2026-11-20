@@ -25,6 +25,9 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
     approvals: [], harnesses: [],
   }));
   const [stageIndex, setStageIndex] = useState(0);
+  const [spawnPrompt, setSpawnPrompt] = useState('');
+  const [planPath, setPlanPath] = useState('');
+  const [directNote, setDirectNote] = useState('');
   const deckRef = useRef<HTMLDivElement>(null);
 
   // Projections from the same snapshot; real command payloads overlay in app mode.
@@ -181,6 +184,36 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
                 <span className="label">{Math.min(stageIndex + 1, cards.length)} of {cards.length} · arrows step · {card.signed ? 'signed' : 'digest'} {card.digest.slice(0, 8)}</span>
               </>
             )}
+            <div className="inspector-list">
+              <span className="label">Direct commands</span>
+              <form className="inspector-message" onSubmit={(e) => {
+                e.preventDefault();
+                const prompt = spawnPrompt.trim();
+                if (!prompt) return;
+                let cwd = '/Users/harshitduggal';
+                try { cwd = localStorage.getItem('notch.cwd') ?? cwd; } catch { /* storage unavailable */ }
+                send({ cmd: 'spawn', supervisor: sup, prompt, cwd, title: prompt.slice(0, 48) });
+                setDirectNote(`Spawn sent to ${sup}`);
+                setSpawnPrompt('');
+              }}>
+                <input value={spawnPrompt} onChange={(e) => setSpawnPrompt(e.target.value)}
+                  placeholder={`Prompt for ${sup}`} aria-label={`Prompt for ${sup}`} spellCheck={false} />
+                <button type="submit" className="ctl ripple" disabled={!spawnPrompt.trim()}>Spawn</button>
+              </form>
+              <form className="inspector-message" onSubmit={(e) => {
+                e.preventDefault();
+                const path = planPath.trim();
+                if (!path) return;
+                send({ cmd: 'run_plan', path });
+                setDirectNote('Plan sent');
+                setPlanPath('');
+              }}>
+                <input value={planPath} onChange={(e) => setPlanPath(e.target.value)}
+                  placeholder="/path/to/plan.md" aria-label="Plan path" spellCheck={false} />
+                <button type="submit" className="ctl ripple" disabled={!planPath.trim()}>Run plan</button>
+              </form>
+              {directNote && <p role="status" className="inspector-send-sent">{directNote}</p>}
+            </div>
           </div>
         </aside>
       </div>
@@ -195,6 +228,7 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
         <span className="sl-item">storm {data.state.storm.guard} · {data.state.storm.holds} held</span>
         <button type="button" className="esc-btn" data-storm="hold" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'hold', id: sup })}>Hold</button>
         <button type="button" className="esc-btn" data-storm="release" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'release', id: sup })}>Release</button>
+        <button type="button" className="esc-btn esc-btn--kill" data-storm="kill-all" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'kill_all', id: sup })}>Kill all</button>
         <span className="sl-dither"><DitherField mode="linear" angle={0} cell={2} floor={0.18} /></span>
       </div>
     </div>

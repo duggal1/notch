@@ -1,6 +1,6 @@
-// TreeTab.tsx — supervisors · live tail · composer · inspector. The operator surface.
-// Structure: a real three-pane workstation, not a stack of cards. Before the first snapshot
-// the centre says only "Connecting to notchd…" — no invented state.
+// TreeTab.tsx — supervisors · live tail · composer. Idle = one centered group (logo in a dither
+// field, chip row, composer). With sessions: grid header / scrolling transcript / composer,
+// one shared column, spine pill on selection.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot, Supervisor, Session } from '../../lib/bridge';
 import { SupervisorRow } from '../SupervisorRow';
@@ -9,13 +9,12 @@ import { Composer, type ComposerTarget } from './Composer';
 import { Inspector } from './Inspector';
 import { PixelIcon } from '../PixelIcon';
 import { useLogsPoller } from '../../lib/use-logs';
-import { PixelSphere } from '../pixel/PixelSphere';
-import { DitherField } from '../pixel/DitherField';
 import { PixelMeter } from '../pixel/PixelMeter';
+import { DitherField } from '../pixel/DitherField';
 
 export type Selection = ComposerTarget;
 
-export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSupervisor, onKillSession, onOpenHerdr, onFocusComposerRequest, onPrefill, composerPrefill, composerFocusSignal, flashId }: {
+export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSupervisor, onKillSession, onOpenHerdr, onReprompt, onFocusComposerRequest, onPrefill, composerPrefill, composerFocusSignal, flashId }: {
   snapshot: Snapshot | null;
   selection: Selection;
   onSelect: (sel: Selection) => void;
@@ -23,6 +22,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   onKillSupervisor: (id: string) => void;
   onKillSession: (id: string) => void;
   onOpenHerdr: (id: string) => void;
+  onReprompt: (id: string) => void;
   onFocusComposerRequest: () => void;
   onPrefill: (text: string) => void;
   composerPrefill: { text: string; at: number } | null;
@@ -36,7 +36,6 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
     return () => window.clearInterval(id);
   }, []);
 
-  // revision clocks for the quiet marker — keyed by session id, updated when lastRevision moves
   const revRef = useRef<Record<string, number>>({});
   const revAtRef = useRef<Record<string, number>>({});
   useEffect(() => {
@@ -81,7 +80,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
     : selectedSupervisor?.paused ? 'Paused' : '';
   const status = selectedSession?.status ?? selectedSupervisor?.status ?? snapshot?.orchestrator.status ?? 'idle';
   const logs = useLogsShim(selectedSession, snapshot);
-  const load = snapshot ? Math.min(1, snapshot.eps / 8) : 0;
+  const load = snapshot ? Math.min(1, snapshot.eps / 40) : 0;
 
   return (
     <div className={`tree-grid${hasTarget ? ' tree-grid--target' : ''}`}>
@@ -96,18 +95,17 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
             <input className="sidebar-filter-input" placeholder="Filter id or status" value={filter}
               onChange={(e) => setFilter(e.target.value)} aria-label="Filter by id or status" spellCheck={false} />
           </label>}
-          <button className="orch-root" onClick={() => onSelect(null)} aria-pressed={selection === null}>
-            <i className={`dot dot--${snapshot?.orchestrator.status ?? 'idle'}`} />
+          <button className="orch-root ripple" onClick={() => onSelect(null)} aria-pressed={selection === null}>
+            <i className={`dot dot--${snapshot?.orchestrator.status ?? 'idle'}`} aria-hidden="true" />
             <span className="tabular-nums">Orchestrator</span>
-            
           </button>
           <div className="sidebar-scroll">
             {matchedSessions.length > 0 && (
               <div className="sidebar-group">
                 <span className="label">Matching sessions</span>
                 {matchedSessions.map((s) => (
-                  <button key={s.id} className="inspector-session-row ripple" onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
-                    <i className={`dot dot--${s.status}`} />
+                  <button key={s.id} className="spine-session ripple" onClick={() => { onSelect({ kind: 'session', id: s.id }); onOpenHerdr(s.id); }}>
+                    <i className={`dot dot--${s.status}`} aria-hidden="true" />
                     <span className="tabular-nums">{s.id}</span>
                     <span className="truncate">{s.title}</span>
                   </button>
@@ -124,8 +122,6 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
                     onTogglePause={onTogglePause}
                     onKill={onKillSupervisor}
                     onSelect={(id) => {
-                      // Plain click = select + focus: selection is set synchronously before the
-                      // fire-and-forget send; herdr focus is idempotent and opens no window.
                       onSelect({ kind: 'supervisor', id });
                       const target = sessions.find((s) => s.sup === id && s.status === 'working')
                         ?? sessions.find((s) => s.sup === id);
@@ -133,9 +129,10 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
                     }} />
                   <div className="spine-sessions">
                     {sessions.filter((session) => session.sup === sv.id).map((session) => (
-                      <button key={session.id} className="spine-session" aria-pressed={selectedSession?.id === session.id}
+                      <button key={session.id} className={`spine-session${selectedSession?.id === session.id ? ' is-selected' : ''}`}
+                        aria-pressed={selectedSession?.id === session.id}
                         title={session.title} onClick={() => onSelect({ kind: 'session', id: session.id })}>
-                        <i className={`dot dot--${session.status}`} />
+                        <i className={`dot dot--${session.status}`} aria-hidden="true" />
                         <span className="truncate">{session.title || session.id}</span>
                       </button>
                     ))}
@@ -161,7 +158,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
       <section className={`center-pane${idle ? ' center-pane--idle' : ''}`}>
         {snapshot === null ? (
           <div className="dash-connecting" role="status">
-            <PixelSphere size={64} cell={3} live />
+            <span className="dash-connecting-sphere" />
             <span className="label">Connecting to notchd…</span>
           </div>
         ) : (
@@ -172,7 +169,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
                   <DitherField mode="radial" cell={4} floor={0} ceil={0.42} />
                   <span className="brand-logo" />
                 </div>
-                <div className="tree-start-choices">
+                <div className="tree-start-chips">
                   <span className="label">Start from</span>
                   <div className="empty-templates">
                     {[
@@ -189,15 +186,13 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
             ) : (
               <>
                 <header className="center-head">
-                  <div className="center-head-top">
-                    <div className="center-heading">
-                      <h2 className="center-title">{title}</h2>
-                      {meta && <p className="center-meta">{meta}</p>}
-                    </div>
-                    <span className={`center-status center-status--${status}`}>
-                      <i className={`dot dot--${status}`} />{status[0]?.toUpperCase()}{status.slice(1)}
-                    </span>
+                  <div className="center-heading">
+                    <h2 className="center-title">{title}</h2>
+                    {meta && <p className="center-meta">{meta}</p>}
                   </div>
+                  <span className={`center-status center-status--${status}`}>
+                    <i className={`dot dot--${status}`} aria-hidden="true" />{status[0]?.toUpperCase()}{status.slice(1)}
+                  </span>
                   {load > 0 && status === 'working' && (
                     <div className="center-dither"><PixelMeter value={load} cells={32} tone="hot" label="Event rate" /></div>
                   )}
@@ -213,7 +208,7 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
       {hasTarget && <Inspector
         selection={selection}
         snapshot={snapshot}
-        onReprompt={(id) => { onSelect({ kind: 'session', id }); onFocusComposerRequest(); }}
+        onReprompt={(id) => { onReprompt(id); onSelect({ kind: 'session', id }); }}
         onTogglePause={onTogglePause}
         onKill={onKillSession}
         onOpenHerdr={onOpenHerdr}
@@ -224,7 +219,6 @@ export function TreeTab({ snapshot, selection, onSelect, onTogglePause, onKillSu
   );
 }
 
-// Logs for the transcript — snapshot is the event source; 1 s poll only while working.
 function useLogsShim(selectedSession: Session | null, snapshot: Snapshot | null) {
   const sessions = snapshot?.sessions ?? [];
   const scope = selectedSession ? sessions.filter((s) => s.id === selectedSession.id) : [];
