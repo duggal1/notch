@@ -186,23 +186,13 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 ack(&tx, "ping", true, serde_json::json!({"pong": now_ms()}));
             }
             "snapshot" => {
-                send(
-                    &tx,
-                    serde_json::from_str(&daemon.snapshot_line()).unwrap_or_else(
-                        |_| serde_json::json!({"event":"snapshot","snapshot":null}),
-                    ),
-                );
+                send(&tx, serde_json::from_str(&daemon.snapshot_line()).unwrap_or_else(|_| serde_json::json!({"event":"snapshot","snapshot":null})));
             }
             "subscribe" => {
                 ack(&tx, "subscribe", true, serde_json::json!({}));
                 // Immediate fresh snapshot.
                 let snapshot_line = daemon.snapshot_line();
-                send(
-                    &tx,
-                    serde_json::from_str(&snapshot_line).unwrap_or_else(
-                        |_| serde_json::json!({"event":"snapshot","snapshot":null}),
-                    ),
-                );
+                send(&tx, serde_json::from_str(&snapshot_line).unwrap_or_else(|_| serde_json::json!({"event":"snapshot","snapshot":null})));
                 // Register for change pushes.
                 let (id, sub_rx) = daemon.register_subscriber();
                 subscriber_id = Some(id);
@@ -219,12 +209,7 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 let path = v.get("path").and_then(|p| p.as_str()).unwrap_or("");
                 let ack_result = daemon.run_plan(std::path::Path::new(path));
                 if ack_result.ok {
-                    ack(
-                        &tx,
-                        "run_plan",
-                        true,
-                        serde_json::json!({"spawned": ack_result.spawned}),
-                    );
+                    ack(&tx, "run_plan", true, serde_json::json!({"spawned": ack_result.spawned}));
                 } else {
                     ack(
                         &tx,
@@ -235,33 +220,16 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 }
             }
             "kill" => {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let reason = v.get("reason").and_then(|x| x.as_str()).map(str::to_string);
                 match daemon.kill(&id, reason) {
-                    Ok(a) => ack(
-                        &tx,
-                        "kill",
-                        true,
-                        serde_json::json!({"id": a.id, "reason": a.reason}),
-                    ),
+                    Ok(a) => ack(&tx, "kill", true, serde_json::json!({"id": a.id, "reason": a.reason})),
                     Err(e) => ack(&tx, "kill", false, serde_json::json!({"error": e})),
                 }
             }
             "reprompt" => {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let text = v
-                    .get("text")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 match daemon.reprompt(&id, &text) {
                     Ok(_) => ack(&tx, "reprompt", true, serde_json::json!({"id": id})),
                     Err(e) => ack(&tx, "reprompt", false, serde_json::json!({"error": e})),
@@ -270,93 +238,36 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
             "cleanup" => {
                 let id = v.get("id").and_then(|x| x.as_str());
                 let a = daemon.cleanup(id);
-                ack(
-                    &tx,
-                    "cleanup",
-                    true,
-                    serde_json::json!({"removed": a.removed.unwrap_or(0)}),
-                );
+                ack(&tx, "cleanup", true, serde_json::json!({"removed": a.removed.unwrap_or(0)}));
             }
             "pause_supervisor" => {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 match daemon.pause_supervisor(&id) {
-                    Ok(_) => ack(
-                        &tx,
-                        "pause_supervisor",
-                        true,
-                        serde_json::json!({"id": id, "paused": true}),
-                    ),
-                    Err(e) => ack(
-                        &tx,
-                        "pause_supervisor",
-                        false,
-                        serde_json::json!({"error": e}),
-                    ),
+                    Ok(_) => ack(&tx, "pause_supervisor", true, serde_json::json!({"id": id, "paused": true})),
+                    Err(e) => ack(&tx, "pause_supervisor", false, serde_json::json!({"error": e})),
                 }
             }
             "resume_supervisor" => {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 match daemon.resume_supervisor(&id) {
-                    Ok(_) => ack(
-                        &tx,
-                        "resume_supervisor",
-                        true,
-                        serde_json::json!({"id": id, "resumed": true}),
-                    ),
-                    Err(e) => ack(
-                        &tx,
-                        "resume_supervisor",
-                        false,
-                        serde_json::json!({"error": e}),
-                    ),
+                    Ok(_) => ack(&tx, "resume_supervisor", true, serde_json::json!({"id": id, "resumed": true})),
+                    Err(e) => ack(&tx, "resume_supervisor", false, serde_json::json!({"error": e})),
                 }
             }
             "kill_switch" => {
                 let a = daemon.kill_switch();
-                ack(
-                    &tx,
-                    "kill_switch",
-                    true,
-                    serde_json::json!({"closed": a.closed}),
-                );
+                ack(&tx, "kill_switch", true, serde_json::json!({"closed": a.closed}));
             }
             "message" => {
-                let from = v
-                    .get("from")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let to = v
-                    .get("to")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let kind = v
-                    .get("type")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let body = v
-                    .get("body")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let from = v.get("from").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let to = v.get("to").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let body = v.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let a = daemon.message(&from, &to, &kind, &body);
                 let mut obj = serde_json::Map::new();
                 obj.insert("event".into(), "ack".into());
                 obj.insert("cmd".into(), "message".into());
-                if let Some(map) = serde_json::to_value(&a)
-                    .ok()
-                    .and_then(|s| s.as_object().cloned())
-                {
+                if let Some(map) = serde_json::to_value(&a).ok().and_then(|s| s.as_object().cloned()) {
                     for (k, val) in map {
                         obj.insert(k, val);
                     }
@@ -368,10 +279,7 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 let mut obj = serde_json::Map::new();
                 obj.insert("event".into(), "ack".into());
                 obj.insert("cmd".into(), "list_models".into());
-                if let Some(map) = serde_json::to_value(&a)
-                    .ok()
-                    .and_then(|s| s.as_object().cloned())
-                {
+                if let Some(map) = serde_json::to_value(&a).ok().and_then(|s| s.as_object().cloned()) {
                     for (k, val) in map {
                         obj.insert(k, val);
                     }
@@ -379,48 +287,27 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 send(&tx, serde_json::Value::Object(obj));
             }
             "logs" => {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let tail = v.get("tail").and_then(|x| x.as_u64()).map(|n| n as usize);
                 match daemon.logs(&id, tail) {
-                    Ok(lines) => send(
-                        &tx,
-                        serde_json::json!({"event": "logs", "id": id, "lines": lines}),
-                    ),
+                    Ok(lines) => send(&tx, serde_json::json!({"event": "logs", "id": id, "lines": lines})),
                     Err(e) => ack(&tx, "logs", false, serde_json::json!({"error": e})),
                 }
             }
             "focus" => {
-                let id = v
-                    .get("id")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 match daemon.focus(&id) {
                     Ok(_) => ack(&tx, "focus", true, serde_json::json!({"id": id})),
                     Err(e) => ack(&tx, "focus", false, serde_json::json!({"error": e})),
                 }
             }
             "submit_task" => {
-                let task = v
-                    .get("task")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let task = v.get("task").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let cwd = v.get("cwd").and_then(|x| x.as_str()).map(str::to_string);
                 let title = v.get("title").and_then(|x| x.as_str()).map(str::to_string);
-                let dod = v
-                    .get("definitionOfDone")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string);
+                let dod = v.get("definitionOfDone").and_then(|x| x.as_str()).map(str::to_string);
                 let model = v.get("model").and_then(|x| x.as_str()).map(str::to_string);
-                let sup = v
-                    .get("supervisorId")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string);
+                let sup = v.get("supervisorId").and_then(|x| x.as_str()).map(str::to_string);
                 let ack = daemon.submit_task(task, cwd, title, dod, model, sup);
                 let mut obj = serde_json::Map::new();
                 obj.insert("event".into(), "ack".into());
@@ -436,44 +323,17 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 send(&tx, serde_json::Value::Object(obj));
             }
             "spawn" => {
-                let supervisor = v
-                    .get("supervisor")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let prompt = v
-                    .get("prompt")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let cwd = v
-                    .get("cwd")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let title = v
-                    .get("title")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if supervisor.is_empty() || prompt.is_empty() || cwd.is_empty() || title.is_empty()
-                {
-                    ack(
-                        &tx,
-                        "spawn",
-                        false,
-                        serde_json::json!({"error": "supervisor, prompt, cwd and title are required"}),
-                    );
+                let supervisor = v.get("supervisor").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let prompt = v.get("prompt").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let cwd = v.get("cwd").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                if supervisor.is_empty() || prompt.is_empty() || cwd.is_empty() || title.is_empty() {
+                    ack(&tx, "spawn", false, serde_json::json!({"error": "supervisor, prompt, cwd and title are required"}));
                     continue;
                 }
                 match daemon.spawn(&supervisor, &prompt, &cwd, &title) {
                     a if a.ok => ack(&tx, "spawn", true, serde_json::json!({"id": a.id})),
-                    a => ack(
-                        &tx,
-                        "spawn",
-                        false,
-                        serde_json::json!({"error": a.error.unwrap_or_else(|| "spawn failed".into())}),
-                    ),
+                    a => ack(&tx, "spawn", false, serde_json::json!({"error": a.error.unwrap_or_else(|| "spawn failed".into())})),
                 }
             }
             "status" => {
@@ -483,12 +343,7 @@ fn handle_conn(stream: UnixStream, daemon: Arc<Daemon>) -> std::io::Result<()> {
                 ack(&tx, "", false, serde_json::json!({"error": "missing_cmd"}));
             }
             other => {
-                ack(
-                    &tx,
-                    other,
-                    false,
-                    serde_json::json!({"error": "unknown_command"}),
-                );
+                ack(&tx, other, false, serde_json::json!({"error": "unknown_command"}));
             }
         }
     }

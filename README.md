@@ -17,8 +17,6 @@ Contract: [docs/bridge.md](docs/bridge.md) · Plan: [docs/PLAN.md](docs/PLAN.md)
 
 ## Build & run
 
-Run `scripts/gate.sh` from the repo root after `npm --prefix ui ci`. Rust integration tests require `herdr` on PATH and start isolated headless servers.
-
 ```sh
 # engine
 cd crates/notchd && cargo test

@@ -45,7 +45,7 @@ export function validateSnapshot(s: Snapshot): string[] {
   const decisions = s.decisions ?? [];
   if (!Array.isArray(decisions)) out.push('decisions must be an array when present');
   else for (const d of decisions) {
-    if (!['reprompt', 'done', 'escalate', 'verify', 'assign', 'backoff'].includes(d?.action)) out.push(`decision action invalid: ${d?.action}`);
+    if (!['reprompt', 'done', 'escalate', 'verify', 'assign'].includes(d?.action)) out.push(`decision action invalid: ${d?.action}`);
     if (typeof d?.at !== 'number' || typeof d?.reason !== 'string' || typeof d?.session !== 'string' || typeof d?.supervisor !== 'string') out.push('decision missing fields');
   }
   const escalations = s.escalations ?? [];

@@ -29,7 +29,9 @@ pub fn session_tmp_dir(root: &Path, id: &str) -> PathBuf {
 /// Returns true if a directory was removed.
 pub fn cleanup_session(root: &Path, id: &str) -> io::Result<bool> {
     if let Some(wt) = crate::worktree::load(root, id) {
-        if wt.path.exists() && crate::worktree::snapshot(&wt.path, id, "cleanup").is_err() {
+        if wt.path.exists()
+            && crate::worktree::snapshot(&wt.path, id, "cleanup").is_err()
+        {
             return Ok(false); // snapshot failed — never delete unseen work
         }
         if crate::worktree::remove(&wt).is_err() {
@@ -76,18 +78,12 @@ fn is_empty_dir(dir: &Path) -> bool {
 /// is one or more ASCII digits and `<nn>` is exactly two. Anything else is
 /// not ours.
 fn is_exact_temp_dir_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("notch-S") else {
-        return false;
-    };
-    let Some((sup, rest)) = rest.split_once('-') else {
-        return false;
-    };
+    let Some(rest) = name.strip_prefix("notch-S") else { return false };
+    let Some((sup, rest)) = rest.split_once('-') else { return false };
     if sup.is_empty() || !sup.bytes().all(|b| b.is_ascii_digit()) {
         return false;
     }
-    let Some(nn) = rest.strip_prefix("OC") else {
-        return false;
-    };
+    let Some(nn) = rest.strip_prefix("OC") else { return false };
     nn.len() == 2 && nn.bytes().all(|b| b.is_ascii_digit())
 }
 

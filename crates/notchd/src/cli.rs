@@ -60,19 +60,13 @@ pub fn run(argv: Vec<String>) -> i32 {
             Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "snapshot"})) {
                 Ok(v) => {
                     let snap = v.get("snapshot").cloned().unwrap_or(v);
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&snap).unwrap_or_default()
-                    );
+                    println!("{}", serde_json::to_string_pretty(&snap).unwrap_or_default());
                     0
                 }
                 Err(e) => fail(&e),
             },
             Target::Local(d) => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&d.snapshot()).unwrap_or_default()
-                );
+                println!("{}", serde_json::to_string_pretty(&d.snapshot()).unwrap_or_default());
                 0
             }
         }),
@@ -82,20 +76,14 @@ pub fn run(argv: Vec<String>) -> i32 {
                 return 2;
             };
             with_target(|t| match t {
-                Target::Live(mut c) => {
-                    match c.request(serde_json::json!({"cmd": "run_plan", "path": file})) {
-                        Ok(v) => ack_or_fail(&v),
-                        Err(e) => fail(&e),
-                    }
-                }
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "run_plan", "path": file})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
                 Target::Local(d) => {
                     let ack = d.run_plan(std::path::Path::new(file));
                     println!("{}", serde_json::to_string(&ack).unwrap_or_default());
-                    if ack.ok {
-                        0
-                    } else {
-                        1
-                    }
+                    if ack.ok { 0 } else { 1 }
                 }
             })
         }
@@ -142,11 +130,7 @@ pub fn run(argv: Vec<String>) -> i32 {
                     obj.insert("event".into(), "ack".into());
                     obj.insert("cmd".into(), "submit_task".into());
                     println!("{}", serde_json::Value::Object(obj));
-                    if ok {
-                        0
-                    } else {
-                        1
-                    }
+                    if ok { 0 } else { 1 }
                 }
             })
         }
@@ -176,11 +160,7 @@ pub fn run(argv: Vec<String>) -> i32 {
                     let ack = d.message(&from, &to, &kind, &body);
                     let ok = ack.ok;
                     print_merged_ack("message", serde_json::to_value(&ack).unwrap_or_default());
-                    if ok {
-                        0
-                    } else {
-                        1
-                    }
+                    if ok { 0 } else { 1 }
                 }
             })
         }
@@ -190,18 +170,13 @@ pub fn run(argv: Vec<String>) -> i32 {
                 return 2;
             };
             with_target(|t| match t {
-                Target::Live(mut c) => {
-                    match c.request(serde_json::json!({"cmd": "pause_supervisor", "id": id})) {
-                        Ok(v) => ack_or_fail(&v),
-                        Err(e) => fail(&e),
-                    }
-                }
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "pause_supervisor", "id": id})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
                 Target::Local(d) => match d.pause_supervisor(&id) {
                     Ok(a) => {
-                        print_merged_ack(
-                            "pause_supervisor",
-                            serde_json::to_value(&a).unwrap_or_default(),
-                        );
+                        print_merged_ack("pause_supervisor", serde_json::to_value(&a).unwrap_or_default());
                         0
                     }
                     Err(e) => fail(&e),
@@ -214,38 +189,32 @@ pub fn run(argv: Vec<String>) -> i32 {
                 return 2;
             };
             with_target(|t| match t {
-                Target::Live(mut c) => {
-                    match c.request(serde_json::json!({"cmd": "resume_supervisor", "id": id})) {
-                        Ok(v) => ack_or_fail(&v),
-                        Err(e) => fail(&e),
-                    }
-                }
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "resume_supervisor", "id": id})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
                 Target::Local(d) => match d.resume_supervisor(&id) {
                     Ok(a) => {
-                        print_merged_ack(
-                            "resume_supervisor",
-                            serde_json::to_value(&a).unwrap_or_default(),
-                        );
+                        print_merged_ack("resume_supervisor", serde_json::to_value(&a).unwrap_or_default());
                         0
                     }
                     Err(e) => fail(&e),
                 },
             })
         }
-        "kill-switch" => with_target(|t| match t {
-            Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "kill_switch"})) {
-                Ok(v) => ack_or_fail(&v),
-                Err(e) => fail(&e),
-            },
-            Target::Local(d) => {
-                let ack = d.kill_switch();
-                print_merged_ack(
-                    "kill_switch",
-                    serde_json::to_value(&ack).unwrap_or_default(),
-                );
-                0
-            }
-        }),
+        "kill-switch" => {
+            with_target(|t| match t {
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd": "kill_switch"})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
+                Target::Local(d) => {
+                    let ack = d.kill_switch();
+                    print_merged_ack("kill_switch", serde_json::to_value(&ack).unwrap_or_default());
+                    0
+                }
+            })
+        }
         "kill" => {
             let Some(id) = rest.first().cloned() else {
                 eprintln!("usage: notchd kill <id> [--reason <reason>]\n{USAGE}");
@@ -264,9 +233,7 @@ pub fn run(argv: Vec<String>) -> i32 {
                     }
                 }
                 Target::Local(d) => match d.kill(&id, reason) {
-                    Ok(a) => print_ok(
-                        &serde_json::json!({"event":"ack","cmd":"kill","ok":true,"id":a.id,"reason":a.reason}),
-                    ),
+                    Ok(a) => print_ok(&serde_json::json!({"event":"ack","cmd":"kill","ok":true,"id":a.id,"reason":a.reason})),
                     Err(e) => fail(&e),
                 },
             })
@@ -282,16 +249,12 @@ pub fn run(argv: Vec<String>) -> i32 {
                 return 2;
             }
             with_target(|t| match t {
-                Target::Live(mut c) => {
-                    match c.request(serde_json::json!({"cmd":"reprompt","id":id,"text":text})) {
-                        Ok(v) => ack_or_fail(&v),
-                        Err(e) => fail(&e),
-                    }
-                }
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd":"reprompt","id":id,"text":text})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
                 Target::Local(d) => match d.reprompt(&id, &text) {
-                    Ok(_) => print_ok(
-                        &serde_json::json!({"event":"ack","cmd":"reprompt","ok":true,"id":id}),
-                    ),
+                    Ok(_) => print_ok(&serde_json::json!({"event":"ack","cmd":"reprompt","ok":true,"id":id})),
                     Err(e) => fail(&e),
                 },
             })
@@ -340,11 +303,7 @@ pub fn run(argv: Vec<String>) -> i32 {
                                     return 0;
                                 }
                             }
-                            fail(
-                                v.get("error")
-                                    .and_then(|e| e.as_str())
-                                    .unwrap_or("logs failed"),
-                            )
+                            fail(v.get("error").and_then(|e| e.as_str()).unwrap_or("logs failed"))
                         }
                         Err(e) => fail(&e),
                     }
@@ -366,16 +325,12 @@ pub fn run(argv: Vec<String>) -> i32 {
                 return 2;
             };
             with_target(|t| match t {
-                Target::Live(mut c) => {
-                    match c.request(serde_json::json!({"cmd":"focus","id":id})) {
-                        Ok(v) => ack_or_fail(&v),
-                        Err(e) => fail(&e),
-                    }
-                }
+                Target::Live(mut c) => match c.request(serde_json::json!({"cmd":"focus","id":id})) {
+                    Ok(v) => ack_or_fail(&v),
+                    Err(e) => fail(&e),
+                },
                 Target::Local(d) => match d.focus(&id) {
-                    Ok(_) => print_ok(
-                        &serde_json::json!({"event":"ack","cmd":"focus","ok":true,"id":id}),
-                    ),
+                    Ok(_) => print_ok(&serde_json::json!({"event":"ack","cmd":"focus","ok":true,"id":id})),
                     Err(e) => fail(&e),
                 },
             })
@@ -450,11 +405,7 @@ fn cmd_serve(rest: &[String]) -> i32 {
         let default_path = paths::default_sock_path();
         match bind_socket(&default_path) {
             Ok(listener) => {
-                println!(
-                    "notchd serving on {} (state {})",
-                    default_path.display(),
-                    daemon.config.state_dir.display()
-                );
+                println!("notchd serving on {} (state {})", default_path.display(), daemon.config.state_dir.display());
                 listener
             }
             Err(e) => {
@@ -467,16 +418,8 @@ fn cmd_serve(rest: &[String]) -> i32 {
                 let fallback = paths::fallback_sock_path();
                 match bind_socket(&fallback) {
                     Ok(listener) => {
-                        eprintln!(
-                            "notchd: {} unwritable ({e}); using fallback {}",
-                            default_path.display(),
-                            fallback.display()
-                        );
-                        println!(
-                            "notchd serving on {} (state {})",
-                            fallback.display(),
-                            daemon.config.state_dir.display()
-                        );
+                        eprintln!("notchd: {} unwritable ({e}); using fallback {}", default_path.display(), fallback.display());
+                        println!("notchd serving on {} (state {})", fallback.display(), daemon.config.state_dir.display());
                         listener
                     }
                     Err(e2) => {
@@ -510,9 +453,7 @@ fn cmd_serve(rest: &[String]) -> i32 {
                 let bound = ws_listener.local_addr().map(|a| a.port()).unwrap_or(port);
                 let ws_daemon = Arc::clone(&daemon);
                 let ws_shutdown = Arc::clone(&shutdown);
-                println!(
-                    "notchd WS listening on 127.0.0.1:{bound} (NOTCH_WS=1; token in state dir)"
-                );
+                println!("notchd WS listening on 127.0.0.1:{bound} (NOTCH_WS=1; token in state dir)");
                 std::thread::spawn(move || {
                     let _ = crate::ws::serve(ws_listener, ws_daemon, ws_shutdown);
                 });
@@ -629,9 +570,7 @@ impl LiveClient {
         writeln!(&self.writer, "{}", req).map_err(|e| e.to_string())?;
         self.writer.flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
-        self.reader
-            .read_line(&mut line)
-            .map_err(|e| e.to_string())?;
+        self.reader.read_line(&mut line).map_err(|e| e.to_string())?;
         serde_json::from_str(line.trim()).map_err(|e| format!("bad response: {e}"))
     }
 }
@@ -647,12 +586,7 @@ fn ack_or_fail(v: &serde_json::Value) -> i32 {
         println!("{v}");
         0
     } else {
-        eprintln!(
-            "{}",
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("command failed")
-        );
+        eprintln!("{}", v.get("error").and_then(|e| e.as_str()).unwrap_or("command failed"));
         1
     }
 }

@@ -24,6 +24,7 @@ pub const BRANCH_PREFIX: &str = "notch/";
 pub const META_FILE: &str = "notch-worktree.json";
 pub const DEFAULT_MAX_TMP_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
+
 /// A session's worktree, persisted as `<tmp>/notch-<id>/notch-worktree.json`
 /// so a daemon restart can re-adopt it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,7 +190,11 @@ fn read_meta(path: &Path) -> Option<Worktree> {
 ///
 /// `Ok(None)` means `repo` is not a git worktree — the caller spawns with the
 /// original cwd, emits a loud warning, and uses the old shared-cwd heuristic.
-pub fn create(repo: &Path, id: &str, tmp_root: &Path) -> Result<Option<Worktree>, WorktreeError> {
+pub fn create(
+    repo: &Path,
+    id: &str,
+    tmp_root: &Path,
+) -> Result<Option<Worktree>, WorktreeError> {
     let repo = std::fs::canonicalize(repo)
         .map_err(|e| WorktreeError::Io(format!("cwd {}: {e}", repo.display())))?;
     let inside = git_text(&["rev-parse", "--is-inside-work-tree"], Some(&repo)).unwrap_or_default();
@@ -206,8 +211,7 @@ pub fn create(repo: &Path, id: &str, tmp_root: &Path) -> Result<Option<Worktree>
     let branch = branch_name(id);
 
     if path.exists() {
-        let current =
-            git_text(&["rev-parse", "--abbrev-ref", "HEAD"], Some(&path)).unwrap_or_default();
+        let current = git_text(&["rev-parse", "--abbrev-ref", "HEAD"], Some(&path)).unwrap_or_default();
         if !current.is_empty() && current != branch {
             return Err(WorktreeError::Git(format!(
                 "{} exists but is on branch `{current}`, expected `{branch}`",
@@ -226,12 +230,7 @@ pub fn create(repo: &Path, id: &str, tmp_root: &Path) -> Result<Option<Worktree>
     }
 
     let exists = git_run(
-        &[
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
+        &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")],
         Some(&repo),
     )
     .map_err(WorktreeError::Git)?
@@ -385,11 +384,8 @@ pub fn remove(wt: &Worktree) -> Result<(), WorktreeError> {
         )));
     }
     let path_s = wt.path.to_string_lossy().to_string();
-    let out = git_run(
-        &["worktree", "remove", path_s.as_str()],
-        Some(&wt.base_repo),
-    )
-    .map_err(WorktreeError::Git)?;
+    let out = git_run(&["worktree", "remove", path_s.as_str()], Some(&wt.base_repo))
+        .map_err(WorktreeError::Git)?;
     if !out.ok {
         // A manually deleted worktree leaves a stale admin entry; prune once.
         let _ = git_run(&["worktree", "prune"], Some(&wt.base_repo));

@@ -27,7 +27,7 @@ fn review_dir() -> PathBuf {
 fn a4_adversarial_stale_clone_concurrency_never_reissues_ids() {
     let path = review_dir().join("registry.json");
     let mut seed = Registry::load(&path, &SystemClock);
-    seed.allocate_supervisor().unwrap();
+    seed.allocate_supervisor();
     seed.save(&path).unwrap();
 
     // Both handles are stale: neither knows about the other's allocations.
@@ -39,7 +39,7 @@ fn a4_adversarial_stale_clone_concurrency_never_reissues_ids() {
             let holder = if i % 2 == 0 { a.clone() } else { b.clone() };
             thread::spawn(move || {
                 let mut reg = holder.lock().unwrap();
-                reg.allocate_session(1).unwrap()
+                reg.allocate_session(1)
             })
         })
         .collect();
@@ -61,9 +61,6 @@ fn a4_adversarial_stale_clone_concurrency_never_reissues_ids() {
     for id in &ids {
         assert!(after.ids().contains(id), "id {id} was not persisted");
     }
-    let next = after.allocate_session(1).unwrap();
-    assert!(
-        !ids.contains(&next),
-        "next allocation reissued a used id: {next}"
-    );
+    let next = after.allocate_session(1);
+    assert!(!ids.contains(&next), "next allocation reissued a used id: {next}");
 }

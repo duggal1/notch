@@ -5,7 +5,10 @@
 //! method presence, decline-before-side-effect, and unknown-engine rejection.
 //! Everything here is headless: no window, no multiplexer, no subprocess.
 
-use notchd::harness_registry::*;
+#[path = "../src/harness_registry.rs"]
+mod harness_registry;
+
+use harness_registry::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -75,15 +78,18 @@ fn declared_availability_beats_method_presence_and_refuses_before_side_effects()
     let calls = Arc::new(AtomicUsize::new(0));
     // The adapter CAN invoke every operation, but this engine did not negotiate
     // Kill. Having the method is not the truth (agentbox's ACP lesson).
-    let adapter =
-        recording_adapter(herdr_definition(), calls.clone()).declining([HarnessOperation::Kill]);
+    let adapter = recording_adapter(herdr_definition(), calls.clone())
+        .declining([HarnessOperation::Kill]);
     let mut reg = HarnessRegistry::new();
     reg.register(adapter).unwrap();
 
     assert!(reg.supports("herdr", HarnessOperation::Prompt));
     assert!(!reg.supports("herdr", HarnessOperation::Kill));
     let err = reg
-        .invoke("herdr", &Request::new(HarnessOperation::Kill, "w1:p1", ""))
+        .invoke(
+            "herdr",
+            &Request::new(HarnessOperation::Kill, "w1:p1", ""),
+        )
         .unwrap_err();
     assert_eq!(
         err,
@@ -148,7 +154,10 @@ fn unknown_engine_is_rejected_before_any_side_effect() {
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    assert_eq!(reg.get_or_default(None).unwrap().definition().id, "herdr");
+    assert_eq!(
+        reg.get_or_default(None).unwrap().definition().id,
+        "herdr"
+    );
     assert_eq!(
         reg.get_or_default(Some("herdr")).unwrap().definition().id,
         "herdr"
@@ -183,7 +192,8 @@ fn registration_rejects_duplicates_and_invalid_definitions() {
         );
     }
 
-    let empty_label = HarnessDefinition::new("ok", "   ").with_capability(HarnessOperation::Status);
+    let empty_label =
+        HarnessDefinition::new("ok", "   ").with_capability(HarnessOperation::Status);
     assert!(matches!(
         reg.register(recording_adapter(empty_label, calls.clone())),
         Err(HarnessError::InvalidDefinition(_))
@@ -210,13 +220,14 @@ fn registered_is_not_offered_but_still_resolvable() {
     oc.admitted = false;
     reg.register(recording_adapter(oc, calls.clone())).unwrap();
 
-    let offered: Vec<String> = reg.offered_engines().into_iter().map(|d| d.id).collect();
+    let offered: Vec<String> = reg
+        .offered_engines()
+        .into_iter()
+        .map(|d| d.id)
+        .collect();
     assert_eq!(offered, vec!["herdr".to_string()]);
     assert_eq!(reg.definitions().len(), 2);
-    assert!(
-        reg.get("opencode").is_ok(),
-        "legacy records must still resolve"
-    );
+    assert!(reg.get("opencode").is_ok(), "legacy records must still resolve");
 }
 
 #[test]

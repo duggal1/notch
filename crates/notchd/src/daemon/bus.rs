@@ -40,9 +40,7 @@ impl Daemon {
         }
         let sinks = lock(&self.sinks);
         let Some(sink) = sinks.get(from) else {
-            return Err(NotchError::State(format!(
-                "supervisor `{from}` has no bus endpoint"
-            )));
+            return Err(NotchError::State(format!("supervisor `{from}` has no bus endpoint")));
         };
         sink.send_to(to, session, kind, detail, self.now())
     }

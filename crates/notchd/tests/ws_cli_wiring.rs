@@ -32,13 +32,8 @@ fn spawn_daemon(root: &Path, ws: Option<u16>) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     match ws {
-        Some(port) => {
-            c.env("NOTCH_WS", "1")
-                .env("NOTCH_WS_PORT", port.to_string());
-        }
-        None => {
-            c.env_remove("NOTCH_WS").env_remove("NOTCH_WS_PORT");
-        }
+        Some(port) => { c.env("NOTCH_WS", "1").env("NOTCH_WS_PORT", port.to_string()); }
+        None => { c.env_remove("NOTCH_WS").env_remove("NOTCH_WS_PORT"); }
     }
     c.spawn().unwrap()
 }
@@ -46,9 +41,7 @@ fn spawn_daemon(root: &Path, ws: Option<u16>) -> Child {
 fn until<F: Fn() -> bool>(limit: Duration, f: F) -> bool {
     let t0 = Instant::now();
     while t0.elapsed() < limit {
-        if f() {
-            return true;
-        }
+        if f() { return true; }
         std::thread::sleep(Duration::from_millis(25));
     }
     f()
@@ -61,11 +54,7 @@ fn ndjson_ready(root: &Path) -> bool {
 /// A raw unauthenticated WebSocket upgrade. An opted-in server rejects it with
 /// HTTP 403 (token check); a machine with no WS server refuses the TCP connect.
 fn raw_upgrade_status(port: u16) -> Option<u16> {
-    let mut s = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().unwrap(),
-        Duration::from_millis(500),
-    )
-    .ok()?;
+    let mut s = TcpStream::connect_timeout(&format!("127.0.0.1:{port}").parse().unwrap(), Duration::from_millis(500)).ok()?;
     s.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
     s.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:PLACEHOLDER\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n").ok()?;
     let mut buf = [0u8; 64];
@@ -79,20 +68,12 @@ fn serve_starts_authenticated_ws_when_opted_in() {
     let root = scratch("on");
     let port = free_port();
     let mut child = spawn_daemon(&root, Some(port));
-    assert!(
-        until(Duration::from_secs(5), || ndjson_ready(&root)),
-        "daemon did not start"
-    );
-    let status = until(Duration::from_secs(5), || {
-        raw_upgrade_status(port).is_some()
-    })
-    .then(|| raw_upgrade_status(port).unwrap());
+    assert!(until(Duration::from_secs(5), || ndjson_ready(&root)), "daemon did not start");
+    let status = until(Duration::from_secs(5), || raw_upgrade_status(port).is_some())
+        .then(|| raw_upgrade_status(port).unwrap());
     let _ = child.kill();
     let _ = child.wait();
-    assert!(
-        matches!(status, Some(401) | Some(403)),
-        "NOTCH_WS=1 must start the auth-guarded WS listener; got {status:?}"
-    );
+    assert!(matches!(status, Some(401) | Some(403)), "NOTCH_WS=1 must start the auth-guarded WS listener; got {status:?}");
 }
 
 #[test]
@@ -100,15 +81,8 @@ fn serve_has_no_ws_listener_by_default() {
     let root = scratch("off");
     let port = free_port();
     let mut child = spawn_daemon(&root, None);
-    assert!(
-        until(Duration::from_secs(5), || ndjson_ready(&root)),
-        "daemon did not start"
-    );
-    let open = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().unwrap(),
-        Duration::from_millis(200),
-    )
-    .is_ok();
+    assert!(until(Duration::from_secs(5), || ndjson_ready(&root)), "daemon did not start");
+    let open = TcpStream::connect_timeout(&format!("127.0.0.1:{port}").parse().unwrap(), Duration::from_millis(200)).is_ok();
     let _ = child.kill();
     let _ = child.wait();
     assert!(!open, "WS must stay unwired unless NOTCH_WS=1");

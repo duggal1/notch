@@ -14,7 +14,7 @@ use std::sync::mpsc::Receiver;
 /// fixture data. Malformed or unrelated lines are skipped.
 fn bus_events_from_log(path: &Path) -> Vec<BusMessageEntry> {
     let mut out = Vec::new();
-    let Ok(bytes) = crate::events::read_tail(path, crate::events::BUS_LOG_TAIL_BYTES) else {
+    let Ok(bytes) = std::fs::read(path) else {
         return out;
     };
     for line in bytes.split(|b| *b == b'\n') {
@@ -175,11 +175,7 @@ impl Daemon {
                     .collect::<Vec<_>>(),
                 BUS_MESSAGES_CAP,
             ),
-            warnings: {
-                let mut warnings = inner.warnings.clone();
-                warnings.extend(super::state::write_warnings_for(&self.state_path()));
-                warnings
-            },
+            warnings: inner.warnings.clone(),
         }
     }
 

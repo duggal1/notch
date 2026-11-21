@@ -39,10 +39,7 @@ pub(crate) fn append_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
             fs::create_dir_all(parent)?;
         }
     }
-    let mut f = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
     let written = f.write(bytes)?;
     if written != bytes.len() {
         return Err(io::Error::new(
@@ -313,8 +310,7 @@ mod tests {
         assert_eq!(lines.len(), 1600, "no line may be lost or merged");
         let mut seen = std::collections::HashSet::new();
         for line in lines {
-            let v: serde_json::Value =
-                serde_json::from_str(line).expect("each line must be a whole JSON object");
+            let v: serde_json::Value = serde_json::from_str(line).expect("each line must be a whole JSON object");
             assert!(seen.insert((v["writer"].as_u64().unwrap(), v["i"].as_u64().unwrap())));
         }
         assert_eq!(seen.len(), 1600);
@@ -338,36 +334,21 @@ mod tests {
         assert!(!backup_path(&path, 3).exists(), "bak3 waits for 3600 s");
 
         // Age bak1 past the 60 s tier: it refreshes from live, bak2 still waits.
-        set_mtime(
-            &backup_path(&path, 1),
-            SystemTime::now() - Duration::from_secs(61),
-        );
+        set_mtime(&backup_path(&path, 1), SystemTime::now() - Duration::from_secs(61));
         write_atomic(&path, b"v6").unwrap();
         assert_eq!(fs::read(backup_path(&path, 1)).unwrap(), b"v5");
-        assert!(
-            !backup_path(&path, 2).exists(),
-            "bak2 still waits for 900 s"
-        );
+        assert!(!backup_path(&path, 2).exists(), "bak2 still waits for 900 s");
 
         // Age bak1 past the 900 s tier: bak2 is refreshed from bak1.
-        set_mtime(
-            &backup_path(&path, 1),
-            SystemTime::now() - Duration::from_secs(901),
-        );
+        set_mtime(&backup_path(&path, 1), SystemTime::now() - Duration::from_secs(901));
         write_atomic(&path, b"v7").unwrap();
         assert!(backup_path(&path, 2).exists(), "bak2 due at 900 s");
 
         // Age bak2 past the 3600 s tier: bak3 is refreshed from bak2.
-        set_mtime(
-            &backup_path(&path, 2),
-            SystemTime::now() - Duration::from_secs(3601),
-        );
+        set_mtime(&backup_path(&path, 2), SystemTime::now() - Duration::from_secs(3601));
         write_atomic(&path, b"v8").unwrap();
         assert!(backup_path(&path, 3).exists(), "bak3 due at 3600 s");
         assert_eq!(fs::read(&path).unwrap(), b"v8");
-        assert!(
-            !tmp_path(&path).exists(),
-            "no .tmp may survive a completed write"
-        );
+        assert!(!tmp_path(&path).exists(), "no .tmp may survive a completed write");
     }
 }

@@ -194,32 +194,14 @@ impl Daemon {
         let mut prompts: Vec<(String, String)> = Vec::new(); // (session id, prompt)
 
         for sessions in &parsed.supervisors {
-            let sup_id = match self.alloc_supervisor() {
-                Ok(id) => id,
-                Err(e) => {
-                    return RunPlanAck {
-                        ok: false,
-                        spawned: Vec::new(),
-                        error: Some(format!("registry: {e}")),
-                    }
-                }
-            };
+            let sup_id = self.alloc_supervisor();
             let sup_number: u32 = sup_id
                 .strip_prefix("SV-")
                 .and_then(|n| n.parse().ok())
                 .unwrap_or(1);
             new_supervisor_ids.push((sup_id.clone(), plan_title.clone()));
             for ses in sessions {
-                let id = match self.alloc_session(sup_number) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        return RunPlanAck {
-                            ok: false,
-                            spawned: Vec::new(),
-                            error: Some(format!("registry: {e}")),
-                        }
-                    }
-                };
+                let id = self.alloc_session(sup_number);
                 let session = SessionState {
                     id: id.clone(),
                     sup: sup_id.clone(),
@@ -334,40 +316,53 @@ impl Daemon {
             if !candidate.contains(char::is_whitespace) && !Path::new(&candidate).exists() {
                 continue;
             }
-            let args = ["-c".to_string(), candidate.clone()];
-            let spec = crate::proc::Spec {
-                cmd: "sh",
-                args: &args,
-                cwd: None,
-                env: &[],
-                timeout: std::time::Duration::from_millis(3000),
-                max_out: 1 << 16,
-            };
-            match crate::proc::run(&spec) {
-                // A hook that exits non-zero is still best-effort: the old
-                // try_wait loop treated any exit as "ok" and returned.
-                Ok(_) | Err(crate::proc::ProcError::Failed { .. }) => {
-                    let _ = self.event_log.append(
-                        None,
-                        "status",
-                        &format!("pre-spawn hook ok: {candidate}"),
-                    );
-                    return;
-                }
-                Err(crate::proc::ProcError::Timeout { .. }) => {
-                    let mut inner = lock(&self.inner);
-                    push_warning(
-                        &mut inner,
-                        format!("pre-spawn hook timed out ({candidate}); spawning anyway"),
-                    );
-                    return;
-                }
+            let mut child = match std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&candidate)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
                 Err(e) => {
                     let _ = self.event_log.append(
                         None,
                         "status",
                         &format!("pre-spawn hook skipped ({e})"),
                     );
+                    continue;
+                }
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        let _ = self.event_log.append(
+                            None,
+                            "status",
+                            &format!("pre-spawn hook ok: {candidate}"),
+                        );
+                        return;
+                    }
+                    Ok(None) if std::time::Instant::now() >= deadline => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let mut inner = lock(&self.inner);
+                        push_warning(
+                            &mut inner,
+                            format!("pre-spawn hook timed out ({candidate}); spawning anyway"),
+                        );
+                        return;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                    Err(e) => {
+                        let _ = self.event_log.append(
+                            None,
+                            "status",
+                            &format!("pre-spawn hook error ({e})"),
+                        );
+                        return;
+                    }
                 }
             }
         }
@@ -390,12 +385,7 @@ impl Daemon {
             sessions,
             None,
         );
-        let SpawnOutcome {
-            session: updated,
-            warnings,
-            error,
-            pane,
-        } = outcome;
+        let SpawnOutcome { session: updated, warnings, error, pane } = outcome;
         *session = updated;
         {
             let mut inner = lock(&self.inner);
@@ -439,16 +429,7 @@ impl Daemon {
                 error: Some(format!("unknown supervisor `{supervisor}`")),
             };
         };
-        let id = match self.alloc_session(sup_number) {
-            Ok(id) => id,
-            Err(e) => {
-                return SpawnAck {
-                    ok: false,
-                    id: None,
-                    error: Some(format!("registry: {e}")),
-                }
-            }
-        };
+        let id = self.alloc_session(sup_number);
         let now = self.now();
         let mut session = SessionState {
             id: id.clone(),
@@ -596,17 +577,7 @@ impl Daemon {
                     .map(|t| truncate_words(t, 48))
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| truncate_words(task_trim, 48));
-                let sup_id = match self.alloc_supervisor() {
-                    Ok(id) => id,
-                    Err(e) => {
-                        return SubmitTaskAck {
-                            ok: false,
-                            supervisor_id: None,
-                            session_id: None,
-                            error: Some(format!("registry: {e}")),
-                        }
-                    }
-                };
+                let sup_id = self.alloc_supervisor();
                 let sup_number: u32 = sup_id
                     .strip_prefix("SV-")
                     .and_then(|n| n.parse().ok())
@@ -614,17 +585,7 @@ impl Daemon {
                 (sup_id, sup_number, title_final, true)
             }
         };
-        let session_id = match self.alloc_session(sup_number) {
-            Ok(id) => id,
-            Err(e) => {
-                return SubmitTaskAck {
-                    ok: false,
-                    supervisor_id: None,
-                    session_id: None,
-                    error: Some(format!("registry: {e}")),
-                }
-            }
-        };
+        let session_id = self.alloc_session(sup_number);
 
         let now = self.now();
         let supervisor = SupervisorMeta {
@@ -865,23 +826,11 @@ mod busy_retry_tests {
             Vec::new(),
             None,
         );
-        assert!(
-            outcome.error.is_none(),
-            "transient busy must be retried: {:?}",
-            outcome.error
-        );
+        assert!(outcome.error.is_none(), "transient busy must be retried: {:?}", outcome.error);
         assert_eq!(outcome.session.id, "S2-OC02", "allocated ID must survive");
-        assert_eq!(
-            outcome.session.status,
-            Status::Working,
-            "session must end working"
-        );
+        assert_eq!(outcome.session.status, Status::Working, "session must end working");
         assert_eq!(outcome.session.pane_id, "w9:p1");
-        assert_eq!(
-            *busy.split_calls.lock().unwrap(),
-            2,
-            "one busy response then success"
-        );
+        assert_eq!(*busy.split_calls.lock().unwrap(), 2, "one busy response then success");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -903,28 +852,16 @@ mod busy_retry_tests {
             None,
         );
         let err = outcome.error.expect("permanent busy must fail honestly");
-        assert!(
-            err.contains("busy"),
-            "error must name the busy cause: {err}"
-        );
-        assert_eq!(
-            outcome.session.id, "S2-OC02",
-            "failed spawn must not drop the ID"
-        );
+        assert!(err.contains("busy"), "error must name the busy cause: {err}");
+        assert_eq!(outcome.session.id, "S2-OC02", "failed spawn must not drop the ID");
         assert!(outcome.session.pane_id.is_empty());
         assert!(
-            outcome
-                .warnings
-                .iter()
-                .any(|w| w.contains("busy") && w.contains("S2-OC02")),
+            outcome.warnings.iter().any(|w| w.contains("busy") && w.contains("S2-OC02")),
             "warning must carry the honest reason: {:?}",
             outcome.warnings
         );
         let calls = *busy.split_calls.lock().unwrap();
-        assert!(
-            calls > 1 && calls <= 4,
-            "retry must be bounded (initial + 3): {calls}"
-        );
+        assert!(calls > 1 && calls <= 4, "retry must be bounded (initial + 3): {calls}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

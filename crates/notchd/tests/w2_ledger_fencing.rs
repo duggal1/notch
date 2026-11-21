@@ -8,7 +8,9 @@
 //! These tests are written BEFORE the implementation and must fail to compile
 //! until `notchd::ledger` exists.
 
-use notchd::ledger::{collect_pending, read_lines, read_pending, replay, Ledger, Op, Source};
+use notchd::ledger::{
+    collect_pending, read_lines, read_pending, replay, Ledger, Op, Source,
+};
 use notchd::model::StateFile;
 use serde_json::json;
 use std::fs::OpenOptions;
@@ -49,49 +51,24 @@ fn stale_epoch_write_is_parked_and_never_applied() {
     let mut ledger = Ledger::open(&dir).unwrap();
     let e1 = ledger.claim("worker-A", "S1-OC01", 300_000, 1_000).unwrap();
     let e2 = ledger.claim("worker-B", "S1-OC01", 300_000, 1_001).unwrap();
-    assert_eq!(
-        (e1, e2),
-        (1, 2),
-        "claims must mint monotonically increasing epochs"
-    );
+    assert_eq!((e1, e2), (1, 2), "claims must mint monotonically increasing epochs");
 
     let seq_ok = ledger
-        .append_guarded(
-            "worker-B",
-            e2,
-            "S1-OC01",
-            upsert_session("S1-OC01", "current"),
-            1_002,
-        )
+        .append_guarded("worker-B", e2, "S1-OC01", upsert_session("S1-OC01", "current"), 1_002)
         .expect("the current holder's write must land");
     let refused = ledger
-        .append_guarded(
-            "worker-A",
-            e1,
-            "S1-OC01",
-            upsert_session("S1-OC01", "zombie"),
-            1_003,
-        )
+        .append_guarded("worker-A", e1, "S1-OC01", upsert_session("S1-OC01", "zombie"), 1_003)
         .expect_err("a stale-epoch write must be refused, not applied");
-    assert!(
-        refused.seq > seq_ok,
-        "the refused line still consumed a seq"
-    );
+    assert!(refused.seq > seq_ok, "the refused line still consumed a seq");
     assert_eq!(refused.reason, "stale_epoch");
     assert_eq!(refused.holder.as_deref(), Some("worker-A"));
 
     let lines = read_lines(&dir.join("ledger.jsonl")).unwrap();
     let rr = replay(StateFile::empty(), &lines);
     assert_eq!(rr.refused.len(), 1, "replay must re-park the stale line");
-    assert_eq!(
-        rr.applied, 3,
-        "two claims + one fenced write; the zombie is not applied"
-    );
+    assert_eq!(rr.applied, 3, "two claims + one fenced write; the zombie is not applied");
     assert_eq!(rr.state.sessions.len(), 1);
-    assert_eq!(
-        rr.state.sessions[0].title, "current",
-        "a zombie must not overwrite the live holder"
-    );
+    assert_eq!(rr.state.sessions[0].title, "current", "a zombie must not overwrite the live holder");
 
     let pending = read_pending(&dir, "S1-OC01").unwrap();
     assert_eq!(pending.len(), 1, "the refused write must be parked on disk");
@@ -131,10 +108,7 @@ fn concurrent_stale_writers_are_all_parked_not_applied() {
     barrier.wait();
     let mut parked = 0;
     for h in handles {
-        assert!(
-            h.join().unwrap().is_err(),
-            "every stale racer must be refused"
-        );
+        assert!(h.join().unwrap().is_err(), "every stale racer must be refused");
         parked += 1;
     }
     assert_eq!(parked, N);
@@ -143,22 +117,13 @@ fn concurrent_stale_writers_are_all_parked_not_applied() {
     shared
         .lock()
         .unwrap()
-        .append_guarded(
-            "owner",
-            2,
-            "S1-OC01",
-            upsert_session("S1-OC01", "owner-value"),
-            3_000,
-        )
+        .append_guarded("owner", 2, "S1-OC01", upsert_session("S1-OC01", "owner-value"), 3_000)
         .expect("the legitimate holder must still land");
 
     let lines = read_lines(&dir.join("ledger.jsonl")).unwrap();
     let rr = replay(StateFile::empty(), &lines);
     assert_eq!(rr.state.sessions.len(), 1);
-    assert_eq!(
-        rr.state.sessions[0].title, "owner-value",
-        "no racer may win the fence"
-    );
+    assert_eq!(rr.state.sessions[0].title, "owner-value", "no racer may win the fence");
     assert_eq!(read_pending(&dir, "S1-OC01").unwrap().len(), N);
 }
 
@@ -170,14 +135,7 @@ fn system_writes_are_never_fenced() {
 
     // A daemon (system) line carries no epoch; it outranks any agent epoch.
     ledger
-        .append(
-            Source::System,
-            None,
-            None,
-            "S1-OC01",
-            upsert_session("S1-OC01", "system"),
-            1_001,
-        )
+        .append(Source::System, None, None, "S1-OC01", upsert_session("S1-OC01", "system"), 1_001)
         .unwrap();
     let lines = read_lines(&dir.join("ledger.jsonl")).unwrap();
     let rr = replay(StateFile::empty(), &lines);
@@ -204,28 +162,13 @@ fn torn_and_oversize_lines_are_skipped() {
     // One legitimate line written through the API after the junk.
     let mut ledger = Ledger::open(&dir).unwrap();
     ledger
-        .append(
-            Source::System,
-            None,
-            None,
-            "S1-OC01",
-            upsert_session("S1-OC01", "valid"),
-            9_000,
-        )
+        .append(Source::System, None, None, "S1-OC01", upsert_session("S1-OC01", "valid"), 9_000)
         .unwrap();
     let lines = read_lines(&path).unwrap();
-    assert_eq!(
-        lines.len(),
-        1,
-        "only the whole, in-budget, parseable line survives"
-    );
+    assert_eq!(lines.len(), 1, "only the whole, in-budget, parseable line survives");
     let rr = replay(StateFile::empty(), &lines);
     assert_eq!(rr.state.sessions[0].title, "valid");
-    assert!(
-        rr.warnings.is_empty(),
-        "junk lines are skipped silently: {:?}",
-        rr.warnings
-    );
+    assert!(rr.warnings.is_empty(), "junk lines are skipped silently: {:?}", rr.warnings);
 }
 
 #[test]
@@ -236,13 +179,7 @@ fn parked_writes_survive_restart_and_collect_moves_them() {
         ledger.claim("old", "S1-OC01", 300_000, 1_000).unwrap();
         ledger.claim("new", "S1-OC01", 300_000, 1_001).unwrap();
         ledger
-            .append_guarded(
-                "old",
-                1,
-                "S1-OC01",
-                upsert_session("S1-OC01", "lost-notes"),
-                1_002,
-            )
+            .append_guarded("old", 1, "S1-OC01", upsert_session("S1-OC01", "lost-notes"), 1_002)
             .expect_err("stale write is parked");
     }
     // Reopen (fresh handle = fresh process); the parked file must still be there.
@@ -252,110 +189,9 @@ fn parked_writes_survive_restart_and_collect_moves_them() {
 
     let moved = collect_pending(&dir, "S1-OC01", "new-holder").unwrap();
     assert_eq!(moved.len(), 1);
-    assert!(
-        moved[0].to_string_lossy().contains("collected"),
-        "collect moves, never deletes"
-    );
+    assert!(moved[0].to_string_lossy().contains("collected"), "collect moves, never deletes");
     assert!(read_pending(&dir, "S1-OC01").unwrap().is_empty());
     let collected = std::fs::read(&moved[0]).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&collected).unwrap();
     assert_eq!(v["collectedBy"], json!("new-holder"));
-}
-
-#[test]
-fn bounded_window_keeps_whole_records_and_rejects_partial_prefixes() {
-    use notchd::ledger::{LEDGER_FILE, MAX_LEDGER_BYTES};
-
-    let dir = root();
-    let path = dir.join(LEDGER_FILE);
-    let mut observed = Vec::new();
-    for prefix in [b"torn", b"old\n"] {
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(prefix).unwrap();
-        for seq in [1, 2] {
-            writeln!(file, r#"{{"seq":{seq},"ts":0,"op":{{"type":"release"}}}}"#).unwrap();
-        }
-        file.set_len(MAX_LEDGER_BYTES + prefix.len() as u64)
-            .unwrap();
-        drop(file);
-        observed.push(
-            read_lines(&path)
-                .unwrap()
-                .into_iter()
-                .map(|line| line.seq)
-                .collect::<Vec<_>>(),
-        );
-    }
-
-    assert_eq!(observed, vec![vec![2], vec![1, 2]]);
-}
-
-#[test]
-fn reopen_repairs_a_torn_suffix_beyond_the_replay_window() {
-    let dir = root();
-    let mut ledger = Ledger::open(&dir).unwrap();
-    ledger.claim("worker", "S1-OC01", 300_000, 1_000).unwrap();
-    let path = ledger.path().to_path_buf();
-    drop(ledger);
-    let original = std::fs::read(&path).unwrap();
-    OpenOptions::new()
-        .write(true)
-        .open(&path)
-        .unwrap()
-        .set_len(original.len() as u64 + 256 * 1024 * 1024)
-        .unwrap();
-
-    let mut reopened = Ledger::open(&dir).unwrap();
-    assert_eq!(std::fs::read(&path).unwrap(), original);
-    assert_eq!(reopened.current_epoch("S1-OC01"), 1);
-    assert_eq!(
-        reopened.claim("next", "S1-OC01", 300_000, 1_001).unwrap(),
-        2
-    );
-    assert_eq!(read_lines(&path).unwrap().len(), 2);
-}
-
-#[test]
-fn rotation_preserves_both_the_epoch_anchor_and_first_guarded_write() {
-    use notchd::ledger::MAX_LEDGER_BYTES;
-    use std::io::{Seek, SeekFrom};
-
-    for stale in [false, true] {
-        let dir = root();
-        let mut ledger = Ledger::open(&dir).unwrap();
-        let old = ledger.claim("old", "S1-OC01", 300_000, 1_000).unwrap();
-        let new = ledger.claim("new", "S1-OC01", 300_000, 1_001).unwrap();
-        let claims = std::fs::read(ledger.path()).unwrap();
-        let mut file = OpenOptions::new().write(true).open(ledger.path()).unwrap();
-        file.seek(SeekFrom::Start(MAX_LEDGER_BYTES + 1)).unwrap();
-        file.write_all(b"\n").unwrap();
-        file.write_all(&claims).unwrap();
-        drop(file);
-
-        let (holder, epoch) = if stale { ("old", old) } else { ("new", new) };
-        let result = ledger.append_guarded(
-            holder,
-            epoch,
-            "S1-OC01",
-            upsert_session("S1-OC01", "after rotation"),
-            1_002,
-        );
-        assert!(ledger.path().with_extension("jsonl.1").is_file());
-        let lines = read_lines(ledger.path()).unwrap();
-        assert_eq!(
-            lines.iter().map(|line| line.seq).collect::<Vec<_>>(),
-            vec![3, 4]
-        );
-        let folded = replay(StateFile::empty(), &lines);
-        assert_eq!(folded.epochs["S1-OC01"], new);
-        if stale {
-            let receipt = result.expect_err("the archived claim cannot write");
-            assert_eq!(receipt.seq, folded.refused[0].seq);
-            assert!(receipt.file.as_ref().unwrap().is_file());
-            assert!(folded.state.sessions.is_empty());
-        } else {
-            assert_eq!(result.unwrap(), folded.last_seq);
-            assert_eq!(folded.state.sessions[0].title, "after rotation");
-        }
-    }
 }

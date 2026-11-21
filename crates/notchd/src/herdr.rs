@@ -134,9 +134,7 @@ impl Herdr {
     }
 
     fn invoke_owned(&self, argv: &[String], timeout: Duration) -> Result<String, HerdrError> {
-        let full: Vec<String> = std::iter::once(self.cmd.clone())
-            .chain(argv.iter().cloned())
-            .collect();
+        let full: Vec<String> = std::iter::once(self.cmd.clone()).chain(argv.iter().cloned()).collect();
         self.invoke_argv(&full, timeout)
     }
 
@@ -206,16 +204,14 @@ impl Herdr {
 
     /// `herdr agent start <name> --kind opencode --pane <pane_id>`
     pub fn agent_start(&self, name: &str, pane_id: &str) -> Result<(), HerdrError> {
-        self.invoke_mut(&[
-            "agent", "start", name, "--kind", "opencode", "--pane", pane_id,
-        ])
-        .map(|_| ())
+        self.invoke_mut(&["agent", "start", name, "--kind", "opencode", "--pane", pane_id])
+            .map(|_| ())
     }
+
 
     /// `herdr agent prompt <target> <text>` (no --wait; the daemon polls).
     pub fn agent_prompt(&self, target: &str, text: &str) -> Result<(), HerdrError> {
-        self.invoke_mut(&["agent", "prompt", target, text])
-            .map(|_| ())
+        self.invoke_mut(&["agent", "prompt", target, text]).map(|_| ())
     }
 
     /// `herdr agent read <target> --lines <n>` — raw text (or a tolerated
@@ -377,9 +373,7 @@ pub fn herdr_socket_path() -> PathBuf {
             return PathBuf::from(xdg).join("herdr/herdr.sock");
         }
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     home.join(".config/herdr/herdr.sock")
 }
 
@@ -445,9 +439,7 @@ pub fn subscribe_agent_status_at(
         .read_line(&mut ack)
         .map_err(|e| HerdrError::Io(format!("herdr subscribe ack: {e}")))?;
     if n == 0 {
-        return Err(HerdrError::Parse(
-            "herdr subscribe closed before ack".into(),
-        ));
+        return Err(HerdrError::Parse("herdr subscribe closed before ack".into()));
     }
     let ack_value: Value = serde_json::from_str(ack.trim())
         .map_err(|e| HerdrError::Parse(format!("herdr subscribe ack JSON: {e}")))?;
@@ -464,26 +456,28 @@ pub fn subscribe_agent_status_at(
     }
     let (tx, rx) = mpsc::channel();
     let shutdown = Arc::clone(shutdown);
-    std::thread::spawn(move || loop {
-        if shutdown.load(Ordering::SeqCst) {
-            break;
-        }
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {
-                if let Some(event) = parse_subscription_event(&line) {
-                    if tx.send(event).is_err() {
-                        break;
+    std::thread::spawn(move || {
+        loop {
+            if shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Some(event) = parse_subscription_event(&line) {
+                        if tx.send(event).is_err() {
+                            break;
+                        }
                     }
                 }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(_) => break,
             }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                ) => {}
-            Err(_) => break,
         }
     });
     Ok(rx)

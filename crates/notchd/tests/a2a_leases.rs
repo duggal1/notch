@@ -25,10 +25,7 @@ fn lease_survives_before_expiry_and_is_released_after() {
 
     clock.advance_ms(600); // 2.1s > 2s
     assert!(reg.owners("src/auth.rs").is_empty(), "lease must expire");
-    assert!(
-        reg.claim("S2-OC01", "src/auth.rs", 2),
-        "expired lease is reclaimable"
-    );
+    assert!(reg.claim("S2-OC01", "src/auth.rs", 2), "expired lease is reclaimable");
     assert_eq!(reg.owners("src/auth.rs"), vec!["S2-OC01".to_string()]);
 }
 
@@ -36,45 +33,28 @@ fn lease_survives_before_expiry_and_is_released_after() {
 fn two_sessions_claiming_same_file_second_is_refused_and_logged() {
     let (reg, _clock) = registry(0);
     assert!(reg.claim("S1-OC01", "src/shared.rs", 60));
-    assert!(
-        !reg.claim("S2-OC01", "src/shared.rs", 60),
-        "conflicting claim denied"
-    );
+    assert!(!reg.claim("S2-OC01", "src/shared.rs", 60), "conflicting claim denied");
 
     let owners = reg.owners("src/shared.rs");
-    assert_eq!(
-        owners,
-        vec!["S1-OC01".to_string()],
-        "owner unchanged after conflict"
-    );
+    assert_eq!(owners, vec!["S1-OC01".to_string()], "owner unchanged after conflict");
 
     let events: Vec<BusEvent> = reg.events();
     assert_eq!(events.len(), 1, "exactly one conflict event: {events:?}");
     assert_eq!(events[0].class, "conflict");
     assert!(events[0].detail.contains("S1-OC01"), "{:?}", events[0]);
     assert!(events[0].detail.contains("S2-OC01"), "{:?}", events[0]);
-    assert!(
-        events[0].detail.contains("src/shared.rs"),
-        "{:?}",
-        events[0]
-    );
+    assert!(events[0].detail.contains("src/shared.rs"), "{:?}", events[0]);
 }
 
 #[test]
 fn only_the_owner_can_release_and_release_frees_the_path() {
     let (reg, _clock) = registry(0);
     assert!(reg.claim("S1-OC01", "src/a.rs", 60));
-    assert!(
-        !reg.release("S2-OC01", "src/a.rs"),
-        "non-owner cannot release"
-    );
+    assert!(!reg.release("S2-OC01", "src/a.rs"), "non-owner cannot release");
     assert_eq!(reg.owners("src/a.rs"), vec!["S1-OC01".to_string()]);
     assert!(reg.release("S1-OC01", "src/a.rs"));
     assert!(reg.owners("src/a.rs").is_empty());
-    assert!(
-        !reg.release("S1-OC01", "src/a.rs"),
-        "double release is a no-op"
-    );
+    assert!(!reg.release("S1-OC01", "src/a.rs"), "double release is a no-op");
 }
 
 #[test]
@@ -92,11 +72,7 @@ fn lease_ttl_is_bounded_to_cw_range() {
     let (reg, clock) = registry(0);
     assert!(reg.claim("S1-OC01", "src/a.rs", 99_999));
     clock.advance_ms((MAX_LEASE_TTL_SECS - 1) * 1000);
-    assert_eq!(
-        reg.owners("src/a.rs"),
-        vec!["S1-OC01".to_string()],
-        "clamped to max"
-    );
+    assert_eq!(reg.owners("src/a.rs"), vec!["S1-OC01".to_string()], "clamped to max");
     clock.advance_ms(2_000);
     assert!(reg.owners("src/a.rs").is_empty());
 }
@@ -119,10 +95,7 @@ fn lease_and_event_maps_are_bounded_no_unbounded_growth() {
         // Force pruning without needing a competing claim.
         let _ = reg.owners("src/batch0/file0.rs");
     }
-    assert!(
-        reg.lease_count() <= notchd::bus::MAX_LEASES,
-        "leases must be bounded"
-    );
+    assert!(reg.lease_count() <= notchd::bus::MAX_LEASES, "leases must be bounded");
     assert!(reg.event_count() <= notchd::bus::MAX_BUS_EVENTS);
     // The registry is plain Mutex storage: it spawns no threads itself, so
     // there is no background worker to leak. Bounded maps are the guarantee.
@@ -139,11 +112,7 @@ fn concurrent_claims_on_one_path_elect_exactly_one_owner() {
             r.claim(&format!("S1-OC{i:02}"), "src/race.rs", 3_600)
         }));
     }
-    let wins: usize = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .filter(|won| *won)
-        .count();
+    let wins: usize = handles.into_iter().map(|h| h.join().unwrap()).filter(|won| *won).count();
     assert_eq!(wins, 1, "exactly one successful claim: {wins}");
     assert_eq!(reg.owners("src/race.rs").len(), 1);
 }

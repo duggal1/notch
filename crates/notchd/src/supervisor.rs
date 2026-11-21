@@ -14,6 +14,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
 type SnapshotFn = fn(&Path, &str, &str) -> Result<Option<String>, String>;
@@ -32,33 +33,45 @@ pub fn snapshot_worktree(wt: &Path, id: &str, reason: &str) -> Result<Option<Str
     if let Some(hook) = SNAPSHOT_HOOK.get() {
         return hook(wt, id, reason);
     }
-    let status = crate::worktree::git_run(&["status", "--porcelain"], Some(wt))?;
-    if !status.ok {
+    let path = wt.to_string_lossy().to_string();
+    let run = |args: &[&str]| -> Result<std::process::Output, String> {
+        Command::new("git")
+            .args(args)
+            .output()
+            .map_err(|e| format!("git {}: {e}", args.get(1).copied().unwrap_or("")))
+    };
+    let status = run(&["-C", &path, "status", "--porcelain"])?;
+    if !status.status.success() {
         return Err(format!(
             "git status failed: {}",
-            crate::model::truncate(status.stderr.trim(), 160)
+            crate::model::truncate(String::from_utf8_lossy(&status.stderr).trim(), 160)
         ));
     }
     if status.stdout.is_empty() {
         return Ok(None);
     }
-    let add = crate::worktree::git_run(&["add", "-A"], Some(wt))?;
-    if !add.ok {
+    let add = run(&["-C", &path, "add", "-A"])?;
+    if !add.status.success() {
         return Err(format!(
             "git add failed: {}",
-            crate::model::truncate(add.stderr.trim(), 160)
+            crate::model::truncate(String::from_utf8_lossy(&add.stderr).trim(), 160)
         ));
     }
     let message = format!("notch: WIP snapshot ({reason}) — {id}");
-    let commit = crate::worktree::git_run(&["commit", "-m", &message], Some(wt))?;
-    if !commit.ok {
+    let commit = Command::new("git")
+        .args(["-C", &path, "commit", "-m", &message])
+        .output()
+        .map_err(|e| format!("git commit: {e}"))?;
+    if !commit.status.success() {
         return Err(format!(
             "git commit failed: {}",
-            crate::model::truncate(commit.stderr.trim(), 160)
+            crate::model::truncate(String::from_utf8_lossy(&commit.stderr).trim(), 160)
         ));
     }
-    let head = crate::worktree::git_run(&["rev-parse", "HEAD"], Some(wt))?;
-    Ok(Some(head.stdout.trim().to_string()))
+    let head = run(&["-C", &path, "rev-parse", "HEAD"])?;
+    Ok(Some(
+        String::from_utf8_lossy(&head.stdout).trim().to_string(),
+    ))
 }
 
 #[derive(Debug)]
@@ -323,9 +336,7 @@ impl FleetGuard {
             let first = !st.preempt_logged;
             st.preempt_logged = true;
             return StartGate::Preempt {
-                reason: format!(
-                    "fleet storm preempt: {id} exhausted 3 bounded self-retries; needs human"
-                ),
+                reason: format!("fleet storm preempt: {id} exhausted 3 bounded self-retries; needs human"),
                 first,
             };
         }
@@ -334,10 +345,7 @@ impl FleetGuard {
             st.preempt_logged = true;
             let wait = st.next_retry_ms.saturating_sub(mono_ms);
             return StartGate::Preempt {
-                reason: format!(
-                    "fleet storm preempt: {id} held {wait}ms more (self-retry {}/3)",
-                    st.retries
-                ),
+                reason: format!("fleet storm preempt: {id} held {wait}ms more (self-retry {}/3)", st.retries),
                 first,
             };
         }
@@ -351,6 +359,7 @@ impl FleetGuard {
         }
         StartGate::Admit
     }
+
 
     /// Why a start is currently refused, if at all. Pure observation.
     pub fn admission(&self, id: &str, mono_ms: u64) -> Option<String> {

@@ -1,0 +1,211 @@
+#!/bin/zsh
+# herdr CLI shim for notchd fault-injection tests.
+#
+# Scripted-behavior CLI double for `herdr` (the daemon never sees a real
+# workspace; every invocation lands here). Behavior is read from the
+# environment, resolved in this precedence (first wins):
+#
+#   1. $SHIM_STATE_DIR/<subkey>.mode   (dynamic; checked on EVERY invocation —
+#                                        this is the "env file" a test rewrites
+#                                        to swap behavior mid-run)
+#   2. $SHIM_STATE_DIR/mode            (dynamic; global swap for this shim)
+#   3. SHIM_<SUBCOMMAND>_MODE          (static env, e.g. SHIM_AGENT_LIST_MODE)
+#   4. SHIM_MODE                       (static env; global default; fallback: healthy)
+#
+# Modes:
+#   healthy      canned, parseable success output
+#   exit1        exit 1, message on stderr
+#   hang         sleep ${SHIM_HANG_SECS:-45}, then emit healthy output, exit 0
+#   bad_json     print "not json {{{", exit 0
+#   http429      print "429 too many requests", exit 0
+#   http5xx      print "500 internal server error", exit 0
+#   empty        print nothing, exit 0
+#   wrong_schema print '{"result": 42}', exit 0  (valid JSON, wrong shape)
+#
+# <subkey> is the two-word subcommand, lowercased, spaces -> underscores:
+#   pane_list, pane_split, agent_start, agent_prompt, agent_read, agent_wait,
+#   agent_focus, agent_list, pane_close
+#
+# State kept under $SHIM_STATE_DIR (shared with the opencode shim so both
+# halves of the fake world agree on session identity):
+#   agents.tsv        one line per started agent: name<TAB>pane_id
+#   pane_count        split counter; pane ids are w<n>:p<n>
+#   rev               integer revision reported by `agent list` (bumped by `agent prompt`)
+#   prompts.tsv       one line per delivered prompt: target<TAB>first-line-of-text
+#   decider_calls     (opencode shim only) one line per `opencode run` invocation
+#   api_state         (opencode shim only) "idle" => emit idle sessions
+#   decider_response  (opencode shim only) raw stdout for `opencode run`
+#
+# Deliberate design notes:
+#   - `agent prompt` bumps the revision counter so the watchdog only goes
+#     stuck when the world is truly quiet (no prompts of any kind).
+#   - `pane close` forgets the agent so later `agent list` no longer shows it
+#     (mirrors herdr removing a closed pane's agent).
+#   - fault modes exit 0 with garbage for parse handlers; exit != 0 only for
+#     exit1; everything else degrades silently, exactly like the real CLIs.
+
+set -u
+export SHIM_STATE_DIR="${SHIM_STATE_DIR:-}"
+
+if [[ -n "$SHIM_STATE_DIR" ]]; then
+  mkdir -p "$SHIM_STATE_DIR" 2>/dev/null || true
+  if [[ -f "$SHIM_STATE_DIR/mode" ]]; then
+    SHIM_MODE="$(head -n1 "$SHIM_STATE_DIR/mode" 2>/dev/null | tr -d '[:space:]')"
+  fi
+fi
+
+resolve_mode() {
+  local subkey="$1"
+  if [[ -n "$SHIM_STATE_DIR" && -f "$SHIM_STATE_DIR/$subkey.mode" ]]; then
+    head -n1 "$SHIM_STATE_DIR/$subkey.mode" 2>/dev/null | tr -d '[:space:]'
+    return 0
+  fi
+  local upper="${(U)subkey}"
+  local varname="SHIM_${upper}_MODE"
+  if [[ -n "${(P)varname:-}" ]]; then
+    print -r -- "${(P)varname}"
+    return 0
+  fi
+  print -r -- "${SHIM_MODE:-healthy}"
+}
+
+fault_gate() { # $1 = mode, $2.. = argv (for error messages only)
+  local mode="$1"; shift
+  case "$mode" in
+    healthy) return 0 ;;
+    exit1)
+      print -r -- "shim(herdr): forced exit 1 for: $*" >&2
+      exit 1
+      ;;
+    hang)
+      sleep "${SHIM_HANG_SECS:-45}"
+      return 0
+      ;;
+    bad_json)
+      print -r -- 'not json {{{'
+      exit 0
+      ;;
+    http429)
+      print -r -- '429 too many requests'
+      exit 0
+      ;;
+    http5xx)
+      print -r -- '500 internal server error'
+      exit 0
+      ;;
+    empty)
+      exit 0
+      ;;
+    wrong_schema)
+      print -r -- '{"result": 42}'
+      exit 0
+      ;;
+    *)
+      print -r -- "shim(herdr): unknown mode '$mode'" >&2
+      exit 2
+      ;;
+  esac
+}
+
+read_rev() {
+  if [[ -n "$SHIM_STATE_DIR" && -f "$SHIM_STATE_DIR/rev" ]]; then
+    cat "$SHIM_STATE_DIR/rev"
+  else
+    print -r -- 1
+  fi
+}
+
+agents_path() { print -r -- "$SHIM_STATE_DIR/agents.tsv"; }
+
+pane_id_for_name() { # $1 = name; prints pane_id or empty
+  [[ -n "$SHIM_STATE_DIR" && -f "$(agents_path)" ]] || return 0
+  awk -F '\t' -v n="$1" '$1 == n { print $2; exit }' "$(agents_path)"
+}
+
+emit_agent_list() { # $1 = agent|pane (selects envelope shape and array key)
+  local what="$1" rev key id type
+  case "$what" in
+    agent) key="agents"; id="cli:agent:list"; type="agent_list" ;;
+    pane)  key="panes";  id="cli:pane:list";  type="pane_list" ;;
+    *) print -r -- "shim(herdr): emit_agent_list: bad argument '$what'" >&2; exit 2 ;;
+  esac
+  rev="$(read_rev)"
+  local -a entries=()
+  if [[ -n "$SHIM_STATE_DIR" && -f "$(agents_path)" ]]; then
+    while IFS=$'\t' read -r name pane; do
+      [[ -z "$name" ]] && continue
+      entries+=("{\"agent\":\"opencode\",\"agent_session\":{\"agent\":\"opencode\",\"kind\":\"id\",\"source\":\"herdr:opencode\",\"value\":\"ses_${name}\"},\"agent_status\":\"working\",\"cwd\":\"/tmp\",\"focused\":false,\"name\":\"${name}\",\"pane_id\":\"${pane}\",\"revision\":${rev},\"terminal_title\":\"OC | ${name}\",\"workspace_id\":\"w1\",\"tab_id\":\"w1:t1\"}")
+    done < "$(agents_path)"
+  fi
+  print -r -- "{\"id\":\"${id}\",\"result\":{\"type\":\"${type}\",\"${key}\":[${(j:,:)entries}]}}"
+}
+
+sub="${1:-}"; sub2="${2:-}"
+
+case "$sub $sub2" in
+  "pane list")
+    mode="$(resolve_mode pane_list)"; fault_gate "$mode" "$@"
+    emit_agent_list pane ;;
+  "agent list")
+    mode="$(resolve_mode agent_list)"; fault_gate "$mode" "$@"
+    emit_agent_list agent ;;
+  "pane split")
+    mode="$(resolve_mode pane_split)"; fault_gate "$mode" "$@"
+    if [[ -z "$SHIM_STATE_DIR" ]]; then
+      print -r -- "shim(herdr): pane split needs SHIM_STATE_DIR" >&2; exit 2
+    fi
+    n=1
+    [[ -f "$SHIM_STATE_DIR/pane_count" ]] && n=$(( $(cat "$SHIM_STATE_DIR/pane_count") + 1 ))
+    print -r -- "$n" > "$SHIM_STATE_DIR/pane_count"
+    print -r -- "{\"id\":\"cli:pane:split\",\"result\":{\"type\":\"pane_info\",\"pane\":{\"pane_id\":\"w${n}:p${n}\",\"tab_id\":\"w${n}:t1\",\"workspace_id\":\"w${n}\"}}}" ;;
+  "agent start")
+    mode="$(resolve_mode agent_start)"; fault_gate "$mode" "$@"
+    if [[ -z "$SHIM_STATE_DIR" ]]; then
+      print -r -- "shim(herdr): agent start needs SHIM_STATE_DIR" >&2; exit 2
+    fi
+    # argv: agent start <name> --kind opencode --pane <paneId>
+    name="${3:-}"
+    pane=""
+    for (( i=1; i<=$#; i++ )); do
+      if [[ "${(P)i}" == "--pane" ]]; then
+        j=$(( i + 1 ))
+        pane="${(P)j}"
+      fi
+    done
+    [[ -z "$name" || -z "$pane" ]] && { print -r -- "shim(herdr): agent start: could not parse name/pane from: $*" >&2; exit 2; }
+    printf '%s\t%s\n' "$name" "$pane" >> "$(agents_path)"
+    [[ -f "$SHIM_STATE_DIR/rev" ]] || print -r -- 1 > "$SHIM_STATE_DIR/rev"
+    print -r -- "{\"id\":\"cli:agent:start\",\"result\":{\"type\":\"agent_started\",\"agent\":{\"pane_id\":\"${pane}\",\"agent_status\":\"working\",\"revision\":1}}}" ;;
+  "agent prompt")
+    mode="$(resolve_mode agent_prompt)"; fault_gate "$mode" "$@"
+    # argv: agent prompt <target> <text>
+    target="${3:-}"; text="${4:-}"
+    [[ -z "$SHIM_STATE_DIR" ]] && { print -r -- "shim(herdr): agent prompt needs SHIM_STATE_DIR" >&2; exit 2; }
+    first_line="${text%%$'\n'*}"
+    printf '%s\t%s\n' "$target" "$first_line" >> "$SHIM_STATE_DIR/prompts.tsv"
+    rev=$(( $(read_rev) + 1 ))
+    print -r -- "$rev" > "$SHIM_STATE_DIR/rev"
+    print -r -- "{\"id\":\"cli:agent:prompt\",\"result\":{\"type\":\"agent_prompted\",\"agent\":{\"pane_id\":\"$(pane_id_for_name "$target")\",\"agent_status\":\"working\",\"revision\":${rev}}}}" ;;
+  "agent read")
+    mode="$(resolve_mode agent_read)"; fault_gate "$mode" "$@"
+    target="${3:-}"
+    print -r -- "OC | ${target}: running step 1 of the plan"
+    print -r -- "OC | ${target}: build progressing normally; tests pending" ;;
+  "agent wait")
+    mode="$(resolve_mode agent_wait)"; fault_gate "$mode" "$@"
+    print -r -- '{"id":"cli:agent:wait","result":{"type":"ok"}}' ;;
+  "agent focus")
+    mode="$(resolve_mode agent_focus)"; fault_gate "$mode" "$@"
+    print -r -- '{"id":"cli:agent:focus","result":{"type":"ok"}}' ;;
+  "pane close")
+    mode="$(resolve_mode pane_close)"; fault_gate "$mode" "$@"
+    pane="${3:-}"
+    if [[ -n "$SHIM_STATE_DIR" && -n "$pane" && -f "$(agents_path)" ]]; then
+      awk -F '\t' -v p="$pane" '$2 != p { print }' "$(agents_path)" > "$(agents_path).tmp" \
+        && mv "$(agents_path).tmp" "$(agents_path)"
+    fi
+    print -r -- '{"id":"cli:pane:close","result":{"type":"ok"}}' ;;
+  *)
+    print -r -- "shim(herdr): unsupported invocation: herdr $*" >&2
+    exit 2 ;;
+esac

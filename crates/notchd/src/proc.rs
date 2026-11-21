@@ -126,7 +126,10 @@ fn take_pipe(rx: mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
 /// reader thread that has not delivered inside the grace is merely descheduled
 /// (seen under heavy parallel test load). Wait for it to finish with a bounded
 /// safety cap instead of returning empty output for a successful call.
-fn take_pipe_after_exit(rx: mpsc::Receiver<Vec<u8>>, handle: thread::JoinHandle<()>) -> Vec<u8> {
+fn take_pipe_after_exit(
+    rx: mpsc::Receiver<Vec<u8>>,
+    handle: thread::JoinHandle<()>,
+) -> Vec<u8> {
     match rx.recv_timeout(PIPE_EOF_GRACE) {
         Ok(buf) => {
             let _ = handle.join();
@@ -137,8 +140,7 @@ fn take_pipe_after_exit(rx: mpsc::Receiver<Vec<u8>>, handle: thread::JoinHandle<
             while !handle.is_finished() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(2));
             }
-            rx.recv_timeout(Duration::from_millis(100))
-                .unwrap_or_default()
+            rx.recv_timeout(Duration::from_millis(100)).unwrap_or_default()
         }
     }
 }
@@ -203,9 +205,7 @@ pub fn run(spec: &Spec) -> Result<Out, ProcError> {
             let _ = child.wait(); // reap: no zombie left behind
             let _ = take_pipe(rx_out);
             let _ = take_pipe(rx_err);
-            return Err(ProcError::Timeout {
-                after: spec.timeout,
-            });
+            return Err(ProcError::Timeout { after: spec.timeout });
         }
         // Small, bounded poll interval: try_wait is cheap and never wedges.
         thread::sleep(Duration::from_millis(2));
@@ -222,9 +222,7 @@ pub fn run(spec: &Spec) -> Result<Out, ProcError> {
                 code: None,
                 stderr: format!(
                     "try_wait failed: {}",
-                    wait_error
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "unknown".into())
+                    wait_error.map(|e| e.to_string()).unwrap_or_else(|| "unknown".into())
                 ),
             });
         }

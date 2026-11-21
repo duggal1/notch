@@ -141,14 +141,11 @@ pub fn notch_or_fallback(measurements: Option<NotchSize>) -> NotchSize {
 /// Dashboard window rect (bridge.md §7): 1120×760, centered on the main
 /// screen (top-left origin — Tauri window coordinates).
 pub fn dashboard_frame(screen_width: f64, screen_height: f64) -> FrameRect {
-    let top_clearance = MIN_PILL_HEIGHT.max(MAX_NOTCH_HEIGHT + PEEK_HEIGHT_EXTRA) + 8.0;
-    let height = DASHBOARD_HEIGHT.min((screen_height - top_clearance).max(DASHBOARD_MIN_HEIGHT));
-    let width = DASHBOARD_WIDTH.min(screen_width.max(DASHBOARD_MIN_WIDTH));
     FrameRect {
-        x: ((screen_width - width) / 2.0).max(0.0),
-        y: ((screen_height - height) / 2.0).max(top_clearance),
-        width,
-        height,
+        x: ((screen_width - DASHBOARD_WIDTH) / 2.0).max(0.0),
+        y: ((screen_height - DASHBOARD_HEIGHT) / 2.0).max(0.0),
+        width: DASHBOARD_WIDTH,
+        height: DASHBOARD_HEIGHT,
     }
 }
 
@@ -168,7 +165,10 @@ pub fn frame_for_mode_content(
     let n = notch_or_fallback(notch);
     let h = content_height.clamp(OPEN_HEIGHT_IDLE, OPEN_HEIGHT);
     let (width, height) = match mode {
-        Mode::Rest => (n.width + REST_WING * 2.0, n.height.max(MIN_PILL_HEIGHT)),
+        Mode::Rest => (
+            n.width + REST_WING * 2.0,
+            n.height.max(MIN_PILL_HEIGHT),
+        ),
         Mode::Peek => (
             n.width + REST_WING * 2.0 + PEEK_EXTRA,
             (n.height + PEEK_HEIGHT_EXTRA).max(MIN_PILL_HEIGHT),

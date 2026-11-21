@@ -45,7 +45,5 @@ pub fn ws_token_path_in(state_dir: &std::path::Path) -> PathBuf {
 }
 
 pub fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }

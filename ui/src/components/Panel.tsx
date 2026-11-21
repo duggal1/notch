@@ -123,10 +123,10 @@ export function Panel(props: PanelProps) {
 
         <div className="state">
           <div className="card state-num">
-            <PixelSphere size={40} cell={3} live={open && wcount > 0} className="state-num-mark" />
+            <PixelSphere size={40} cell={2} live={open && wcount > 0} className="state-num-mark" />
             <div className="state-num-read">
               <NumberRoll value={wcount} format={(n) => String(Math.round(n))} className="num-xl" />
-              <span className="label">Agents running</span>
+              <span className="label">In flight</span>
             </div>
           </div>
           <div className="card state-signal">

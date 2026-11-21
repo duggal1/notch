@@ -56,10 +56,7 @@ fn sequence_numbers_increase_in_drain_order() {
     bus.drain(&mut |_| {});
     let seqs: Vec<u64> = (0..3).map(|_| rx2.try_recv().unwrap().seq).collect();
     assert_eq!(seqs.len(), 3);
-    assert!(
-        seqs.windows(2).all(|w| w[0] < w[1]),
-        "seq must increase: {seqs:?}"
-    );
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "seq must increase: {seqs:?}");
 }
 
 #[test]
@@ -89,9 +86,7 @@ fn unknown_target_is_a_clean_error_not_a_silent_drop() {
         other => panic!("expected NotFound, got {other:?}"),
     }
     match validate_target("all", &ids) {
-        Err(NotchError::Protocol(msg)) => {
-            assert!(msg.to_ascii_lowercase().contains("wildcard"), "{msg}")
-        }
+        Err(NotchError::Protocol(msg)) => assert!(msg.to_ascii_lowercase().contains("wildcard"), "{msg}"),
         other => panic!("expected Protocol wildcard, got {other:?}"),
     }
     // Exact id matching survives.
@@ -124,11 +119,7 @@ fn validation_logs_rejected_broadcasts_unknown_and_bad_types() {
     let events = reg.events();
     assert_eq!(events.len(), 4, "only failures are logged: {events:?}");
     assert!(events.iter().all(|e| e.class == "reject"), "{events:?}");
-    let joined = events
-        .iter()
-        .map(|e| e.detail.as_str())
-        .collect::<Vec<_>>()
-        .join(" | ");
+    let joined = events.iter().map(|e| e.detail.as_str()).collect::<Vec<_>>().join(" | ");
     assert!(joined.contains("all"), "{joined}");
     assert!(joined.contains("*"), "{joined}");
     assert!(joined.contains("S9-OC99"), "{joined}");
@@ -164,10 +155,7 @@ fn dedupe_drops_a_second_delivery_with_the_same_id() {
     };
 
     assert!(deliver_once("msg_1", "first"));
-    assert!(
-        !deliver_once("msg_1", "duplicate"),
-        "same id must be dropped"
-    );
+    assert!(!deliver_once("msg_1", "duplicate"), "same id must be dropped");
     assert!(deliver_once("msg_2", "second"));
     assert_eq!(bus.drain(&mut |_| {}), 1 + 1);
     let a = rx2.try_recv().unwrap().detail;

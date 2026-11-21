@@ -102,13 +102,7 @@ impl SessionState {
 
 /// First line, collapsed whitespace, truncated to 78 chars.
 pub fn single_line(s: &str) -> String {
-    let line = s
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let line = s.lines().next().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
     truncate(&line, 78)
 }
 
@@ -209,17 +203,9 @@ pub struct A2aMessage {
     #[serde(rename = "type")]
     pub kind: String,
     pub body: String,
-    #[serde(
-        rename = "claimedPath",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "claimedPath", default, skip_serializing_if = "Option::is_none")]
     pub claimed_path: Option<String>,
-    #[serde(
-        rename = "deliveredAt",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "deliveredAt", default, skip_serializing_if = "Option::is_none")]
     pub delivered_at: Option<u64>,
 }
 
@@ -252,14 +238,7 @@ impl A2aMessage {
             from: self.from.clone(),
             to: self.to.clone(),
             kind: self.kind.clone(),
-            preview: self
-                .body
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(140)
-                .collect(),
+            preview: self.body.lines().next().unwrap_or("").chars().take(140).collect(),
             at: self.at,
         }
     }
@@ -331,24 +310,14 @@ mod a4_tests {
 
     #[test]
     fn legacy_state_fixture_loads_with_isolation_fields_unset() {
-        let state: StateFile =
-            serde_json::from_str(LEGACY_STATE).expect("legacy fixture must parse");
+        let state: StateFile = serde_json::from_str(LEGACY_STATE).expect("legacy fixture must parse");
         assert_eq!(state.sessions.len(), 1);
         let value = serde_json::to_value(&state.sessions[0]).unwrap();
         // With #[serde(default)] the fields exist on re-serialization and are
         // null. Before they were added, the keys were absent entirely.
-        assert!(
-            value.get("worktree").is_some(),
-            "worktree key must survive round-trip"
-        );
-        assert!(
-            value.get("branch").is_some(),
-            "branch key must survive round-trip"
-        );
-        assert!(
-            value.get("base_rev").is_some(),
-            "base_rev key must survive round-trip"
-        );
+        assert!(value.get("worktree").is_some(), "worktree key must survive round-trip");
+        assert!(value.get("branch").is_some(), "branch key must survive round-trip");
+        assert!(value.get("base_rev").is_some(), "base_rev key must survive round-trip");
         assert!(value["worktree"].is_null());
         assert!(value["branch"].is_null());
         assert!(value["base_rev"].is_null());

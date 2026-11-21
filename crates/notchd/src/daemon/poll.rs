@@ -191,20 +191,7 @@ impl Daemon {
                     .any(|s| !s.status.is_terminal() && s.goal.is_some())
             };
             if has_goal {
-                match self.opencode_api_sessions() {
-                    Ok(sessions) => sessions,
-                    Err(error) => {
-                        let mut inner = lock(&self.inner);
-                        push_warning(
-                            &mut inner,
-                            format!(
-                                "OpenCode session probe failed: {}",
-                                truncate(&error.to_string(), 160)
-                            ),
-                        );
-                        None
-                    }
-                }
+                self.opencode_api_sessions()
             } else {
                 None
             }
@@ -283,29 +270,14 @@ impl Daemon {
             baseline: Option<HashSet<String>>,
         }
         enum Effect {
-            Vanished {
-                idx: usize,
-                id: String,
-                pane_id: String,
-            },
+            Vanished { idx: usize },
             Update(Box<UpdateEffect>),
         }
         let mut effects: Vec<Effect> = Vec::new();
-        let mut panes = None;
         for seed in seeds {
             let Some(entry) = by_pane.get(&seed.pane_id) else {
-                // A split pane can exist before Herdr reports an agent in it.
-                if !seed.pane_id.is_empty()
-                    && panes
-                        .get_or_insert_with(|| self.herdr.pane_list())
-                        .as_ref()
-                        .is_ok_and(|list| !list.iter().any(|pane| pane.pane_id == seed.pane_id))
-                {
-                    effects.push(Effect::Vanished {
-                        idx: seed.idx,
-                        id: seed.id,
-                        pane_id: seed.pane_id,
-                    });
+                if !seed.pane_id.is_empty() {
+                    effects.push(Effect::Vanished { idx: seed.idx });
                 }
                 continue;
             };
@@ -338,8 +310,7 @@ impl Daemon {
             match mapped {
                 Status::Failed => {
                     let tail = self.herdr.agent_read(&agent_target(&seed.id), 20).ok();
-                    match decide_on_failure_with_reason(reason.as_deref(), seed.failure_count, tail)
-                    {
+                    match decide_on_failure_with_reason(reason.as_deref(), seed.failure_count, tail) {
                         FailureAction::Reprompt { tail } => {
                             // Fleet admission gate (steal #5). Purely additive:
                             // a held/preempted start leaves session state and
@@ -518,9 +489,9 @@ impl Daemon {
             let mut inner = lock(&self.inner);
             for effect in effects {
                 match effect {
-                    Effect::Vanished { idx, id, pane_id } => {
+                    Effect::Vanished { idx } => {
                         if let Some(s) = inner.sessions.get_mut(idx) {
-                            if s.id == id && s.pane_id == pane_id && !s.status.is_terminal() {
+                            if !s.status.is_terminal() {
                                 s.status = Status::Done;
                                 s.failure_reason = None;
                                 let id = s.id.clone();
@@ -530,9 +501,9 @@ impl Daemon {
                                     "pane vanished; marked done (re-adoption)",
                                 );
                                 cleaned.push(id);
-                                changed = true;
                             }
                         }
+                        changed = true;
                     }
                     Effect::Update(effect) => {
                         let UpdateEffect {
@@ -555,9 +526,6 @@ impl Daemon {
                         let Some(s) = inner.sessions.get_mut(idx) else {
                             continue;
                         };
-                        if s.id != id || s.pane_id != pane_id || s.status.is_terminal() {
-                            continue;
-                        }
                         if let Some(b) = baseline {
                             s.attribution_baseline = Some(b);
                         }
@@ -621,8 +589,7 @@ impl Daemon {
                                 Liveness::Suspect => {
                                     let quiet = mono.saturating_sub(s.revision_changed_at_ms);
                                     if lock(&self.watchdog).take_suspect_action(&id, mono) {
-                                        pending_nudges
-                                            .push((id.clone(), SUSPECT_NUDGE.to_string()));
+                                        pending_nudges.push((id.clone(), SUSPECT_NUDGE.to_string()));
                                         pending_escalations.push((
                                             id.clone(),
                                             "stuck_suspect".to_string(),
@@ -631,9 +598,7 @@ impl Daemon {
                                         let _ = self.event_log.append(
                                             Some(id.clone()),
                                             "watchdog",
-                                            &format!(
-                                                "suspect: quiet {quiet}ms; nudge + escalation"
-                                            ),
+                                            &format!("suspect: quiet {quiet}ms; nudge + escalation"),
                                         );
                                     }
                                 }
@@ -652,11 +617,7 @@ impl Daemon {
                                         );
                                     }
                                     if lock(&self.watchdog).should_close_pane(Liveness::Stuck) {
-                                        pending_kills.push((
-                                            id.clone(),
-                                            pane_id.clone(),
-                                            cwd.clone(),
-                                        ));
+                                        pending_kills.push((id.clone(), pane_id.clone(), cwd.clone()));
                                     } else {
                                         pending_warnings.push(format!(
                                             "{id} stuck; kill_on_stuck is OFF — pane kept, escalation only"
@@ -691,43 +652,33 @@ impl Daemon {
             }
             // Verdict recorded first; now snapshot WIP and close. A failed
             // snapshot vetoes the close so uncommitted work is never lost.
-            // B1: git/herdr IO must not hold `inner` — a hung git would wedge
-            // every command and snapshot. Collect the IO results with the lock
-            // dropped, then re-lock once to apply them.
-            drop(inner);
-            let mut kill_warnings: Vec<String> = Vec::new();
-            let mut killed: Vec<String> = Vec::new();
             for (id, pane_id, cwd) in pending_kills {
                 match crate::supervisor::snapshot_worktree(Path::new(&cwd), &id, "stuck") {
                     Ok(sha) => {
-                        kill_warnings.push(format!("{id} stuck; WIP snapshot {sha:?}"));
+                        push_warning(&mut inner, format!("{id} stuck; WIP snapshot {sha:?}"));
                         match self.herdr.pane_close(&pane_id) {
                             Ok(()) => {
-                                kill_warnings.push(format!(
-                                    "{id} stuck (no revision change); pane {pane_id} closed"
-                                ));
-                                killed.push(id);
+                                push_warning(
+                                    &mut inner,
+                                    format!("{id} stuck (no revision change); pane {pane_id} closed"),
+                                );
+                                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
+                                    s.status = Status::Failed;
+                                    s.failure_reason = Some("stuck".to_string());
+                                }
+                                cleaned.push(id);
                             }
-                            Err(e) => kill_warnings.push(format!(
-                                "{id} stuck (no revision change); pane close failed: {e}"
-                            )),
+                            Err(e) => push_warning(
+                                &mut inner,
+                                format!("{id} stuck (no revision change); pane close failed: {e}"),
+                            ),
                         }
                     }
-                    Err(e) => kill_warnings.push(format!(
-                        "{id} stuck; WIP snapshot failed ({e}); pane close skipped"
-                    )),
+                    Err(e) => push_warning(
+                        &mut inner,
+                        format!("{id} stuck; WIP snapshot failed ({e}); pane close skipped"),
+                    ),
                 }
-            }
-            inner = lock(&self.inner);
-            for w in kill_warnings {
-                push_warning(&mut inner, w);
-            }
-            for id in killed {
-                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == id) {
-                    s.status = Status::Failed;
-                    s.failure_reason = Some("stuck".to_string());
-                }
-                cleaned.push(id);
             }
             for id in &cleaned {
                 let _ = cleanup::cleanup_session(&self.config.tmp_dir, id);

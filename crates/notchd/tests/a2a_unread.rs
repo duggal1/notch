@@ -49,10 +49,7 @@ fn unread_prefix_is_emitted_only_when_positive_and_is_truthful() {
     assert!(prefix.len() < 80, "must be short and bounded");
 
     // Taking the prefix marks the mail read (done at prompt-delivery glue).
-    assert_eq!(
-        reg.take_unread_prefix("S1-OC01").as_deref(),
-        Some(prefix.as_str())
-    );
+    assert_eq!(reg.take_unread_prefix("S1-OC01").as_deref(), Some(prefix.as_str()));
     assert_eq!(reg.unread_for("S1-OC01"), 0);
     assert_eq!(reg.take_unread_prefix("S1-OC01"), None);
 }
@@ -87,11 +84,7 @@ fn unread_map_is_bounded_over_many_sessions() {
 fn prefix_body_preserves_a_verbatim_body_when_no_mail_is_pending() {
     let reg = registry();
     let body = "handoff: the tests fail at auth.rs:12";
-    assert_eq!(
-        reg.prefix_body("S1-OC01", body),
-        body,
-        "byte-verbatim at zero unread"
-    );
+    assert_eq!(reg.prefix_body("S1-OC01", body), body, "byte-verbatim at zero unread");
 
     // Old pending mail is announced once, then cleared; the new message that
     // is being delivered becomes the single unread item for the next prompt.
@@ -101,10 +94,7 @@ fn prefix_body_preserves_a_verbatim_body_when_no_mail_is_pending() {
     assert_eq!(prefixed, format!("you have 2 unread A2A messages\n{body}"));
     assert_eq!(reg.unread_for("S1-OC01"), 0);
     reg.note_delivery("S1-OC01"); // ingress step in the daemon glue
-    assert_eq!(
-        reg.prefix_body("S1-OC01", body),
-        format!("you have 1 unread A2A messages\n{body}")
-    );
+    assert_eq!(reg.prefix_body("S1-OC01", body), format!("you have 1 unread A2A messages\n{body}"));
 }
 
 #[test]

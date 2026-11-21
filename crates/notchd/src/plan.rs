@@ -62,16 +62,16 @@ impl ParsedSession {
 }
 
 pub fn parse_plan(text: &str) -> Result<ParsedPlan, String> {
-    let plan: PlanFile =
-        serde_json::from_str(text).map_err(|e| format!("invalid plan JSON: {e}"))?;
+    let plan: PlanFile = serde_json::from_str(text).map_err(|e| format!("invalid plan JSON: {e}"))?;
     let mut supervisors = Vec::with_capacity(plan.supervisors.len());
     for (i, sup) in plan.supervisors.iter().enumerate() {
         let mut sessions = Vec::with_capacity(sup.sessions.len());
         for (j, ses) in sup.sessions.iter().enumerate() {
-            let cwd =
-                ses.cwd.clone().or_else(|| sup.cwd.clone()).ok_or_else(|| {
-                    format!("supervisor {} session {}: missing cwd", i + 1, j + 1)
-                })?;
+            let cwd = ses
+                .cwd
+                .clone()
+                .or_else(|| sup.cwd.clone())
+                .ok_or_else(|| format!("supervisor {} session {}: missing cwd", i + 1, j + 1))?;
             let cwd_path = Path::new(&cwd);
             if !cwd_path.is_dir() {
                 return Err(format!(
@@ -83,11 +83,7 @@ pub fn parse_plan(text: &str) -> Result<ParsedPlan, String> {
             }
             let prompt = ses.prompt.trim().to_string();
             if prompt.is_empty() {
-                return Err(format!(
-                    "supervisor {} session {}: empty prompt",
-                    i + 1,
-                    j + 1
-                ));
+                return Err(format!("supervisor {} session {}: empty prompt", i + 1, j + 1));
             }
             let title = ses
                 .title
