@@ -1,0 +1,140 @@
+// FEEDBACK FROM THE APP, FORWARDED BY EMAIL (w-1b574413db, 2026-10-04).
+//
+// The Feedback card posts here (main/feedback.mts): what the person wrote,
+// what they attached, and the app's version. This forwards it as one email
+// through Resend, and keeps it in public.feedback (with whether the email went)
+// so `npm run feedback` can read it back. Either one is enough to answer ok:
+// what someone typed is not lost because the other failed.
+//
+// WHO IT GOES TO IS A SECRET, never a line in this file. The repository is
+// public and the ask was that nobody using Agentbox can see the address
+// anywhere, so every address lives in the project's secrets:
+//
+//   supabase secrets set FEEDBACK_TO=…  FEEDBACK_FROM=…  RESEND_API_KEY=…
+//   supabase functions deploy feedback
+//
+// FEEDBACK_FROM is the sender Resend allows for the account, written the way
+// a mail header writes one ("Agentbox Feedback <…>").
+//
+// It takes no sign-in (config.toml, [functions.feedback]), because most
+// people sending feedback have no account. So it checks everything itself:
+// the same limits as shared/feedback.mts, and a request too big to be one of
+// ours is refused before it is read.
+
+const LIMITS = { text: 20_000, files: 10, bytes: 8 * 1024 * 1024 };
+// Base64 is four characters for every three bytes, plus the JSON around it.
+const MAX_REQUEST = Math.ceil((LIMITS.bytes * 4) / 3) + LIMITS.text * 6 + 64 * 1024;
+
+type File = { name: string; type: string; data: string };
+
+// The phone website posts here from its own origin, so a browser has to be let
+// in. Any origin: the function takes no sign-in and anyone can already call it,
+// so a browser gets nothing a script does not.
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+};
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...CORS, 'content-type': 'application/json' } });
+
+const CALL_MS = 20_000;
+const noAddresses = (s: string) => s.replace(/[^\s<>"'`]+@[^\s<>"'`]+/g, '[address]').slice(0, 300);
+
+const escape = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+  if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
+  const to = Deno.env.get('FEEDBACK_TO');
+  const from = Deno.env.get('FEEDBACK_FROM');
+  const key = Deno.env.get('RESEND_API_KEY');
+  const canMail = !!(to && from && key);
+  const db = Deno.env.get('SUPABASE_URL');
+  const service = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const canKeep = !!(db && service);
+  if (!canMail && !canKeep) return json({ ok: false, error: 'not configured' }, 503);
+  if (Number(req.headers.get('content-length') ?? 0) > MAX_REQUEST) return json({ ok: false, error: 'too large' }, 413);
+
+  let body: { text?: unknown; files?: unknown; app?: { version?: unknown; os?: unknown; install?: unknown } };
+  try {
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: 'not JSON' }, 400);
+  }
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  const files: File[] = Array.isArray(body.files)
+    ? body.files.filter((f): f is File => !!f && typeof f.name === 'string' && typeof f.data === 'string')
+      .map((f) => ({ name: f.name.slice(0, 200), type: typeof f.type === 'string' ? f.type : 'application/octet-stream', data: f.data }))
+    : [];
+  const bytes = files.reduce((n, f) => n + Math.floor((f.data.length * 3) / 4), 0);
+  if (!text && !files.length) return json({ ok: false, error: 'empty' }, 400);
+  if (text.length > LIMITS.text || files.length > LIMITS.files || bytes > LIMITS.bytes) return json({ ok: false, error: 'too large' }, 413);
+
+  const version = String(body.app?.version ?? '').slice(0, 40);
+  const os = String(body.app?.os ?? '').slice(0, 80);
+  // The random install id (shared/install-id.mts), cut to 8 characters: enough
+  // to tell whether two emails came from one install.
+  const install = String(body.app?.install ?? '').replace(/[^\w-]/g, '').slice(0, 64);
+  const first = text.split('\n')[0].slice(0, 70);
+  const subject = `Agentbox feedback: ${first || `${files.length} file${files.length === 1 ? '' : 's'}`}`;
+  const footer = `Agentbox ${version || 'unknown version'} · ${os || 'unknown OS'}${install ? ` · install ${install.slice(0, 8)}` : ''}`;
+
+  let mailed = false;
+  let detail: string | null = canMail ? null : 'mail is not set up';
+  if (canMail) {
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          from,
+          to: [to],
+          subject,
+          text: `${text || '(no words, files only)'}\n\n--\n${footer}`,
+          html: `<div style="white-space:pre-wrap">${escape(text || '(no words, files only)')}</div><hr><small>${escape(footer)}</small>`,
+          attachments: files.map((f) => ({ filename: f.name, content: f.data })),
+        }),
+        signal: AbortSignal.timeout(CALL_MS),
+      });
+      mailed = res.ok;
+      // Resend's own reason rides back, so a refusal says why (an unverified
+      // sending domain was the first one met). Any address in it is cut out first:
+      // anyone can call this, and a reason like "you can only send to <address>"
+      // would hand out exactly what the secret exists to hide.
+      if (!res.ok) {
+        const why = await res.json().catch(() => ({})) as { name?: string; message?: string };
+        detail = noAddresses([why.name, why.message].filter(Boolean).join(': ') || `status ${res.status}`);
+      }
+    } catch (err) {
+      detail = noAddresses(`could not reach Resend: ${(err as Error)?.message ?? err}`);
+    }
+  }
+
+  let kept = false;
+  if (canKeep) {
+    try {
+      const res = await fetch(`${db}/rest/v1/rpc/keep_feedback`, {
+        method: 'POST',
+        headers: { apikey: service!, authorization: `Bearer ${service}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          the_words: text,
+          the_version: version,
+          the_os: os,
+          the_install: install,
+          was_mailed: mailed,
+          why_not_mailed: mailed ? null : detail,
+          the_files: files.map((f) => ({ name: f.name, type: f.type, bytes: Math.floor((f.data.length * 3) / 4), data: f.data })),
+        }),
+        signal: AbortSignal.timeout(CALL_MS),
+      });
+      kept = res.ok;
+    } catch {
+      kept = false;
+    }
+  }
+
+  if (mailed || kept) return json({ ok: true });
+  return json({ ok: false, error: 'mail refused', detail }, 502);
+});

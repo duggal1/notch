@@ -1,0 +1,1190 @@
+// THE CLOUD SERVER: CLOUD RUNS FOR PEOPLE WITH NO AWS ACCOUNT OF THEIR OWN.
+//
+// It stands between a Mac and our AWS account (docs/cloud/PLAN.md, "The
+// cloud server"). The Mac's run code is unchanged: it still names its own
+// sessions and objects, and this puts the person into every name before AWS
+// sees it, counts each person's agents and hours against their plan, stops
+// every machine it stops counting, and never hands a Mac a link to a sign-in.
+//
+// Everything AWS is passed in, so the same code runs in Lambda (lambda.mjs),
+// in tests, and behind a plain HTTP server (gatewayServer).
+import crypto from 'node:crypto';
+import http from 'node:http';
+import { PLANS, PLAN_TRIAL, TEAM, teamFreeDays, RUN_CEILING_MS, SIGNIN_CEILING_MS, SIGNINS_AT_ONCE, FILES_LAPSE_DAYS } from './plans.mjs';
+import { TERMS_VERSION } from './terms.mjs';
+import { LOGIN_NAME } from '../../shared/cloud-login-name.mts';
+import { isKeyObject } from '../../shared/cloud-keys.mts';
+import { Name } from '../../shared/product-name.mjs';
+import { JOIN_SCHEME } from '../../shared/room-links.mts';
+import { WEB_APP } from '../../shared/cloud-address.mts';
+import { paidHeadline } from './paid-words.mts';
+import { PAYING, planOfLookupKey } from './stripe.mjs';
+import { createPhoneCarry } from './phone.mjs';
+import { createPhoneRunStatus } from './phone-status.mjs';
+
+const PERSON = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION = /^[A-Za-z0-9_-]{1,180}$/;
+const KEY = /^(runs|logins|files)\/([A-Za-z0-9._@+=-]+(?:\/[A-Za-z0-9._@+=-]+)*)$/;
+// A kept file is named by its bytes' sha256, so two copies are one object.
+const FILE_KEY = /^files\/[0-9a-f]{64}$/;
+const FILES_WEIGH_MS = 60_000;
+const LINK_MAX_SECONDS = 12 * 60 * 60;
+// The most S3 takes in one PUT.
+const ONE_UPLOAD_MAX = 5 * 2 ** 30;
+const LOGIN_LINK_SECONDS = 30 * 60;
+// Lambda takes and gives at most 6 MB; past RELAY_BYTES a call or an answer
+// goes through the person's own `runs/calls/` in the bucket instead.
+const BODY_LIMIT = 6 * 1024 * 1024;
+export const RELAY_BYTES = 4 * 1024 * 1024;
+const RELAYED_CALL_LIMIT = 32 * 1024 * 1024;
+const CALL_KEY = /^runs\/calls\/[A-Za-z0-9_-]{1,80}\.json$/;
+const STARTS = { start: 'run', signin: 'signin', renew: 'signin', look: 'signin' };
+// A run's id becomes a key segment (its done.json), so it is one.
+const RUN_ID = /^[A-Za-z0-9._-]{1,120}$/;
+// A done.json the S3 notice missed is looked for by the sweep, not sooner.
+const DONE_LOOK_AFTER_MS = 2 * 60_000;
+// A stop that fails this many sweeps running (an hour) is given up, and said.
+const STOP_TRIES = 12;
+// A plan the database has refused for this many sweeps (an hour) is said as
+// behind. The sweep keeps offering it: a reporting copy that gave up would
+// leave the owner reading a plan nobody is on.
+const PLAN_TELL_TRIES = 12;
+// A session that has ended takes no new start for this long: far past the
+// function's own 90 s, so no late answer or late stop can reach a new run.
+const RETIRED_MS = 60 * 60_000;
+const SWEEP_AT_ONCE = 8;
+// Inside the function's 90 s with a cold start after it, and long enough for
+// 200 writes in a row at S3's pace (about ten a second).
+const LEDGER_WRITE_MS = 45_000;
+// A done.json notice has no Mac waiting on it, so it may wait longer.
+const NOTICE_WRITE_MS = 75_000;
+// What one person's runs/ may hold. At it, no new link writes; past twice it,
+// which only links handed out before the cap was reached can make, the newest
+// objects are deleted. Worst case about $9 a month of S3 per person.
+export const STORAGE_BYTES = 200 * 2 ** 30;
+const SAVED_KEY_MAX_BYTES = 64 * 1024;
+const STORAGE_EVERY_MS = 15 * 60_000;
+const STORAGE_LIST_MAX = 100_000;
+const STORAGE_DELETES_AT_ONCE = 500;
+// A link that writes is noted on the person's record only when it outlives
+// the note, and the note runs this far past it: one write an hour at most.
+const LINK_NOTE_MS = 60 * 60_000;
+// A cloud key unused this long is refused. Its use is noted at most once a
+// day, so a relay polling through a long run never ends its own key.
+const KEY_IDLE_MS = 30 * 24 * 60 * 60_000;
+const DAY_MS = 24 * 60 * 60_000;
+const KEY_USE_NOTE_MS = 24 * 60 * 60_000;
+// Only these save a sign-in; a run given a link that writes one could keep it.
+const SAVES_A_SIGNIN = new Set(['signin', 'renew']);
+
+const month = (t) => new Date(t).toISOString().slice(0, 7);
+const monthStart = (t) => { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); };
+const nextMonth = (t) => { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1); };
+/** [[month, seconds]] for the time from `from` to `to`, split at UTC month ends. */
+function secondsByMonth(from, to) {
+  const out = [];
+  for (let a = from; a < to; a = nextMonth(a)) out.push([month(a), Math.round((Math.min(to, nextMonth(a)) - a) / 1000)]);
+  return out;
+}
+const gib = (bytes) => Math.round((bytes / 2 ** 30) * 10) / 10;
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const bearer = (headers = {}) => /^Bearer (\S+)$/.exec(headers.authorization || headers.Authorization || '')?.[1] ?? null;
+const ceilingOf = (s) => (s.kind === 'run' ? RUN_CEILING_MS : SIGNIN_CEILING_MS);
+// The sandbox says a run failed in a `status` answer or a `state` event, and
+// it is ended once the Mac has read its last page. "exited" is not the end:
+// it is still saving the results, and done.json ends the run once it has.
+const saysFailed = (answer) => !answer?.more && (answer?.state === 'failed' || (Array.isArray(answer?.events) && answer.events.some((e) => e?.kind === 'state' && e.state === 'failed')));
+const notThere = (err) => err?.name === 'ResourceNotFoundException' || err?.$metadata?.httpStatusCode === 404;
+
+class Refusal extends Error {
+  constructor(status, error, message, extra = {}) { super(message); this.status = status; this.error = error; this.extra = extra; }
+}
+const bad = (message) => new Refusal(400, 'bad-request', message);
+
+/** `runs/x` as the person's own `runs/u-<person>/x`; null for anything else. */
+export function scopedKey(person, key) {
+  const m = typeof key === 'string' ? KEY.exec(key) : null;
+  if (!m || m[2].split('/').some((s) => s === '.' || s === '..')) return null;
+  return `${m[1]}/u-${person}/${m[2]}`;
+}
+
+/** Objects with S3's conditional writes, in memory, for tests and local runs. */
+export function memoryObjects() {
+  const store = new Map();
+  let n = 0;
+  const conflict = () => Object.assign(new Error('changed meanwhile'), { conflict: true });
+  return {
+    async get(k) { await null; const v = store.get(k); return v ? { body: v.body, etag: v.etag } : null; },
+    async head(k) { await null; const v = store.get(k); return v ? { size: Buffer.byteLength(v.body) } : null; },
+    async put(k, body, { ifMatch, ifNoneMatch } = {}) {
+      await null;
+      const cur = store.get(k);
+      if (ifNoneMatch === '*' && cur) throw conflict();
+      if (ifMatch && cur?.etag !== ifMatch) throw conflict();
+      n += 1;
+      store.set(k, { body: String(body), etag: `e${n}`, at: n });
+    },
+    async del(k) { store.delete(k); },
+    async list(prefix) { await null; return [...store.keys()].filter((k) => k.startsWith(prefix)); },
+    // `at` orders writes; S3's is the time it was written.
+    async sizes(prefix, { max = Infinity } = {}) {
+      await null;
+      const all = [...store].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1));
+      return { items: all.slice(0, max).map(([key, v]) => ({ key, size: Buffer.byteLength(v.body), at: v.at })), truncated: all.length > max };
+    },
+    dump: () => new Map([...store].map(([k, v]) => [k, v.body])),
+  };
+}
+
+export function createGateway({ agentcore, links, removeObject, objects, whoIs, stripe = null, now = Date.now, plans = PLANS, teamPlan = TEAM, termsVersion = TERMS_VERSION, storageBytes = STORAGE_BYTES, log = () => {},
+  // The phone's replies with the computer shut (./phone.mjs): { db, runFiles, sendPush }.
+  phone = null,
+  // The database (./phone.mjs supabaseRest), where who is subscribed is read
+  // by the people it is about. Without it the cloud runs as it always has.
+  db = null,
+  // The team someone is on, { id, createdAt, members, owners }, or null. Without it nobody is on a team.
+  teams = null,
+  ledgerWriteMs = LEDGER_WRITE_MS, noticeWriteMs = NOTICE_WRITE_MS }) {
+  const termsRefusal = () => new Refusal(403, 'terms', `accept the terms of ${termsVersion} first`, { terms: termsVersion });
+  const personKey = (person) => `ledger/people/${person}.json`;
+  const deviceKey = (key) => `ledger/devices/${sha256(key)}.json`;
+  const SWITCH = 'ledger/switch.json';
+  const fresh = () => ({ plan: 'none', live: {}, used: {}, stopping: [], unrecorded: [] });
+  const planOf = (rec) => plans[rec.plan] || plans.none;
+  const revOf = (rec) => rec.planRev ?? 0;
+  // A plan set by hand has no subscription behind it, so nothing to change or
+  // cancel on Stripe; no plan is nobody's to bill.
+  const whoBills = (rec) => (PAYING.has(rec.stripe?.status) ? 'stripe' : planOf(rec).agents ? 'given' : null);
+  // A record written before the database held plans has no revision, so the
+  // first sweep after this shipped puts every plan there.
+  const behindTheDatabase = (rec) => !!db && (rec.planWrote?.rev ?? -1) !== revOf(rec);
+  const readJson = async (key) => { const o = await objects.get(key); return o ? JSON.parse(o.body) : null; };
+  const recOf = async (person) => ({ ...fresh(), ...(await readJson(personKey(person))) });
+
+  const live = (rec, kind) => Object.values(rec.live).filter((s) => s.kind === kind);
+  // A run spends its person's plan or their team's hours (`s.team`).
+  const ownRuns = (rec) => live(rec, 'run').filter((s) => !s.team);
+  // A run going counts against this month only for its time in this month.
+  const usedNow = (rec, t) => (rec.used[month(t)] || 0) + ownRuns(rec).reduce((sum, s) => sum + (t - Math.max(s.at, monthStart(t))) / 1000, 0);
+  // With no plan of their own, runs spend the team's hours or none.
+  const noPlan = (rec) => !planOf(rec).agents;
+  // A plan in its free week runs on the trial's hours, counted once, not the
+  // month's; so does one whose first charge has failed (past_due, never paid).
+  const inTrial = (rec) => !!plans[rec.plan]?.agents
+    && (rec.stripe?.status === 'trialing' || (rec.stripe?.status === 'past_due' && rec.stripe.paid === false));
+  const trialUsedNow = (rec, t) => (rec.trialUsed || 0) + ownRuns(rec).reduce((sum, s) => sum + (t - s.at) / 1000, 0);
+  const ownOver = (rec, t) => (inTrial(rec) ? trialUsedNow(rec, t) >= PLAN_TRIAL.hours * 3600
+    : planOf(rec).hoursPerMonth != null && usedNow(rec, t) >= planOf(rec).hoursPerMonth * 3600);
+  // TEAMS. Each member has hours of their own, as a seat is one person's plan
+  // (the owner, 2026-11-08): the trial's, once, or a seat's, each month. They
+  // are kept in the member's own record, so a member is held to them as to a plan.
+  const teamKey = (id) => `ledger/teams/${id}.json`;
+  const teamAllot = (trial) => (trial ? teamPlan.trialHoursPerMember : teamPlan.hoursPerSeat) * 3600;
+  // The trial's hours are the person's, across every team they have made or
+  // joined: a new team is not a new trial.
+  const teamTrialSpent = (rec) => Object.values(rec.teamTrialUsed || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+  const teamUsedOf = (rec, id, trial, t) => (trial ? teamTrialSpent(rec) : rec.teamUsed?.[id]?.[month(t)] || 0)
+    + live(rec, 'run').filter((s) => (trial ? !!s.trial && !!s.team : s.team === id && !s.trial)).reduce((sum, s) => sum + (t - (trial ? s.at : Math.max(s.at, monthStart(t)))) / 1000, 0);
+  // A team's run ends once its person's own hours are spent; the sweep ends it when the trial or the team does.
+  const runOver = (rec, s, t) => (s.team ? teamUsedOf(rec, s.team, !!s.trial, t) >= teamAllot(!!s.trial) : noPlan(rec) || ownOver(rec, t));
+  // `people`: every member's own use, for the owner's page; a start needs only this person's.
+  // A TEAM PAYS FOR THE PEOPLE ON IT: one seat when it starts, one more when
+  // somebody accepts an invitation, one fewer when somebody leaves. Stripe is
+  // told when the two differ and its webhook writes the new count. A team asks
+  // at most once in ten minutes, so a Stripe that is down is not asked on
+  // every call, and what it said is logged.
+  const seatsAsked = new Map();
+  const SEATS_ASK_GAP_MS = 10 * 60_000;
+  async function seatsFollowMembers(teamId, bill, seats, members) {
+    const want = Math.max(1, members);
+    if (!stripe?.seats || !seats || !bill.stripe?.subscription || want === seats) return;
+    const t = now();
+    if (t - (seatsAsked.get(teamId) ?? -Infinity) < SEATS_ASK_GAP_MS) return;
+    seatsAsked.set(teamId, t);
+    try {
+      await stripe.seats(bill.stripe.subscription, want);
+      log(`team ${teamId} has ${want} ${want === 1 ? 'person' : 'people'} and paid for ${seats} seats, so Stripe was told ${want}`);
+    } catch (err) {
+      log(`team ${teamId} has ${want} people and pays for ${seats} seats, and Stripe would not change it: ${err?.message || err}`);
+    }
+  }
+
+  async function teamNow(person, t, { people = false } = {}) {
+    if (!teams) return null;
+    const team = await teams(person);
+    if (!team?.id || !Array.isArray(team.members)) return null;
+    const bill = (await readJson(teamKey(team.id))) || {};
+    // A trial's subscription can reach past_due never having been charged;
+    // a record from before `paid` was kept is taken as paid.
+    const neverPaid = bill.stripe?.status === 'past_due' && bill.stripe.paid === false;
+    const seats = bill.plan === 'team' && PAYING.has(bill.stripe?.status) && !neverPaid ? Math.max(0, Math.floor(Number(bill.seats)) || 0) : 0;
+    const endsAt = Number(team.createdAt) + teamPlan.trialDays * DAY_MS;
+    // A card taken in the trial is not yet a charge: its seats wait for `active`,
+    // and a late charge after the free days keeps the trial rather than nothing.
+    const trial = seats ? bill.stripe.status === 'trialing' : t < endsAt;
+    if (!seats && !trial) return null;
+    const members = team.members.filter((m) => PERSON.test(m));
+    await seatsFollowMembers(team.id, bill, seats, members.length);
+    const tm = {
+      id: team.id, trial, seats, endsAt: trial ? endsAt : null, members: members.length, owner: (team.owners || []).includes(person),
+      seconds: teamAllot(trial),
+    };
+    if (!people) return tm;
+    const recs = await Promise.all(members.map(async (m) => [m, m === person ? null : await recOf(m).catch(() => fresh())]));
+    return { ...tm, people: recs.map(([m, rec]) => ({ id: m, rec })) };
+  }
+  // A team's paid seat keeps files as Pro does; a trial keeps none.
+  const filesCapOf = (rec, tm) => {
+    const own = planOf(rec).filesGB || 0;
+    const seat = tm && !tm.trial && tm.seats ? teamPlan.filesGBPerSeat || 0 : 0;
+    return Math.max(own, seat) * 2 ** 30;
+  };
+  // A team that cannot be read is no team for this start; the sweep leaves its runs alone.
+  const teamOrNone = (person, t, opts) => teamNow(person, t, opts).catch((err) => { log(`could not read ${person}'s team: ${err?.message || err}`); return null; });
+  const teamLeft = (tm, rec, t) => !!tm && teamUsedOf(rec, tm.id, tm.trial, t) < tm.seconds;
+  const teamRunning = (tm, rec) => live(rec, 'run').filter((s) => s.team === tm.id).length;
+
+  // Ending a session in the ledger: its time charged to each month it ran
+  // in, and, in the same write, its stop and its record owed. `update` makes
+  // both once the write has landed; the sweep makes whatever it could not.
+  function end(rec, ctx, sid, at, why) {
+    const s = rec.live[sid];
+    delete rec.live[sid];
+    rec.retired = { ...(rec.retired || {}), [sid]: at };
+    const charged = s.kind === 'run' && why !== 'not-started';
+    if (charged && s.team && s.trial) rec.teamTrialUsed = { ...rec.teamTrialUsed, [s.team]: (rec.teamTrialUsed?.[s.team] || 0) + Math.max(0, (at - s.at) / 1000) };
+    else if (charged && s.team) {
+      const byMonth = { ...rec.teamUsed?.[s.team] };
+      for (const [m, secs] of secondsByMonth(s.at, at)) byMonth[m] = (byMonth[m] || 0) + secs;
+      rec.teamUsed = { ...rec.teamUsed, [s.team]: byMonth };
+    } else if (charged) {
+      for (const [m, secs] of secondsByMonth(s.at, at)) rec.used[m] = (rec.used[m] || 0) + secs;
+      if (inTrial(rec)) rec.trialUsed = (rec.trialUsed || 0) + Math.max(0, (at - s.at) / 1000);
+    }
+    if (!stoppingOf(rec).some((e) => e.sid === sid)) rec.stopping = [...stoppingOf(rec), { sid, tries: 0 }];
+    if (charged) {
+      rec.unrecorded = [...(rec.unrecorded || []), {
+        key: `ledger/runs/${ctx.person}/${month(at)}/${sid}-${s.at}.json`,
+        sessionId: sid, runId: s.runId, startedAt: s.at, endedAt: at, seconds: Math.max(0, Math.round((at - s.at) / 1000)), why, ...(s.team ? { team: s.team } : {}),
+      }];
+    }
+    ctx.ended.push(sid);
+  }
+  // Whatever has outlived its ceiling ends at that ceiling; once the month's
+  // hours are spent, every run ends.
+  function settle(rec, ctx, t) {
+    rec.retired = Object.fromEntries(Object.entries(rec.retired || {}).filter(([, at]) => t - at < RETIRED_MS));
+    for (const [sid, s] of Object.entries(rec.live)) if (t - s.at >= ceilingOf(s)) end(rec, ctx, sid, s.at + ceilingOf(s), 'ceiling');
+    for (const [sid, s] of Object.entries(rec.live)) if (s.kind === 'run' && runOver(rec, s, t)) end(rec, ctx, sid, t, 'hours');
+  }
+  const needsSettling = (rec, t) => Object.values(rec.live).some((s) => t - s.at >= ceilingOf(s)) || live(rec, 'run').some((s) => runOver(rec, s, t));
+
+  // Read, change and write one person's record; a write that lost a race
+  // reads again, so two starts can never both take the last agent. Every
+  // start, finish and stop of theirs queues on this one object, so a lost race
+  // waits a random, growing while and tries again until a deadline, on the
+  // real clock since `now` can be one a test holds still. `once` is for a
+  // write the sweep makes again anyway: one that loses its race is let go.
+  async function update(person, change, { once = false, waitMs = ledgerWriteMs } = {}) {
+    const until = Date.now() + waitMs;
+    for (let lost = 0; lost === 0 || Date.now() < until; lost += 1) {
+      if (lost && once) return undefined;
+      if (lost) await new Promise((r) => setTimeout(r, Math.random() * Math.min(4000, 10 * 2 ** Math.min(lost, 9))));
+      const cur = await objects.get(personKey(person));
+      const rec = { ...fresh(), ...(cur ? JSON.parse(cur.body) : {}) };
+      const ctx = { ended: [], person };
+      const was = rec.plan;
+      const out = change(rec, ctx);
+      // Every plan change counts, wherever it came from, so the database is
+      // told about all of them and never about a write that lost its race.
+      const moved = rec.plan !== was;
+      if (moved) rec.planRev = revOf(rec) + 1;
+      try {
+        await objects.put(personKey(person), JSON.stringify(rec), cur ? { ifMatch: cur.etag } : { ifNoneMatch: '*' });
+      } catch (err) {
+        if (err?.conflict) continue;
+        throw err;
+      }
+      if (ctx.ended.length) await settleOwed(person, rec, ctx.ended);
+      if (moved) await tellTheDatabase(person, rec);
+      return out;
+    }
+    throw new Error('the ledger kept changing under this write');
+  }
+
+  // WHO IS SUBSCRIBED, WHERE THE PERSON IT IS ABOUT CAN READ IT. The ledger
+  // above is still the one a run start reads, in the write that counts the
+  // runs against the plan, so nothing a run needs waits on the database. This
+  // copy carries the plan's own revision, and the sweep writes it again while
+  // the two disagree, so a write the database refused is not lost.
+  async function tellTheDatabase(person, rec) {
+    if (!db) return;
+    const rev = revOf(rec);
+    try {
+      await db.writePlan(person, { plan: rec.plan, source: whoBills(rec), rev, at: now() });
+      await update(person, (r) => { if (revOf(r) === rev) r.planWrote = { rev, at: now() }; });
+    } catch (err) {
+      const tries = await update(person, (r) => {
+        const n = (r.planWrote?.tries ?? 0) + 1;
+        r.planWrote = { rev: r.planWrote?.rev ?? -1, tries: n, at: now() };
+        return n;
+      }).catch(() => null);
+      log(`the database has not taken ${person}'s plan of ${rec.plan}${tries ? ` (try ${tries}${tries >= PLAN_TELL_TRIES ? ', behind for an hour now' : ''})` : ''}: ${err?.message || err}`);
+    }
+  }
+
+  // A plan the owner asked for in the database (`cloud_plans.give`), taken up
+  // here so giving someone a plan needs no AWS sign-in. One that is no plan is
+  // said and cleared, so it is not read again every sweep.
+  async function takeTheGiven() {
+    if (!db) return;
+    for (const row of (await db.plansGiven()) ?? []) {
+      const person = String(row?.person || '').toLowerCase();
+      const give = String(row?.give ?? '');
+      try {
+        if (!PERSON.test(person)) { log(`the database asks for ${give} for ${row?.person}, who is nobody`); continue; }
+        if (!Object.hasOwn(plans, give) || plans[give].hoursPerMonth == null) {
+          log(`the database asks for ${give} for ${person}, which is no plan`);
+        } else if (await update(person, (rec) => { const was = rec.plan; rec.plan = give; return rec.plan !== was; })) {
+          log(`${person} is on ${give}, as the database asked`);
+        }
+        await db.takeGive(person, give);
+      } catch (err) {
+        log(`could not give ${person} ${give}: ${err?.message || err}`);
+      }
+    }
+  }
+
+  // Make the stops and write the records a write owed, then let go of the
+  // ones made. `only` limits it to the sessions one write ended.
+  async function settleOwed(person, rec, only = null) {
+    const stops = stoppingOf(rec).filter((e) => !only || only.includes(e.sid));
+    const records = (rec.unrecorded || []).filter((r) => !only || only.includes(r.sessionId));
+    const written = new Set();
+    for (const r of records) {
+      const { key, ...record } = r;
+      try { await objects.put(key, JSON.stringify(record)); written.add(key); } catch (err) { log(`no record of ${r.sessionId} yet: ${err?.message || err}`); }
+    }
+    const stopped = new Set();
+    for (const e of stops) if (await stopSession(person, e.sid)) stopped.add(e.sid);
+    if (!written.size && !stopped.size) return { stops, stopped };
+    // Making a stop or a record twice is harmless, so the sweep clears what this misses.
+    await update(person, (r) => {
+      r.stopping = stoppingOf(r).filter((e) => !stopped.has(e.sid));
+      r.unrecorded = (r.unrecorded || []).filter((x) => !written.has(x.key));
+    }, { once: true });
+    return { stops, stopped };
+  }
+  // Older records kept bare session names.
+  const stoppingOf = (rec) => (rec.stopping || []).map((e) => (typeof e === 'string' ? { sid: e, tries: 0 } : e));
+  async function owedStop(person, sid) {
+    if (await stopSession(person, sid)) return;
+    await update(person, (rec) => { if (!stoppingOf(rec).some((e) => e.sid === sid)) rec.stopping = [...stoppingOf(rec), { sid, tries: 0 }]; });
+  }
+
+  // A session AWS says is not there is as stopped as it gets.
+  async function stopSession(person, sid) {
+    try { await agentcore.stop(`u-${person}-${sid}`); return true; } catch (err) {
+      if (notThere(err)) return true;
+      log(`could not stop ${sid}: ${err?.message || err}`);
+      return false;
+    }
+  }
+
+  function summary(rec, t, tm = null) {
+    const plan = planOf(rec);
+    return {
+      plan: plans[rec.plan] ? rec.plan : 'none', unlimited: !!plan.unlimited, agents: plan.unlimited ? null : plan.agents, hoursPerMonth: plan.hoursPerMonth, running: live(rec, 'run').length, usedSeconds: rec.used[month(t)] || 0, month: month(t),
+      billing: whoBills(rec),
+      filesCap: filesCapOf(rec, tm),
+      terms: { accepted: rec.terms?.version ?? null, current: termsVersion },
+      ...(inTrial(rec) ? { trial: { hours: PLAN_TRIAL.hours, usedSeconds: Math.min(PLAN_TRIAL.hours * 3600, Math.round(trialUsedNow(rec, t))) } } : {}),
+      ...(stripe && !rec.stripe?.subscription ? { trialOffer: { days: PLAN_TRIAL.days, hours: PLAN_TRIAL.hours } } : {}),
+      // Hours and agents are this person's own; `people` is every member's, this one's included.
+      ...(tm ? { team: {
+        trial: tm.trial, endsAt: tm.endsAt, seats: tm.seats, members: tm.members, owner: tm.owner, agents: null, running: teamRunning(tm, rec),
+        hours: tm.seconds / 3600, usedSeconds: Math.min(tm.seconds, Math.round(teamUsedOf(rec, tm.id, tm.trial, t))),
+        ...(tm.people ? { people: tm.people.map(({ id, rec: r }) => {
+          const of = r ?? rec;
+          return { id, usedSeconds: Math.min(tm.seconds, Math.round(teamUsedOf(of, tm.id, tm.trial, t))), running: teamRunning(tm, of) };
+        }) } : {}),
+      } } : {}),
+    };
+  }
+
+  // Which hours a run spends: the person's plan, else their team's while it has a trial or seats.
+  const paysFor = (rec, team) => (!noPlan(rec) ? 'own' : team ? 'team' : 'none');
+
+  // Why a run spending these hours cannot start now, or null when it can.
+  function paysRefusal(rec, plan, pays, team, t) {
+    if (pays === 'own') {
+      if (ownOver(rec, t)) {
+        return { ok: false, error: 'hours', message: inTrial(rec)
+          ? `Your ${PLAN_TRIAL.hours} trial hours are used. Start ${rec.plan[0].toUpperCase()}${rec.plan.slice(1)} now for its ${plan.hoursPerMonth.toLocaleString('en-US')} hours a month.`
+          : `This month's ${plan.hoursPerMonth} cloud hours are used.` };
+      }
+      if (ownRuns(rec).length >= plan.agents) {
+        return { ok: false, error: 'agents', message: plan.unlimited ? `${plan.agents} cloud agents are running, the most one account can run at once.` : `All ${plan.agents} of your cloud agents are running.` };
+      }
+    } else if (pays === 'team') {
+      if (!teamLeft(team, rec, t)) {
+        const h = team.seconds / 3600;
+        const next = !team.trial ? ''
+          : team.seats ? ` Your team's ${teamPlan.hoursPerSeat} hours each start when the trial ends.`
+            : team.owner ? ' Pay for the team on Plan and Billing to keep running agents there.' : ' Your team\'s owner can pay for the team to keep running agents there.';
+        return { ok: false, error: 'hours', message: `${team.trial ? `Your ${h} trial hours` : `This month's ${h} cloud hours`} are used.${next}` };
+      }
+    } else {
+      return { ok: false, error: 'plan', message: 'Choose a cloud plan to run agents there.' };
+    }
+    return null;
+  }
+
+  // Take a place for a session that is starting, or say why there is none.
+  function reserve(rec, ctx, sid, kind, runId, t, { paused, team = null }) {
+    settle(rec, ctx, t);
+    const was = rec.live[sid];
+    // The same start asked again, because its answer was lost, is the same
+    // place. Anything else on a live session would run on that place: a run
+    // on a sign-in's, which counts nothing, or a second run on a first's.
+    if (was) return was.kind === kind && was.runId === (runId ?? null) ? { ok: true, nonce: was.nonce } : { ok: false, error: 'busy', message: 'this session is running something else' };
+    // A stop owed to this session, or a late one, would land on whatever
+    // started here next.
+    if (stoppingOf(rec).some((e) => e.sid === sid) || rec.retired?.[sid] !== undefined) return { ok: false, error: 'busy', message: 'this session has ended; a new run takes a new one' };
+    // Changed terms hold back what begins something new; a run going finishes.
+    if (rec.terms?.version !== termsVersion) return { ok: false, error: 'terms', terms: termsVersion, message: `accept the terms of ${termsVersion} first` };
+    // Which hours this run spends: the person's plan, then their team's.
+    let pays = null;
+    if (kind === 'run') {
+      const plan = planOf(rec);
+      if (paused) return { ok: false, error: 'paused', message: 'The cloud is not starting new runs right now.' };
+      pays = paysFor(rec, team);
+      const refusal = paysRefusal(rec, plan, pays, team, t);
+      if (refusal) return refusal;
+    } else if (live(rec, 'signin').length >= SIGNINS_AT_ONCE) {
+      return { ok: false, error: 'signins', message: `${SIGNINS_AT_ONCE} sign-ins are already waiting.` };
+    }
+    const nonce = crypto.randomUUID();
+    rec.live[sid] = { kind, runId: typeof runId === 'string' ? runId : null, at: t, nonce, ...(pays === 'team' ? { team: team.id, trial: team.trial } : {}) };
+    return { ok: true, nonce, fresh: true };
+  }
+
+  async function loginLink(person, value, op) {
+    const key = typeof value === 'string' && value.startsWith(LOGIN_NAME) ? value.slice(LOGIN_NAME.length) : null;
+    const scoped = key?.startsWith('logins/') ? scopedKey(person, key) : null;
+    if (!scoped) throw bad('a sign-in is named, never linked');
+    return links[op](scoped, LOGIN_LINK_SECONDS);
+  }
+
+  // A call bigger than Lambda takes was put in the person's own calls; read it once.
+  async function relayedCall(person, payloadKey) {
+    const scoped = typeof payloadKey === 'string' && CALL_KEY.test(payloadKey) ? scopedKey(person, payloadKey) : null;
+    const size = scoped ? await objects.head(scoped) : null;
+    if (!size) throw bad('no such call');
+    if (size.size > RELAYED_CALL_LIMIT) { await objects.del(scoped).catch(() => {}); throw new Refusal(413, 'too-large', 'that call is too large'); }
+    const found = await objects.get(scoped);
+    await objects.del(scoped).catch(() => {});
+    try { return JSON.parse(found.body); } catch { throw bad('the call is not JSON'); }
+  }
+
+  // An answer bigger than Lambda gives goes the same way back.
+  async function relayAnswer(person, answer) {
+    const text = JSON.stringify(answer);
+    if (Buffer.byteLength(text) <= RELAY_BYTES) return answer;
+    const key = `runs/calls/${crypto.randomUUID()}.json`;
+    const scoped = scopedKey(person, key);
+    await objects.put(scoped, text);
+    return { relayed: { key, url: await links.get(scoped, 15 * 60) } };
+  }
+
+  async function invoke(person, data) {
+    const { sessionId } = data;
+    if (typeof sessionId !== 'string' || !SESSION.test(sessionId)) throw bad('the session name is not plain letters, digits and dashes');
+    const payload = data.payloadKey !== undefined ? await relayedCall(person, data.payloadKey) : data.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw bad('no payload');
+    const sent = { ...payload };
+    if (sent.login && typeof sent.login === 'object') sent.login = { ...sent.login, url: await loginLink(person, sent.login.url, 'get') };
+    // What a run carries besides its own login, each named the same way. One
+    // that names nothing of this person's is left out; the run starts without it.
+    const linked = async (list) => (await Promise.all(list.map(async (x) => {
+      try { return { ...x, url: await loginLink(person, x?.url, 'get') }; } catch { return null; }
+    }))).filter(Boolean);
+    if (Array.isArray(sent.also)) sent.also = await linked(sent.also);
+    if (Array.isArray(sent.keys)) sent.keys = await linked(sent.keys);
+    // A saved key handed to a run while it goes (main/cloud/key-asks.mts), and never any other sign-in.
+    if (sent.action === 'files' && Array.isArray(sent.files) && sent.files.some((f) => f?.key !== undefined)) {
+      sent.files = await Promise.all(sent.files.map(async (f) => {
+        if (f?.key === undefined) return f;
+        if (typeof f.url !== 'string' || !f.url.startsWith(LOGIN_NAME) || !isKeyObject(f.url.slice(LOGIN_NAME.length))) throw bad('a key handed to a run is one of the saved keys');
+        return { ...f, url: await loginLink(person, f.url, 'get') };
+      }));
+    }
+    if ('loginUrl' in sent) sent.loginUrl = await loginLink(person, sent.loginUrl, 'get');
+    if ('saveUrl' in sent) {
+      if (!SAVES_A_SIGNIN.has(sent.action)) throw bad('a sign-in is saved only by a sign-in');
+      sent.saveUrl = await loginLink(person, sent.saveUrl, 'put');
+    }
+    const kind = Object.hasOwn(STARTS, sent.action) ? STARTS[sent.action] : null;
+    if (kind && (typeof sent.runId !== 'string' || !RUN_ID.test(sent.runId))) throw bad('a run\'s id is plain letters, digits, dots and dashes');
+    let nonce;
+    let freshPlace = false;
+    if (kind) {
+      const sw = kind === 'run' ? await readJson(SWITCH) : null;
+      const team = kind === 'run' ? await teamOrNone(person, now()) : null;
+      const verdict = await update(person, (rec, ctx) => reserve(rec, ctx, sessionId, kind, sent.runId, now(), { paused: !!sw?.paused, team }));
+      if (!verdict.ok) return verdict;
+      ({ nonce } = verdict);
+      freshPlace = !!verdict.fresh;
+    } else {
+      // AgentCore makes a machine for any session it is asked about, so only
+      // a session this person started, and has not ended, is asked.
+      const rec = await recOf(person);
+      const t = now();
+      if (needsSettling(rec, t)) await update(person, (r, ctx) => settle(r, ctx, t));
+      const s = (needsSettling(rec, t) ? await recOf(person) : rec).live[sessionId];
+      if (!s) return { ok: false, error: 'no-run' };
+      ({ nonce } = s);
+    }
+    let endedHere = false;
+    const endIf = async (why) => {
+      endedHere = await update(person, (rec, ctx) => {
+        if (rec.live[sessionId]?.nonce !== nonce) return false;
+        end(rec, ctx, sessionId, now(), why);
+        return true;
+      });
+    };
+    let answer;
+    try {
+      if (kind === 'run') {
+        const run = (await recOf(person)).live[sessionId];
+        if (run?.nonce === nonce) await phoneStatus?.watch(person, sessionId, sent.runId, sent.phone, run.at);
+      }
+      answer = await agentcore.invoke(`u-${person}-${sessionId}`, sent);
+    } catch (err) {
+      if (freshPlace) await endIf('not-started');
+      throw new Refusal(502, 'cloud', `the cloud did not answer: ${err?.message || err}`);
+    }
+    if (freshPlace && answer?.ok === false) await endIf('not-started');
+    else if (saysFailed(answer)) await endIf('failed');
+    // Asking a session makes it exist. One that a stop or a finish ended
+    // while this call was on its way is stopped again, now that it is there.
+    if (!endedHere && (await recOf(person)).live[sessionId]?.nonce !== nonce) await owedStop(person, sessionId);
+    return relayAnswer(person, answer);
+  }
+
+  async function stop(person, { sessionId }) {
+    if (typeof sessionId !== 'string' || !SESSION.test(sessionId)) throw bad('the session name is not plain letters, digits and dashes');
+    const was = await update(person, (rec, ctx) => {
+      const t = now();
+      settle(rec, ctx, t);
+      if (!rec.live[sessionId]) return false;
+      end(rec, ctx, sessionId, t, 'stopped');
+      return true;
+    });
+    // Ending it in the ledger stopped it; one the ledger had already let go is stopped all the same.
+    if (!was) await stopSession(person, sessionId);
+    return { ok: true };
+  }
+
+  async function weighFiles(person, t) {
+    const { items, truncated } = await objects.sizes(`files/u-${person}/`, { max: STORAGE_LIST_MAX });
+    const bytes = items.reduce((sum, o) => sum + o.size, 0);
+    const there = new Set(items.map((o) => o.key));
+    return update(person, (r) => {
+      r.files = { ...r.files, at: t, bytes, count: items.length, truncated };
+      // A file that landed is in the weight now, so its link stops counting.
+      if (r.filePuts) r.filePuts = Object.fromEntries(Object.entries(r.filePuts).filter(([k, p]) => !there.has(k) && p.until > t));
+      return r.files;
+    });
+  }
+
+  async function filesNow(person, rec) {
+    const t = now();
+    const cap = filesCapOf(rec, await teamOrNone(person, t));
+    const files = rec.files?.at && t - rec.files.at < FILES_WEIGH_MS ? rec.files : await weighFiles(person, t);
+    return { bytes: files.bytes || 0, count: files.count || 0, cap, full: !!cap && ((files.bytes || 0) >= cap || !!files.truncated) };
+  }
+
+  // Read and deleted on any plan, so a plan that ends can bring its files home.
+  // A link to upload counts against the cap until the sweep weighs what
+  // landed, at the size the app said, which the link is signed for. An older
+  // app says none, and its link counts as the largest one upload can be.
+  async function fileLink(person, rec, { op, key, seconds, size }) {
+    if (!FILE_KEY.test(key)) throw bad('a kept file is files/ and the sha256 of its bytes');
+    const s = Math.min(LINK_MAX_SECONDS, Math.max(60, Number(seconds) || LINK_MAX_SECONDS));
+    const scoped = scopedKey(person, key);
+    const stated = size == null ? null : Number(size);
+    if (op === 'put') {
+      if (stated != null && !(Number.isSafeInteger(stated) && stated >= 0 && stated <= ONE_UPLOAD_MAX)) throw bad(`size is the upload's bytes, at most ${gib(ONE_UPLOAD_MAX)} GB`);
+      const t = now();
+      const cap = filesCapOf(rec, await teamOrNone(person, t));
+      if (!cap) throw new Refusal(403, 'files-plan', `Keeping files in the cloud comes with ${Name} Pro, Plus and Max.`);
+      const until = t + s * 1000;
+      await update(person, (r) => {
+        const others = Object.entries(r.filePuts || {}).filter(([k, p]) => k !== scoped && p.until > t);
+        const pending = others.reduce((sum, [, p]) => sum + p.size, 0);
+        if ((r.files?.bytes || 0) + pending + Math.max(stated ?? 0, 1) > cap || r.files?.truncated) throw new Refusal(403, 'files-full', `Your ${gib(cap)} GB of files in the cloud are full.`, { cap });
+        r.filePuts = Object.fromEntries([...others, [scoped, { size: stated ?? ONE_UPLOAD_MAX, until }]]);
+        r.filesUntil = Math.max(r.filesUntil || 0, until + LINK_NOTE_MS);
+      });
+    }
+    return { url: await (op === 'put' && stated != null ? links.put(scoped, s, stated) : links[op](scoped, s)) };
+  }
+
+  // A plan without files starts a clock; at FILES_LAPSE_DAYS what it kept is
+  // deleted. A team that cannot be read starts nothing.
+  async function sweepFiles(person, t, rec) {
+    if (!rec.files?.bytes && !rec.files?.lapsedAt) return;
+    let tm;
+    try { tm = await teamNow(person, t); } catch (err) { log(`could not read ${person}'s team for their files: ${err?.message || err}`); return; }
+    const cap = filesCapOf(rec, tm);
+    if (cap) {
+      if (rec.files.lapsedAt) await update(person, (r) => { delete r.files.lapsedAt; });
+      if ((rec.filesUntil || 0) > (rec.files.at || 0)) await weighFiles(person, t);
+      return;
+    }
+    if (!rec.files.lapsedAt) { await update(person, (r) => { r.files.lapsedAt = t; }); return; }
+    if (t - rec.files.lapsedAt < FILES_LAPSE_DAYS * DAY_MS) return;
+    const { items } = await objects.sizes(`files/u-${person}/`, { max: STORAGE_LIST_MAX });
+    for (let i = 0; i < items.length; i += 16) await Promise.all(items.slice(i, i + 16).map((o) => objects.del(o.key)));
+    log(`${person}'s plan has kept no files for ${FILES_LAPSE_DAYS} days; deleted their ${items.length} files (${gib(rec.files.bytes)} GB)`);
+    await update(person, (r) => { r.files = { at: t, bytes: 0, count: 0 }; });
+  }
+
+  async function link(person, rec, { op, key, seconds, size }) {
+    if (!['get', 'put', 'head'].includes(op)) throw bad('op is get, put or head');
+    if (typeof key === 'string' && key.startsWith('files/')) return fileLink(person, rec, { op, key, seconds, size });
+    const scoped = scopedKey(person, key);
+    if (!scoped) throw bad('a key is a run\'s or a sign-in\'s, inside your own space');
+    // A sign-in is written only by the sandbox, on a link the server makes. A
+    // key saved for cloud runs is written by the Mac it was pasted on, and
+    // read back by nothing but a run.
+    const savesAKey = op === 'put' && /^logins\/keys\/[A-Za-z0-9-]{8,64}\.json$/.test(key);
+    if (op !== 'head' && key.startsWith('logins/') && !savesAKey) throw new Refusal(403, 'not-yours-to-touch', 'a sign-in is never read or written from a Mac');
+    const s = Math.min(LINK_MAX_SECONDS, Math.max(60, Number(seconds) || LINK_MAX_SECONDS));
+    if (op === 'put') {
+      const team = noPlan(rec) ? await teamOrNone(person, now()) : null;
+      const refusal = noPlan(rec) && paysRefusal(rec, planOf(rec), paysFor(rec, team), team, now());
+      if (refusal && refusal.error !== 'agents') throw new Refusal(403, refusal.error, refusal.message);
+      if (rec.storage?.full) throw new Refusal(403, 'storage', `Your cloud storage is full (${gib(storageBytes)} GB). It empties as runs older than a week are deleted.`);
+      const until = now() + s * 1000;
+      if (!(rec.linksUntil >= until)) await update(person, (r) => { r.linksUntil = Math.max(r.linksUntil || 0, until + LINK_NOTE_MS); });
+    }
+    // A key is a few hundred bytes. A Mac that says its size gets a link
+    // signed for exactly that; one from before sizes were sent is weighed instead.
+    if (savesAKey && size != null) {
+      const n = Number(size);
+      if (!(Number.isSafeInteger(n) && n > 0 && n <= SAVED_KEY_MAX_BYTES)) throw bad('a saved key is at most 64 KB');
+      return { url: await links.put(scoped, s, n) };
+    }
+    return { url: await links[op](scoped, s) };
+  }
+
+  async function remove(person, { key }) {
+    if (typeof key === 'string' && key.startsWith('files/') && !FILE_KEY.test(key)) throw bad('a kept file is files/ and the sha256 of its bytes');
+    const scoped = scopedKey(person, key);
+    if (!scoped) throw bad('a key is a run\'s or a sign-in\'s, inside your own space');
+    await removeObject(scoped);
+    return { ok: true };
+  }
+
+  async function newDevice(headers, body) {
+    const token = bearer(headers);
+    const who = token ? await Promise.resolve(whoIs(token)).catch(() => null) : null;
+    if (!who || !PERSON.test(who.id || '')) throw new Refusal(401, 'signed-out', 'sign in again');
+    const person = who.id.toLowerCase();
+    const rec = await recOf(person);
+    if (rec.disabled) throw new Refusal(403, 'disabled', 'this account cannot use the cloud');
+    // A sign-in sends no agreement: it may make a key only for someone who
+    // already agreed to these terms. Only the page that shows them agrees.
+    if (body.acceptedTerms == null) {
+      if (rec.terms?.version !== termsVersion) throw termsRefusal();
+    } else if (body.acceptedTerms !== termsVersion) throw termsRefusal();
+    else await accept(person);
+    const key = `abk_${crypto.randomBytes(32).toString('base64url')}`;
+    const at = now();
+    await objects.put(deviceKey(key), JSON.stringify({ person, name: String(body.name || '').slice(0, 80), at }), { ifNoneMatch: '*' });
+    if (body.signOutOthers === true) await signOutOthers(person, key, at);
+    log(`a cloud key for ${person}`);
+    return { key };
+  }
+
+  // Every key of this person made before `at` is refused, but `keep`.
+  const signOutOthers = (person, keep, at = now()) => update(person, (rec) => {
+    rec.keysBefore = at;
+    if (keep) rec.keptKey = sha256(keep); else delete rec.keptKey;
+  });
+
+  const accept = (person) => update(person, (rec) => { rec.terms = { version: termsVersion, at: now() }; });
+
+  async function personOf(headers) {
+    const key = bearer(headers);
+    const found = key?.startsWith('abk_') ? await objects.get(deviceKey(key)) : null;
+    if (!found) throw new Refusal(401, 'signed-out', 'this cloud key is not known; sign in again');
+    const device = JSON.parse(found.body);
+    const { person } = device;
+    const t = now();
+    const usedAt = device.usedAt ?? device.at;
+    const ended = async (message) => {
+      await objects.del(deviceKey(key)).catch(() => {});
+      return new Refusal(401, 'signed-out', message);
+    };
+    if (!(t - usedAt <= KEY_IDLE_MS)) throw await ended('this cloud key went unused for 30 days; sign in again');
+    const rec = await recOf(person);
+    if (rec.disabled) throw new Refusal(403, 'disabled', 'this account cannot use the cloud');
+    if (rec.keysBefore && device.at < rec.keysBefore && rec.keptKey !== sha256(key)) throw await ended('this Mac was signed out of the cloud from another Mac; sign in again');
+    if (t - usedAt >= KEY_USE_NOTE_MS) {
+      // Lost to a call that noted it first is as good as noted.
+      await objects.put(deviceKey(key), JSON.stringify({ ...device, usedAt: t }), { ifMatch: found.etag }).catch((err) => { if (!err?.conflict) log(`could not note a cloud key's use: ${err?.message || err}`); });
+    }
+    return { person, key, rec };
+  }
+
+  // BILLING. Stripe's page takes the card; its webhook sets the plan.
+  const billingRefusal = () => new Refusal(503, 'billing', 'Paying for the cloud is not set up on this server.');
+  const sellable = (plan) => typeof plan === 'string' && Object.hasOwn(plans, plan) && plans[plan].agents > 0;
+
+  // ONE CHECKOUT OPEN AT A TIME. A second subscription would bill twice, and
+  // until the webhook lands only the checkout this server opened knows one
+  // was paid: so it is remembered, reopened for the same plan, closed before
+  // another plan's, and a paid one sends you to the billing page.
+  // A team's ledger, read and written as a person's is, so two writes never cross.
+  async function updateTeam(id, change) {
+    for (let i = 0; i < 8; i += 1) {
+      const cur = await objects.get(teamKey(id));
+      const bill = cur ? JSON.parse(cur.body) : {};
+      const out = change(bill);
+      try {
+        await objects.put(teamKey(id), JSON.stringify(bill), cur ? { ifMatch: cur.etag } : { ifNoneMatch: '*' });
+        return out;
+      } catch (err) {
+        if (!err?.conflict) throw err;
+      }
+    }
+    throw new Error('the team\'s ledger kept changing under this write');
+  }
+
+  // THE TEAM'S SEATS, bought by its owner, one a member.
+  async function teamCheckout(person) {
+    const team = teams ? await teams(person) : null;
+    if (!team?.id) throw new Refusal(404, 'no-team', 'You are not on a team.');
+    if (!(team.owners || []).includes(person)) throw new Refusal(403, 'owner', 'Only your team\'s owner can pay for the team. Ask them to choose the team plan.');
+    const bill = (await readJson(teamKey(team.id))) || {};
+    const toBilling = async (customer) => ({ url: await stripe.billing({ customer, returnUrl: `${WEB_APP}/paid?billing=1` }), where: 'billing' });
+    if (PAYING.has(bill.stripe?.status) && bill.stripe.customer) return toBilling(bill.stripe.customer);
+    if (bill.checkout?.id) {
+      const last = await stripe.session(bill.checkout.id).catch(() => null);
+      if (last?.status === 'open') return { url: last.url, where: 'checkout' };
+      // Paid before Stripe's webhook has landed.
+      if (last?.status === 'complete' && last.customer) return toBilling(last.customer);
+    }
+    // Paid for inside the team's free days, the card is charged when they end.
+    const freeDays = teamFreeDays(Number(team.createdAt) + teamPlan.trialDays * DAY_MS, now());
+    const trialEnd = freeDays ? now() + freeDays * DAY_MS : null;
+    const made = await stripe.checkout({ person, plan: 'team', team: team.id, quantity: Math.max(1, team.members.length), customer: bill.stripe?.customer, trialEnd, successUrl: `${WEB_APP}/paid?plan=team`, cancelUrl: `${WEB_APP}/paid?cancelled=1` });
+    await updateTeam(team.id, (b) => { b.checkout = { id: made.id, url: made.url, by: person, at: now() }; });
+    return { url: made.url, where: 'checkout' };
+  }
+
+  async function checkout(person, { plan }) {
+    if (!stripe) throw billingRefusal();
+    if (plan === 'team') return teamCheckout(person);
+    if (!sellable(plan)) throw bad('choose pro, plus or max');
+    const toBilling = async (customer) => ({ url: await stripe.billing({ customer, returnUrl: `${WEB_APP}/paid?billing=1` }), where: 'billing' });
+    const rec = await recOf(person);
+    // The plan in its trial, asked for again, starts now: Stripe ends the trial
+    // and charges at once. A card that declines is mended on the billing page.
+    if (inTrial(rec) && rec.plan === plan && rec.stripe.subscription) {
+      const sub = await stripe.endTrial(rec.stripe.subscription);
+      if (sub?.status !== 'active') return toBilling(rec.stripe.customer);
+      await update(person, (r) => { if (r.stripe?.subscription === sub.id) r.stripe = { ...r.stripe, status: 'active', paid: true, at: now() }; });
+      log(`${person} started ${plan} before its trial ended`);
+      return { where: 'started' };
+    }
+    // A change of plan is confirmed on the billing page, opened at that change.
+    if (PAYING.has(rec.stripe?.status)) {
+      if (rec.plan === plan || !rec.stripe.subscription) return toBilling(rec.stripe.customer);
+      try {
+        return { url: await stripe.billing({ customer: rec.stripe.customer, returnUrl: `${WEB_APP}/paid?plan=${plan}`, switchTo: { subscription: rec.stripe.subscription, plan } }), where: 'billing' };
+      } catch (err) {
+        log(`switching ${person} to ${plan} on Stripe's page failed, so the billing page opens instead: ${err.message}`);
+        return toBilling(rec.stripe.customer);
+      }
+    }
+    // Open, paid or gone: what a checkout this server opened is now.
+    const settle = async (open, keep) => {
+      if (!open?.id) return null;
+      let s = await stripe.session(open.id).catch(() => null);
+      if (s?.status === 'open' && keep) return { url: s.url, where: 'checkout' };
+      if (s?.status === 'open') s = await stripe.expire(open.id).catch(() => stripe.session(open.id).catch(() => null));
+      return s?.status === 'complete' && s.customer ? toBilling(s.customer) : null;
+    };
+    const was = await settle(rec.checkout, rec.checkout?.plan === plan);
+    if (was) return was;
+    // The free week is for someone who never had a subscription.
+    const trialEnd = rec.stripe?.subscription ? null : now() + PLAN_TRIAL.days * DAY_MS;
+    const made = await stripe.checkout({ person, plan, customer: rec.stripe?.customer, trialEnd, successUrl: `${WEB_APP}/paid?plan=${plan}`, cancelUrl: `${WEB_APP}/paid?cancelled=1` });
+    // Another press may have opened one while this one was being made.
+    let raced = null;
+    await update(person, (r) => {
+      raced = r.checkout?.id && r.checkout.id !== rec.checkout?.id ? r.checkout : null;
+      if (raced?.plan === plan) return;
+      r.checkout = { id: made.id, url: made.url, plan, at: now() };
+    });
+    if (raced?.plan === plan) {
+      await stripe.expire(made.id).catch(() => {});
+      return (await settle(raced, true)) ?? { url: raced.url, where: 'checkout' };
+    }
+    if (raced) await settle(raced, false);
+    return { url: made.url, where: 'checkout' };
+  }
+
+  async function billing(person) {
+    if (!stripe) throw billingRefusal();
+    let { customer } = (await recOf(person)).stripe || {};
+    // An owner who pays for the team and not for themselves manages the team's.
+    if (!customer && teams) {
+      const team = await teams(person);
+      if (team?.id && (team.owners || []).includes(person)) customer = (await readJson(teamKey(team.id)))?.stripe?.customer;
+    }
+    if (!customer) throw new Refusal(404, 'no-billing', 'You have not paid for a cloud plan yet.');
+    return { url: await stripe.billing({ customer, returnUrl: `${WEB_APP}/paid?billing=1` }) };
+  }
+
+  // An event names a subscription; what it says is read from Stripe, so one
+  // that arrives late or out of order lands on how things stand now.
+  async function stripeEvent(headers, raw) {
+    if (!stripe) throw billingRefusal();
+    if (!stripe.signed(raw, headers['stripe-signature'] || headers['Stripe-Signature'], now())) throw bad('not signed by Stripe');
+    let event;
+    try { event = JSON.parse(raw); } catch { throw bad('the body is not JSON'); }
+    const o = event?.data?.object || {};
+    const id = event?.type === 'checkout.session.completed' ? o.subscription : String(event?.type || '').startsWith('customer.subscription.') ? o.id : null;
+    if (typeof id !== 'string' || !id) return { received: true };
+    const sub = await stripe.subscription(id);
+    if (sub?.metadata?.team) return teamEvent(sub);
+    const person = String(sub?.metadata?.person || '').toLowerCase();
+    if (!PERSON.test(person)) { log(`subscription ${id} names nobody`); return { received: true }; }
+    const pays = PAYING.has(sub.status);
+    const plan = pays ? planOfLookupKey(sub.items?.data?.[0]?.price?.lookup_key) : 'none';
+    if (!sellable(plan) && plan !== 'none') { log(`subscription ${id} is on a price no plan sells`); return { received: true }; }
+    await update(person, (rec) => {
+      // An old subscription ending leaves alone a newer one that pays.
+      if (!pays && rec.stripe?.subscription && rec.stripe.subscription !== sub.id && PAYING.has(rec.stripe.status)) return;
+      // As a team's: a past_due recorded before `paid` was kept is a renewal's retry.
+      const was = rec.stripe?.subscription === sub.id ? rec.stripe : null;
+      const paid = sub.status === 'active' || !!was && (was.paid === true || was.status === 'active' || (was.paid === undefined && was.status === 'past_due'));
+      rec.plan = plan;
+      rec.stripe = { customer: sub.customer, subscription: sub.id, status: sub.status, paid, at: now() };
+      if (pays) delete rec.checkout;
+    });
+    log(`${person} is on ${plan} (Stripe ${sub.status})`);
+    return { received: true };
+  }
+
+  // WHAT THE TEAM'S OWNER SEES OF STRIPE on Plan and Billing: the period, the
+  // next bill, the card, where invoices go and the last few. Anyone else on
+  // the team is told only that the owner pays.
+  async function teamBilling(person) {
+    const team = teams ? await teams(person) : null;
+    if (!team?.id) throw new Refusal(404, 'no-team', 'You are not on a team.');
+    if (!(team.owners || []).includes(person)) return { owner: false };
+    const bill = (await readJson(teamKey(team.id))) || {};
+    const empty = { owner: true, periodStart: null, periodEnd: null, nextAt: null, nextAmount: null, endsAt: null, card: null, email: null, invoices: [] };
+    if (!stripe || !bill.stripe?.customer) return empty;
+    const [sub, customer, invoices] = await Promise.all([
+      bill.stripe.subscription ? stripe.subscriptionWithCard(bill.stripe.subscription).catch(() => null) : null,
+      stripe.customer(bill.stripe.customer).catch(() => null),
+      stripe.invoices(bill.stripe.customer).catch(() => null),
+    ]);
+    const item = sub?.items?.data?.[0];
+    const at = (s) => (Number.isFinite(Number(s)) && Number(s) > 0 ? Number(s) * 1000 : null);
+    // Newer Stripe keeps the period on the item, older on the subscription.
+    const periodStart = at(item?.current_period_start ?? sub?.current_period_start);
+    const periodEnd = at(item?.current_period_end ?? sub?.current_period_end);
+    // Paid with Link there is no card on the method, and "No card yet" was said to someone who had just paid.
+    const method = sub?.default_payment_method ?? customer?.invoice_settings?.default_payment_method ?? null;
+    const card = method?.card ?? (method?.type === 'link' ? { brand: 'Link', last4: '' } : null);
+    // Stripe marks a cancelled plan with the flag, or with an end date and no flag: either way no bill is coming.
+    const ending = PAYING.has(sub?.status) && (!!sub?.cancel_at_period_end || !!at(sub?.cancel_at));
+    const pays = PAYING.has(sub?.status) && !ending;
+    return {
+      ...empty, periodStart, periodEnd,
+      nextAt: pays ? periodEnd : null,
+      nextAmount: pays ? (Math.floor(Number(item?.quantity)) || bill.seats || 0) * teamPlan.dollarsPerSeat : null,
+      endsAt: ending ? (at(sub?.cancel_at) ?? periodEnd) : null,
+      card: card ? { brand: String(card.brand || '').replace(/^./, (c) => c.toUpperCase()), last4: String(card.last4 || '') } : null,
+      email: typeof customer?.email === 'string' ? customer.email : null,
+      invoices: (invoices?.data ?? []).map((i) => ({
+        at: at(i.created), amount: Math.round(Number(i.status === 'paid' ? i.amount_paid : i.amount_due) / 100),
+        status: i.status === 'paid' ? 'paid' : i.attempted ? 'failed' : 'open',
+      })).filter((i) => i.at),
+    };
+  }
+
+  // A team's subscription puts every member on its seats while it pays.
+  async function teamEvent(sub) {
+    const team = String(sub.metadata.team);
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(team)) { log(`subscription ${sub.id} names no team`); return { received: true }; }
+    const pays = PAYING.has(sub.status);
+    const item = sub.items?.data?.[0];
+    if (pays && planOfLookupKey(item?.price?.lookup_key) !== 'team') { log(`subscription ${sub.id} is on a price no team plan sells`); return { received: true }; }
+    await updateTeam(team, (bill) => {
+      // An old subscription ending leaves alone a newer one that pays.
+      if (!pays && bill.stripe?.subscription && bill.stripe.subscription !== sub.id && PAYING.has(bill.stripe.status)) return;
+      // A past_due recorded before `paid` was kept is a renewal's retry.
+      const was = bill.stripe?.subscription === sub.id ? bill.stripe : null;
+      const paid = sub.status === 'active' || !!was && (was.paid === true || was.status === 'active' || (was.paid === undefined && was.status === 'past_due'));
+      bill.plan = pays ? 'team' : 'none';
+      bill.seats = Math.max(0, Math.floor(Number(item?.quantity)) || 0);
+      bill.stripe = { customer: sub.customer, subscription: sub.id, status: sub.status, paid, at: now() };
+      if (pays) delete bill.checkout;
+    });
+    log(`team ${team} is on ${pays ? `${Math.floor(Number(item?.quantity)) || 0} seats` : 'no plan'} (Stripe ${sub.status})`);
+    return { received: true };
+  }
+
+  async function handle({ method, path: asked, headers = {}, body = '' }) {
+    try {
+      const [path, query = ''] = String(asked).split('?');
+      // Where Stripe's pages send people back to, in their browser.
+      if (method === 'GET' && path === '/v1/paid') return { status: 200, type: 'html', body: paidPage(new URLSearchParams(query)) };
+      if (method === 'POST' && path === '/v1/stripe') return { status: 200, body: await stripeEvent(headers, body) };
+      let data = {};
+      if (body) {
+        if (Buffer.byteLength(body) > BODY_LIMIT) throw new Refusal(413, 'too-large', `a call over ${RELAY_BYTES} bytes goes through the bucket`);
+        try { data = JSON.parse(body); } catch { throw bad('the body is not JSON'); }
+        if (!data || typeof data !== 'object') throw bad('the body is not an object');
+      }
+      if (method === 'POST' && path === '/v1/devices') return { status: 200, body: await newDevice(headers, data) };
+      // Asked before anyone has signed in, so the app shows what they accept.
+      if (method === 'GET' && path === '/v1/terms') return { status: 200, body: { terms: termsVersion } };
+      const { person, key, rec } = await personOf(headers);
+      const route = `${method} ${path}`;
+      if (route === 'DELETE /v1/devices') {
+        if (data.others === true) await signOutOthers(person, key);
+        else await objects.del(deviceKey(key));
+        return { status: 200, body: { ok: true } };
+      }
+      if (route === 'POST /v1/terms') {
+        if (data.acceptedTerms !== termsVersion) throw termsRefusal();
+        await accept(person);
+        return { status: 200, body: { ok: true, terms: termsVersion } };
+      }
+      if (route === 'GET /v1/me') {
+        const tm = await teamOrNone(person, now(), { people: true });
+        return { status: 200, body: await update(person, (rec, ctx) => { settle(rec, ctx, now()); return summary(rec, now(), tm); }) };
+      }
+      if (route === 'POST /v1/invoke') return { status: 200, body: await invoke(person, data) };
+      if (route === 'POST /v1/stop') return { status: 200, body: await stop(person, data) };
+      if (route === 'POST /v1/link') return { status: 200, body: await link(person, rec, data) };
+      if (route === 'GET /v1/files') return { status: 200, body: await filesNow(person, rec) };
+      if (route === 'POST /v1/delete') return { status: 200, body: await remove(person, data) };
+      if (route === 'POST /v1/checkout') return { status: 200, body: await checkout(person, data) };
+      if (route === 'POST /v1/billing') return { status: 200, body: await billing(person) };
+      if (route === 'GET /v1/team-billing') return { status: 200, body: await teamBilling(person) };
+      return { status: 404, body: { error: 'not-found' } };
+    } catch (err) {
+      if (err instanceof Refusal) return { status: err.status, body: { error: err.error, message: err.message, ...err.extra } };
+      log(`cloud server: ${err?.stack || err}`);
+      return { status: 500, body: { error: 'server', message: 'the cloud server failed; try again' } };
+    }
+  }
+
+  // An object landed in the bucket. A run's done.json is the run's end.
+  async function objectCreated(key) {
+    const m = /^runs\/u-([0-9a-f-]{36})\/([^/]+)\/done\.json$/.exec(key);
+    if (!m || !PERSON.test(m[1]) || !(await objects.get(personKey(m[1])))) return;
+    await update(m[1], (rec, ctx) => {
+      const t = now();
+      settle(rec, ctx, t);
+      for (const [sid, s] of Object.entries(rec.live)) if (s.kind === 'run' && s.runId === m[2]) end(rec, ctx, sid, t, 'done');
+    }, { waitMs: noticeWriteMs });
+    if (carry) await carry.runEnded(m[1], m[2]).catch((err) => log(`phone: ${err?.message || err}`));
+  }
+
+  // Whether a run could start for this person now, as `reserve` would say,
+  // without taking a place.
+  async function room(person) {
+    const rec = await recOf(person);
+    const t = now();
+    if (rec.disabled) return { ok: false, error: 'disabled' };
+    if (rec.terms?.version !== termsVersion) return { ok: false, error: 'terms' };
+    if ((await readJson(SWITCH))?.paused) return { ok: false, error: 'paused' };
+    const team = noPlan(rec) ? await teamOrNone(person, t) : null;
+    const pays = paysFor(rec, team);
+    const refusal = paysRefusal(rec, planOf(rec), pays, team, t);
+    return refusal ? { ok: false, error: refusal.error } : { ok: true };
+  }
+
+  const carry = phone ? createPhoneCarry({
+    ...phone, links, objects, now, log, scopedKey, room,
+    start: (person, sessionId, payload) => invoke(person, { sessionId, payload }),
+    input: (person, sessionId, payload) => invoke(person, { sessionId, payload }),
+    stop: (person, sessionId) => stop(person, { sessionId }),
+  }) : null;
+  const phoneStatus = phone ? createPhoneRunStatus({
+    db: phone.db, objects, now, log,
+    events: async (person, sessionId, runId, since) => {
+      const page = await invoke(person, { sessionId, payload: { action: 'events', runId, since, peek: true, maxBytes: 64 * 1024 } });
+      return page?.relayed ? readJson(scopedKey(person, page.relayed.key)) : page;
+    },
+    active: async (person, sessionId, runId) => {
+      const r = await recOf(person);
+      const s = r.live[sessionId];
+      return !r.disabled && s?.runId === runId && now() - s.at < ceilingOf(s) && !runOver(r, s, now());
+    },
+  }) : null;
+  const phoneSweep = async () => {
+    if (!carry) return { ok: false, error: 'the phone is not set up on this server' };
+    try { await phoneStatus.sweep(); } catch (err) {
+      log(`phone: could not refresh cloud running status: ${err?.message || err}`);
+    }
+    return carry.sweep();
+  };
+
+  // On a clock, whoever is calling or not: ceilings, spent hours, a done.json
+  // whose notice was missed, and stops AWS did not take.
+  async function sweepOne(person, t, before) {
+    const owedBefore = stoppingOf(before);
+    // Nothing going and nothing owed: read, not written.
+    if (!Object.keys(before.live).length && !owedBefore.length && !(before.unrecorded || []).length) return before;
+    const finished = new Set();
+    for (const s of live(before, 'run')) {
+      if (!s.runId || !RUN_ID.test(s.runId) || t - s.at < DONE_LOOK_AFTER_MS) continue;
+      const there = await objects.head(`runs/u-${person}/${s.runId}/done.json`).catch(() => null);
+      if (there) finished.add(s.runId);
+    }
+    // A team's runs end once its trial is over, it stops paying or the person
+    // leaves it; their own spent hours end them in `settle`. A team that cannot
+    // be read leaves them running until a sweep that can.
+    const teamRuns = live(before, 'run').filter((s) => s.team);
+    let teamDone = false;
+    if (teamRuns.length) {
+      try {
+        const tm = await teamNow(person, t);
+        teamDone = !tm || teamRuns.some((s) => s.team !== tm.id);
+      } catch (err) { log(`could not read ${person}'s team: ${err?.message || err}`); }
+    }
+    const rec = await update(person, (r, ctx) => {
+      settle(r, ctx, t);
+      for (const [sid, s] of Object.entries(r.live)) if (s.kind === 'run' && finished.has(s.runId)) end(r, ctx, sid, t, 'done');
+      if (teamDone) for (const [sid, s] of Object.entries(r.live)) if (s.kind === 'run' && s.team) end(r, ctx, sid, t, 'hours');
+      return r;
+    });
+    // Everything still owed, from this sweep or before it, is tried again; a
+    // stop owed since an earlier sweep that fails again counts a try.
+    await settleOwed(person, await recOf(person));
+    if (owedBefore.length) {
+      await update(person, (r) => {
+        r.stopping = stoppingOf(r).flatMap((e) => {
+          if (!owedBefore.some((x) => x.sid === e.sid)) return [e];
+          if (e.tries + 1 >= STOP_TRIES) { log(`gave up stopping ${person} ${e.sid} after ${STOP_TRIES} sweeps`); return []; }
+          return [{ sid: e.sid, tries: e.tries + 1 }];
+        });
+      });
+    }
+    return rec;
+  }
+
+  // Whoever may have written since the last look (a link that writes was
+  // live after it), or is full, is looked at again every STORAGE_EVERY_MS.
+  async function weighStorage(person, t, rec) {
+    const last = rec.storage?.at || 0;
+    if (t - last < STORAGE_EVERY_MS || !((rec.linksUntil || 0) > last || rec.storage?.full)) return;
+    const { items, truncated } = await objects.sizes(`runs/u-${person}/`, { max: STORAGE_LIST_MAX });
+    const keys = await objects.sizes(`logins/u-${person}/keys/`, { max: STORAGE_LIST_MAX });
+    const keyBytes = keys.items.reduce((sum, o) => sum + o.size, 0);
+    let bytes = items.reduce((sum, o) => sum + o.size, 0) + keyBytes;
+    if (bytes > 2 * storageBytes) {
+      const newest = [...items].sort((x, y) => (y.at > x.at ? 1 : y.at < x.at ? -1 : 0));
+      const gone = [];
+      for (const o of newest) {
+        if (bytes <= 2 * storageBytes || gone.length >= STORAGE_DELETES_AT_ONCE) break;
+        gone.push(o);
+        bytes -= o.size;
+      }
+      for (let i = 0; i < gone.length; i += 16) await Promise.all(gone.slice(i, i + 16).map((o) => objects.del(o.key)));
+      log(`${person} held over twice the ${gib(storageBytes)} GB cap in runs/; deleted the newest ${gone.length}`);
+    }
+    const full = truncated || keys.truncated || bytes >= storageBytes;
+    if (full && !rec.storage?.full) log(`${person}'s cloud storage is full (${gib(bytes)} GB${truncated ? `, over ${STORAGE_LIST_MAX} objects` : ''}); no new links that write`);
+    await update(person, (r) => { r.storage = { at: t, bytes, full }; });
+  }
+
+  // One person who cannot be swept is said and passed; the rest still are.
+  async function sweep() {
+    const t = now();
+    let swept = 0;
+    let behind = 0;
+    try { await takeTheGiven(); } catch (err) { log(`could not read the plans the database asks for: ${err?.message || err}`); }
+    const people = (await objects.list('ledger/people/')).map((k) => k.slice('ledger/people/'.length, -'.json'.length)).filter((p) => PERSON.test(p));
+    for (let i = 0; i < people.length; i += SWEEP_AT_ONCE) {
+      await Promise.all(people.slice(i, i + SWEEP_AT_ONCE).map(async (person) => {
+        try {
+          const rec = await sweepOne(person, t, await recOf(person));
+          await weighStorage(person, t, rec);
+          await sweepFiles(person, t, await recOf(person));
+          if (behindTheDatabase(rec)) { behind += 1; await tellTheDatabase(person, rec); }
+          swept += 1;
+        } catch (err) {
+          log(`could not sweep ${person}: ${err?.message || err}`);
+        }
+      }));
+    }
+    return { people: people.length, swept, ...(behind ? { behind } : {}) };
+  }
+
+  // What the owner does by hand (scripts/cloud-gateway-admin.mjs). A plan
+  // given here lasts until Stripe next says something about this person.
+  async function admin({ do: what, person, plan }) {
+    if (what === 'pause' || what === 'resume') { await objects.put(SWITCH, JSON.stringify({ paused: what === 'pause', at: now() })); return { ok: true }; }
+    if (!PERSON.test(person || '')) throw new Error(`no such person: ${person}`);
+    if (what === 'plan') {
+      if (!Object.hasOwn(plans, plan)) throw new Error(`no such plan: ${plan}`);
+      if (plans[plan].hoursPerMonth == null) throw new Error(`the ${plan} plan has no hours set yet (cloud/gateway/plans.mjs)`);
+      await update(person, (rec) => { rec.plan = plan; });
+    } else if (what === 'disable') {
+      await update(person, (rec, ctx) => {
+        rec.disabled = true;
+        for (const sid of Object.keys(rec.live)) end(rec, ctx, sid, now(), 'disabled');
+      });
+    } else if (what === 'enable') {
+      await update(person, (rec) => { delete rec.disabled; });
+    } else if (what === 'sign-out') {
+      await signOutOthers(person, null);
+    } else {
+      throw new Error(`no such thing to do: ${what}`);
+    }
+    return { ok: true };
+  }
+
+  return { handle, objectCreated, sweep, admin, phoneSweep, room };
+}
+
+/** The page a browser lands on after Stripe's checkout or billing page, with the way back into the app. */
+export function paidPage(query) {
+  const head = paidHeadline(query);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${Name} Cloud</title>
+<style>html{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;background:#f8f8fa;color:#12182a}
+main{display:grid;justify-items:center;gap:28px;padding:24px;text-align:center}h1{margin:0;font-size:30px;font-weight:400;letter-spacing:-.01em}
+a{display:inline-block;padding:9px 18px;border:1px solid #ee6018;border-radius:3px;background:rgba(238,96,24,.1);color:inherit;text-decoration:none}a:hover{background:rgba(238,96,24,.18)}
+@media (prefers-color-scheme:dark){body{background:#1b1918;color:#f0efed}}</style>
+</head><body><main><h1>${head}</h1><a href="${JOIN_SCHEME}://cloud">Back to ${Name}</a></main></body></html>`;
+}
+
+/** The server over plain HTTP, for tests and for running it on one machine. */
+export function gatewayServer(gw) {
+  return http.createServer((req, res) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => { size += c.length; if (size <= BODY_LIMIT) chunks.push(c); });
+    req.on('end', async () => {
+      // As Lambda does: a body over its limit never reaches the function.
+      const u = new URL(req.url, 'http://x');
+      const out = size > BODY_LIMIT ? { status: 413, body: { error: 'too-large' } } : await gw.handle({ method: req.method, path: u.pathname + u.search, headers: req.headers, body: Buffer.concat(chunks).toString('utf8') });
+      res.writeHead(out.status, { 'content-type': out.type === 'html' ? 'text/html; charset=utf-8' : 'application/json' });
+      res.end(out.type === 'html' ? out.body : JSON.stringify(out.body));
+    });
+  });
+}
