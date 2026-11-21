@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+// THE COMMAND. `npx agentbox-app`, and the app is in a browser tab.
+//
+// There is no download, no installer and nothing hosted. This starts the doing
+// half on this machine, binds it to 127.0.0.1, which is the machine's name for
+// itself and is not reachable from anywhere else, and opens a tab at it.
+//
+// The url carries a token that is new every time this runs. That is not about
+// the internet, which cannot see this port at all. It is that a browser will
+// let ANY page you have open make a request to localhost, so without a secret
+// in the url, a web page could quietly drive somebody's agents.
+
+import path from 'node:path';
+import fs from 'node:fs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import './typescript-in-node-modules.mjs';
+
+// Loaded only once the hook above is in: a static import of a .mts is read
+// before any line of this file runs.
+const { bootHeadless, createServer, newToken, picturesTheAppOwns } = await import('../main/serve.mts');
+const { appHome } = await import('../main/store/home.mts');
+const { NO_TERMINAL, ptyIsHere } = await import('../main/pty.mts');
+const { learnShellDataDirs } = await import('../main/shell-path.mts');
+const { startFreezeRecorder } = await import('../main/freeze-recorder.mts');
+const { readHubAddress } = await import('../main/hub-address.mts');
+const { watchNewChatsFor } = await import('../main/new-chats-watch.mts');
+const { osOpenDialog } = await import('../main/os-folder-window.mts');
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const appDir = path.dirname(here);
+
+const args = process.argv.slice(2);
+const flag = (name, fallback) => {
+  const at = args.indexOf(`--${name}`);
+  return at === -1 ? fallback : args[at + 1];
+};
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`
+  agentbox, in a browser tab.
+
+    npx agentbox-app                 start it and open a tab
+    npx agentbox-app --port 7777     ask for a particular port
+    npx agentbox-app --dir ~/work    keep the store somewhere else
+    npx agentbox-app --no-open       start it and print the url instead
+
+  Everything stays on this machine. Nothing is uploaded and nothing is hosted.
+
+  The desktop app is the other way to run it, built from the repository:
+  https://github.com/savannahfeder/agentbox#install
+`);
+  process.exit(0);
+}
+
+// WHERE THE STORE LIVES. A copy run out of npm has no folder of its own to
+// write into, and writing inside node_modules would be thrown away by the next
+// install. The default is appHome(): a dot-folder already on disk, else the
+// XDG data directory on Linux and `~/.agentbox` on macOS, where this command
+// has always kept it. Not the desktop config's default, which on macOS is
+// `~/Agentbox` and would open every existing Mac user on an empty inbox.
+// `--dir` and AGENTBOX_HOME are the escape hatches.
+const dataDir = path.resolve(
+  flag('dir', process.env.AGENTBOX_HOME ?? appHome()),
+);
+// A store has one owner: a machine that is a window onto a hub runs no agents,
+// whichever door it is opened through (main/hub-address.mts).
+const hub = readHubAddress();
+if (hub) {
+  console.error(`This machine names a hub (${hub.url ?? hub.invalid}), so it will not run agents itself.`);
+  process.exit(1);
+}
+fs.mkdirSync(dataDir, { recursive: true });
+
+const dist = path.join(appDir, 'renderer', 'dist');
+if (!fs.existsSync(path.join(dist, 'index.html'))) {
+  console.error(`No built screen at ${dist}.\nFrom a checkout, run: npm run build`);
+  process.exit(1);
+}
+
+// The login folders the shell profile names, read before the first worker can
+// start, as main/main.mts does. The worker scrub keeps CLAUDE_CONFIG_DIR and
+// CODEX_HOME from reaching a worker by inheritance, so without this a copy's
+// workers signed in to ~/.claude and ~/.codex (w-6d8c543a43).
+await learnShellDataDirs();
+// A test copy's tester cannot see a window macOS puts on the owner's screen.
+const booted = await bootHeadless({ dataDir, appDir, userDir: dataDir, osDialog: process.env.AGENTBOX_NO_SYSTEM_WINDOWS ? null : osOpenDialog });
+// What held the thread each time it froze, as the desktop records it.
+startFreezeRecorder({
+  dir: path.join(dataDir, 'memory-log'),
+  appDir,
+  onFreeze: (f) => console.warn(`zero: the app froze for ${f.ms} ms in ${f.where}`),
+});
+// ZERO_NO_SUPERVISOR: the desktop already honors this (main/main.mts). This
+// entry is the same inbox, so a launch that asks for no agents must not start
+// them here either.
+let newChatsWatch = null;
+if (!process.env.ZERO_NO_SUPERVISOR) {
+  // Whoever was signed in to the team last time is signed in again.
+  booted.team?.start().then(() => booted.supervisor.wake?.()).catch((err) => console.warn(`team: ${err.message}`));
+  // AND THE AGENTS' CLOCK, as the desktop starts it (main/main.mts). Without it a
+  // tab only moved work when something woke the supervisor: a queued thread sat
+  // queued and a scheduled one never fired (found 2026-10-01 on a test copy).
+  booted.supervisor.start();
+  // The chats setup's "Keep bringing in new chats" tick asks for.
+  newChatsWatch = watchNewChatsFor({ store: booted.store, config: booted.config, supervisor: booted.supervisor });
+}
+const token = newToken();
+const server = createServer({
+  channels: booted.channels,
+  token,
+  listeners: booted.window.listeners,
+  dist,
+  // The pictures in a thread: a tab cannot open `agentbox-img://`, which only
+  // the desktop window answers, so without this door every local picture is
+  // drawn as missing.
+  files: picturesTheAppOwns(booted),
+});
+
+const wanted = Number(flag('port', 0)) || 0;
+server.listen(wanted, '127.0.0.1', () => {
+  const url = `http://127.0.0.1:${server.address().port}/?token=${token}`;
+  // WHICH OF THE TWO THIS IS. There is a desktop app as well, and somebody who
+  // ran this line expecting that one has to be told here: the README is not
+  // what they are looking at.
+  console.log(`\n  agentbox is running in your browser.\n\n  ${url}\n\n  Store: ${dataDir}\n  The desktop app is built from the repository: https://github.com/savannahfeder/agentbox#install\n  Stop it with control-C.\n`);
+  // The install that skipped node-pty may be one npm cached for this command,
+  // run once and long scrolled past, so this is said at every start.
+  if (!ptyIsHere()) console.log(`  ${NO_TERMINAL}\n`);
+  if (!args.includes('--no-open')) open(url);
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${wanted} is already taken. Leave --port off and one will be picked.`);
+    process.exit(1);
+  }
+  throw err;
+});
+
+// Control-C has to reach the agents, not just this process, or a worker carries
+// on writing to a store nothing is watching.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    console.log('\n  Stopping.');
+    newChatsWatch?.stop();
+    booted.host.app.quit();
+    // The quit count and whatever is still queued, or a copy opened once is
+    // never heard from. `shutdown` rather than `flush`, because flush does not
+    // wait for a count captured a moment ago. The timer below still ends it.
+    const sent = booted.analytics?.enabled ? booted.analytics.shutdown() : null;
+    Promise.resolve(sent).catch(() => {}).finally(() => server.close(() => process.exit(0)));
+    setTimeout(() => process.exit(0), 3000).unref();
+  });
+}
+
+function open(url) {
+  const cmd = process.platform === 'darwin' ? 'open'
+    : process.platform === 'win32' ? 'start'
+    : 'xdg-open';
+  try {
+    spawn(cmd, [url], { detached: true, stdio: 'ignore', shell: process.platform === 'win32' }).unref();
+  } catch {
+    // A machine with no browser to open is a normal way to run this. The url is
+    // already printed above, which is all anybody needs.
+  }
+}

@@ -1,0 +1,39 @@
+// 2026-09-14: move usage and frequently used settings to the sidebar footer.
+// Check expanded/collapsed access, one usage slot, and no placeholder actions.
+//
+// The foot was redrawn on 2026-10-01 and the promise held. approved 2026-10-01
+// (w-e731ca9376, then w-8415594d19): the foot is Feedback (Invite people until
+// w-1b574413db), then Instructions and Settings, then the usage slot, then the
+// signed-in person beside the collapse toggle. The Done place that used to sit
+// down here left the sidebar that day; it is the Done tab on the Inbox page now
+// (StateTabs in renderer/src/threads/Pages.tsx).
+import {createElement} from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {expect,it} from 'vitest';
+import {WorkspaceNavigation} from '../renderer/src/components/WorkspaceNavigation';
+// A made-up person on a made-up team, so the corner row this checks the order
+// against is actually drawn. Since w-b59cbe3154 (2026-10-05) a Mac with nobody
+// signed in draws no corner at all, which is its own test:
+// the-sidebar-ends-at-settings-when-there-is-nobody-to-show.
+const me={id:'u-1',email:'ada@example.test',name:'Ada Lovelace',avatarUrl:null};
+const onATeam={configured:true,signedIn:true,me,team:{id:'t-1',name:'Northwind'},people:[me],cards:[],lastSyncAt:null,error:null};
+it.each([false,true])('keeps utility actions accessible, collapsed=%s',collapsed=>{
+ const html=renderToStaticMarkup(createElement(WorkspaceNavigation,{view:'inbox',collapsed,onToggle(){},onView(){},onSearch(){},onCompose(){},onSettings(){},onInstructions(){},team:onATeam,usage:createElement('div',{'data-usage':'live'})}));
+ const foot=html.slice(html.indexOf('workspace-bottom'));
+ for(const label of ['Settings','Instructions']) expect(foot).toContain(`aria-label="${label}"`);
+ // No Shortcuts row since 2026-09-26 (w-6c5534a58d).
+ expect(html).not.toContain('aria-label="Keyboard shortcuts"');
+ // No Done place in the sidebar since 2026-10-01; see the note at the top.
+ expect(html).not.toContain('data-tab="done"');
+ expect(html.match(/data-usage=/g)).toHaveLength(1);
+ // Instructions and Settings, then usage, then the person and the toggle.
+ expect(foot.indexOf('workspace-utilities')).toBeGreaterThan(-1);
+ expect(foot.indexOf('workspace-utilities')).toBeLessThan(foot.indexOf('data-usage='));
+ expect(foot.indexOf('data-usage=')).toBeLessThan(foot.indexOf('class="th-me"'));
+});
+it('does not offer unconnected utility actions',()=>{
+ const html=renderToStaticMarkup(createElement(WorkspaceNavigation,{view:'inbox',collapsed:false,onToggle(){},onView(){},onSearch(){},onCompose(){}}));
+ expect(html).not.toContain('aria-label="Instructions"');
+ expect(html).not.toContain('aria-label="Settings"');
+ expect(html).not.toContain('class="workspace-usage"');
+});

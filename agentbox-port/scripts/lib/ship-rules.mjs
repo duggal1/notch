@@ -1,0 +1,113 @@
+// THE TWO JUDGEMENTS SHIPPING HAS TO MAKE, kept pure so they can be tested
+// without pushing anything (tests/one-ship-command-every-agent-runs.test.mts).
+
+/**
+ * Did this push fail because somebody else pushed first?
+ *
+ * That is a race, and the answer is to fetch, merge, test and push again. Every
+ * other failure is a refusal (the tests, the public check, credentials), and
+ * pushing it again changes nothing except how long it takes to find out.
+ */
+export function racedWithAnotherPush(stderr) {
+  const s = String(stderr ?? '').toLowerCase();
+  if (!s) return false;
+  return /cannot lock ref/.test(s)
+    || /non-fast-forward/.test(s)
+    || /fetch first/.test(s)
+    || /stale info/.test(s)
+    || /remote contains work that you do not have/.test(s);
+}
+
+const waitHere = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Run a spawnSync-shaped `start`, starting it again when the computer refused
+ * to start a process (EAGAIN: at its process limit for a moment). Waits about
+ * 31 s in all, then hands back the last answer. Any other answer is returned
+ * as it came: a git that ran and failed is not run twice.
+ */
+export function startedWhenBusy(start, { waits = [1_000, 2_000, 4_000, 8_000, 16_000], sleep = waitHere } = {}) {
+  let result = start();
+  for (const ms of waits) {
+    if (result?.error?.code !== 'EAGAIN') return result;
+    sleep(ms);
+    result = start();
+  }
+  return result;
+}
+
+/**
+ * Why this branch cannot be shipped yet, as a sentence, or null when it can.
+ *
+ * The app folder is the primary worktree, and it only ever follows the public
+ * main; shipping from it is what left an unshipped commit sitting in it.
+ */
+export function notReadyToShip({ isPrimaryWorktree, dirty, onMain, hasCommits }) {
+  if (isPrimaryWorktree) {
+    return 'This is the folder the app runs from, which only ever follows the public main. Ship from the worktree your work is in.';
+  }
+  if (dirty) {
+    return 'There is uncommitted work here. Commit it first, so what the tests run on is what gets pushed.';
+  }
+  if (onMain) {
+    return 'This branch is main, which is what it would be shipping to. Work on agentbox/<item id>.';
+  }
+  if (!hasCommits) {
+    return 'There is nothing to ship: this branch has no commits that origin/main does not already have.';
+  }
+  return null;
+}
+
+// The two reasons scripts/hooks/pre-push runs every test, in the hook's own
+// patterns (a test holds them the same).
+export const DELETED_CODE = '\\.(mjs|mts|cjs|js|jsx|ts|tsx)$';
+export const DELETED_TEST = '\\.test\\.(mjs|mts|cjs|js|jsx|ts|tsx)$';
+export const EVERY_TEST_DEPENDS_ON = '^(package(-lock)?\\.json|vitest\\.config\\.mjs|tests/agentbox-home\\.setup\\.mts|tests/app-home\\.mts|scripts/hooks/)';
+
+/**
+ * Whether the hook runs every test for a push carrying `nameStatus`, the
+ * output of `git diff --name-status <remote main> HEAD`. Like the hook, a file
+ * git reads as moved is not a deletion, and nor is a deleted test file.
+ */
+export function runsEveryTest(nameStatus) {
+  const deleted = new RegExp(DELETED_CODE);
+  const test = new RegExp(DELETED_TEST);
+  const core = new RegExp(EVERY_TEST_DEPENDS_ON);
+  return String(nameStatus ?? '').split('\n').some((line) => {
+    const [status = '', ...paths] = line.split('\t');
+    if (status === 'D') return deleted.test(paths[0] ?? '') && !test.test(paths[0] ?? '');
+    return paths.some((p) => core.test(p));
+  });
+}
+
+/**
+ * WHY THIS CHECKOUT SHOULD NOT BE RELEASED, as sentences, or an empty list.
+ *
+ * Added 2026-10-13, after half a day was lost to it. The app folder follows the
+ * public main on its own, except it had fallen nine commits behind; two
+ * releases were built in it, each a quarter of an hour of signing and
+ * notarising, and each came out as the version already on the website carrying
+ * that morning's code. The build said nothing: it notarises the wrong commit as
+ * happily as the right one.
+ *
+ * Both questions are cheap and both are asked before a file is written. A null
+ * means the answer could not be found — no network, no tags — and a build that
+ * cannot ask is not a build of the wrong commit, so it goes ahead.
+ */
+export function whyNotToRelease({ behind = null, version = null, released = null } = {}) {
+  const said = [];
+  if (Number.isFinite(behind) && behind > 0) {
+    said.push(
+      `This checkout is ${behind} commit${behind === 1 ? '' : 's'} behind origin/main, `
+      + 'so it would build code that is not what shipped. '
+      + 'Catch it up first: git fetch origin && git merge --ff-only refs/remotes/origin/main',
+    );
+  }
+  if (version && Array.isArray(released) && released.includes(`v${version}`)) {
+    said.push(
+      `Version ${version} is already released as v${version}, so this build could not be published. `
+      + 'Bump the version in package.json first: npm version <next> --no-git-tag-version',
+    );
+  }
+  return said;
+}

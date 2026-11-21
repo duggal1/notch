@@ -1,0 +1,263 @@
+{
+  "name": "agentbox-app",
+  "productName": "Agentbox",
+  "version": "0.1.29",
+  "description": "A desktop GUI for running dozens of Claude Code and Codex agents in parallel, each in its own git worktree.",
+  "author": "Savannah Feder",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/savannahfeder/agentbox.git"
+  },
+  "homepage": "https://agentbox.ac",
+  "bugs": {
+    "url": "https://github.com/savannahfeder/agentbox/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "agents",
+    "ai-agents",
+    "coding-agent",
+    "coding-agents",
+    "claude-code-gui",
+    "git-worktree",
+    "worktree",
+    "parallel-agents",
+    "agent-orchestration",
+    "gui",
+    "kanban",
+    "inbox",
+    "cli",
+    "electron"
+  ],
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "main": "main/start.mjs",
+  "bin": {
+    "agentbox": "bin/agentbox.mjs"
+  },
+  "files": [
+    "bin/",
+    "main/**/*.mjs",
+    "main/**/*.mts",
+    "main/native/*/build/*.node",
+    "shared/**/*.mjs",
+    "shared/**/*.mts",
+    "shared/**/*.json",
+    "!shared/*.local.json",
+    "mcp/**/*.mts",
+    "mcp/**/*.sh",
+    "briefs/**/*.md",
+    "!briefs/founder.md",
+    "renderer/dist/",
+    "scripts/before-publish.mjs",
+    "scripts/after-install.mjs",
+    "scripts/approval-server.sh",
+    "scripts/cloud-shim.pl",
+    "scripts/memory-gate-hook.sh",
+    "scripts/safety-check-hook.sh",
+    "worker-permissions.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "node scripts/run.mjs scripts/dev.mjs",
+    "build": "node scripts/build-liquid-glass.mjs && node scripts/prepare-terminal.mjs && node scripts/run.mjs scripts/read-claude-commands.mjs && node scripts/run.mjs scripts/read-claude-models.mjs && vite build renderer",
+    "start": "npm run build && node scripts/brand-electron.mjs && electron .",
+    "test": "vitest run",
+    "read:claude": "node scripts/run.mjs scripts/read-claude-commands.mjs --snapshot && node scripts/run.mjs scripts/read-claude-models.mjs --snapshot",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit -p renderer/tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p main/tsconfig.json",
+    "test:changed": "node scripts/test-what-changed.mjs",
+    "icon": "electron --force-color-profile=srgb scripts/make-icon.mjs",
+    "pack": "node scripts/run.mjs scripts/release.mjs --no-sign",
+    "pack:side": "node scripts/run.mjs scripts/pack-side.mjs",
+    "release": "node scripts/run.mjs scripts/release.mjs",
+    "deploy": "node scripts/run.mjs scripts/deploy.mjs",
+    "setup:feedback": "node scripts/set-up-feedback.mjs",
+    "feedback": "node scripts/run.mjs scripts/read-feedback.mjs",
+    "fresh": "node scripts/run.mjs scripts/fresh-user.mjs",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "check:public": "node scripts/check-before-public.mjs --all",
+    "ship": "node scripts/ship.mjs",
+    "phone:build": "vite build renderer --logLevel warn && node scripts/build-phone-site.mjs",
+    "phone:deploy": "npm run phone:build && node scripts/deploy-phone-site.mjs",
+    "prepare": "node scripts/install-hooks.mjs",
+    "serve": "node bin/agentbox.mjs",
+    "prepack": "npm run build",
+    "postinstall": "node scripts/after-install.mjs",
+    "prepublishOnly": "node scripts/before-publish.mjs",
+    "app": "vite build renderer --logLevel warn && node scripts/prepare-terminal.mjs && node scripts/brand-electron.mjs && electron ."
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@fontsource-variable/source-sans-3": "^5.3.0",
+    "@tiptap/core": "^3.32.1",
+    "@tiptap/extension-collaboration": "^3.32.2",
+    "@tiptap/extension-link": "^3.32.1",
+    "@tiptap/extension-placeholder": "^3.32.1",
+    "@tiptap/extension-table": "^3.32.1",
+    "@tiptap/extension-table-cell": "^3.32.1",
+    "@tiptap/extension-table-header": "^3.32.1",
+    "@tiptap/extension-table-row": "^3.32.1",
+    "@tiptap/extension-task-item": "^3.32.1",
+    "@tiptap/extension-task-list": "^3.32.1",
+    "@tiptap/pm": "^3.32.1",
+    "@tiptap/react": "^3.32.1",
+    "@tiptap/starter-kit": "^3.32.1",
+    "@tiptap/y-tiptap": "^3.2.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "mermaid": "^12.1.0",
+    "pdfjs-dist": "^6.3.289",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^2.0.5",
+    "ws": "^8.22.1",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "^3.1150.0",
+    "@aws-sdk/client-s3": "^3.1150.0",
+    "@aws-sdk/s3-request-presigner": "^3.1150.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@supabase/supabase-js": "^2.117.2",
+    "electron-updater": "^6.8.9",
+    "posthog-node": "^5.21.2",
+    "qrcode": "^1.5.4",
+    "web-push": "^3.6.7",
+    "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "overrides": {
+    "@electron/asar": "^4.3.1",
+    "global-agent": "^4.1.3",
+    "lodash.isequal": "npm:fast-deep-equal@^3.1.3",
+    "temp": {
+      "rimraf": "^6.1.3"
+    }
+  },
+  "allowScripts": {
+    "node-pty": true,
+    "esbuild": true,
+    "electron-winstaller": false
+  },
+  "build": {
+    "appId": "ac.astral.app",
+    "productName": "Agentbox",
+    "copyright": "Copyright © 2026 Agentbox",
+    "electronFuses": {
+      "runAsNode": true,
+      "enableNodeCliInspectArguments": false,
+      "enableNodeOptionsEnvironmentVariable": false
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main/**/*",
+      "shared/**/*",
+      "preload.cjs",
+      "build/notification-icon.png",
+      "briefs/**/*",
+      "!briefs/founder.md",
+      "!briefs/writing-rules.md",
+      "worker-permissions.json",
+      "scripts/approval-server.sh",
+      "scripts/cloud-shim.pl",
+      "scripts/memory-gate-hook.sh",
+      "scripts/safety-check-hook.sh",
+      "mcp/connection-proxy.mts",
+      "renderer/dist/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "worker-permissions.json",
+      "scripts/approval-server.sh",
+      "scripts/cloud-shim.pl",
+      "scripts/memory-gate-hook.sh",
+      "scripts/safety-check-hook.sh",
+      "node_modules/node-pty/**",
+      "main/native/**/*.node"
+    ],
+    "protocols": [
+      {
+        "name": "Agentbox",
+        "schemes": [
+          "agentbox"
+        ]
+      }
+    ],
+    "mac": {
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "Agentbox needs this to let your agents work in a project you keep on the Desktop.",
+        "NSDocumentsFolderUsageDescription": "Agentbox needs this to let your agents work in a project you keep in Documents.",
+        "NSDownloadsFolderUsageDescription": "Agentbox needs this to let your agents work in a project you keep in Downloads.",
+        "NSRemovableVolumesUsageDescription": "Agentbox needs this to let your agents work in a project you keep on an external disk.",
+        "NSAppleEventsUsageDescription": "Agentbox needs this when an agent you started asks another app to do something.",
+        "NSMicrophoneUsageDescription": "Agentbox needs this to record a voice note when you press the microphone button."
+      },
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "x64ArchFiles": "Contents/Resources/app.asar.unpacked/{node_modules/node-pty/prebuilds/darwin-*/*,main/native/**/*.node}",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Agentbox",
+      "contents": [
+        {
+          "x": 140,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "agentboxhq",
+        "repo": "agentbox-releases"
+      }
+    ]
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

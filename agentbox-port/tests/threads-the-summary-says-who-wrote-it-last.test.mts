@@ -1,0 +1,78 @@
+// THE SUMMARY SAYS WHO WROTE IT LAST, AND HOW LONG AGO.
+//
+// Approved 2026-10-01 (w-e731ca9376, round 9). A thread's summary is three
+// short lines the agent keeps current and the person can edit in place, and
+// the later write wins. So the one faint line under them is the only thing on
+// the screen that tells her whether she is reading the agent's words or her
+// own: "Kept up to date by the agent · 19 min ago" or "Edited by you · 2 min
+// ago". The fold already records who set each field and when (`wrote`), so
+// this reads that and nothing else. The cases that must NOT match are the
+// title and body, which she wrote at the start and are not the summary, and a
+// teammate's edit, which is not "you".
+//
+// CHANGED 2026-10-04 (w-922f66bb06): the line left the words and became the
+// Updated row at the foot of the panel, and it says only when. She found "By
+// the agent · 6 min ago" ugly and the lowercase "just now" weird, so the row
+// reads "Just now", "19 min ago". Who wrote it is no longer said. The cases
+// below are the same ones, read through `updatedWord`.
+import { describe, it, expect } from 'vitest';
+import { agoWords, updatedWord, stateGlyph, STATE_WORD } from '../renderer/src/threads/summary-rules.ts';
+
+const NOW = Date.parse('2026-10-01T15:00:00');
+const M = 60_000;
+
+describe('how long ago, in words', () => {
+  it('says just now under a minute, then minutes', () => {
+    expect(agoWords(NOW - 20_000, NOW)).toBe('just now');
+    expect(agoWords(NOW - M, NOW)).toBe('1 min ago');
+    expect(agoWords(NOW - 19 * M, NOW)).toBe('19 min ago');
+    expect(agoWords(NOW - 59 * M, NOW)).toBe('59 min ago');
+  });
+  it('says hours from the hour, then yesterday, then days', () => {
+    expect(agoWords(NOW - 60 * M, NOW)).toBe('1 hour ago');
+    expect(agoWords(NOW - 5 * 60 * M, NOW)).toBe('5 hours ago');
+    expect(agoWords(NOW - 30 * 60 * M, NOW)).toBe('Yesterday');
+    expect(agoWords(NOW - 3 * 24 * 60 * M, NOW)).toBe('3 days ago');
+  });
+  it('never says a time in the future', () => {
+    expect(agoWords(NOW + 5 * M, NOW)).toBe('just now');
+  });
+});
+
+describe('the Updated row', () => {
+  const item = (wrote) => ({ id: 'w-1', title: 'Acme', wrote });
+  it('takes the agent\'s write when the agent wrote last', () => {
+    const it1 = item({ problem: { ts: NOW - 40 * M, source: 'founder' }, progress: { ts: NOW - 19 * M, source: 'agent' } });
+    expect(updatedWord(it1, { me: 'p-me', now: NOW })).toBe('19 min ago');
+  });
+  it('takes yours when you wrote last, with or without a person on the line', () => {
+    expect(updatedWord(item({ solution: { ts: NOW - 2 * M, source: 'founder' } }), { me: 'p-me', now: NOW })).toBe('2 min ago');
+    expect(updatedWord(item({ solution: { ts: NOW - 2 * M, source: 'founder', by: 'p-me' } }), { me: 'p-me', now: NOW })).toBe('2 min ago');
+  });
+  it('takes a teammate\'s, and does not say whose', () => {
+    expect(updatedWord(item({ progress: { ts: NOW - 4 * M, source: 'founder', by: 'p-maya' } }), { me: 'p-me', now: NOW })).toBe('4 min ago');
+  });
+  it('says nothing when only the title and body were ever written', () => {
+    expect(updatedWord(item({ title: { ts: NOW, source: 'founder' }, body: { ts: NOW, source: 'founder' } }), { me: 'p-me', now: NOW })).toBeNull();
+    expect(updatedWord(item(undefined), { me: 'p-me', now: NOW })).toBeNull();
+  });
+  it('counts an edit of yours still on its way to the ledger as the latest', () => {
+    const it1 = item({ progress: { ts: NOW - 19 * M, source: 'agent' } });
+    expect(updatedWord(it1, { me: 'p-me', now: NOW, pending: { progress: NOW - 1000 } })).toBe('Just now');
+    // and an older pending edit loses to a newer agent write
+    expect(updatedWord(it1, { me: 'p-me', now: NOW, pending: { progress: NOW - 30 * M } })).toBe('19 min ago');
+  });
+});
+
+describe('the state, as a word and a mark', () => {
+  it('has exactly the four approved words', () => {
+    expect(STATE_WORD).toEqual({ waiting: 'Waiting', running: 'In progress', scheduled: 'Scheduled', done: 'Done' });
+  });
+  it('fills the mark when the thread waits on you and leaves it hollow when it waits on someone else', () => {
+    expect(stateGlyph('waiting', true)).toBe('need');
+    expect(stateGlyph('waiting', false)).toBe('wait');
+    expect(stateGlyph('running', true)).toBe('run');
+    expect(stateGlyph('scheduled', false)).toBe('sched');
+    expect(stateGlyph('done', true)).toBe('done');
+  });
+});

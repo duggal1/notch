@@ -1,0 +1,462 @@
+// The bridge. Everything the renderer may do, spelled out.
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+// The layout keeps 40px clear of the macOS traffic lights. Everywhere else
+// that band is empty headroom above the pane. The stylesheet reads this and
+// uses the same inset as the sides. A browser tab sets its own shell and is
+// not this.
+//
+// The sandboxed preload runs while the document is still loading, and
+// documentElement is null then. Reading it here throws, and a throw on this
+// line skips the bridge below, so the window draws the canned inbox.
+if (process.platform !== 'darwin') {
+  const markFlat = () => {
+    if (document.documentElement) document.documentElement.dataset.window = 'flat';
+  };
+  if (document.documentElement) markFlat();
+  else document.addEventListener('DOMContentLoaded', markFlat);
+}
+
+// A Mac window can put the system's blur behind itself (main/window-glass.mts);
+// the page goes glass only while the Alpha switch is on.
+if ((process.argv ?? []).includes('--agentbox-glass')) {
+  const markGlass = () => {
+    if (document.documentElement) document.documentElement.dataset.glassAble = '';
+  };
+  if (document.documentElement) markGlass();
+  else document.addEventListener('DOMContentLoaded', markGlass);
+}
+
+// EVERY ASK BEFORE A RELOAD IS ANSWERED, held write or not. main waits for
+// this before it reloads (main/write-before-reload.mts), so a page with
+// nothing held, or one that has not set a handler yet, says so at once rather
+// than making ⌘R sit out the wait.
+let writeHeld = null;
+const holdWriter = (fn) => {
+  writeHeld = fn;
+  return () => { if (writeHeld === fn) writeHeld = null; };
+};
+ipcRenderer.on('zero:write-held', async (_e, nonce) => {
+  try {
+    if (writeHeld) await writeHeld();
+  } catch {
+    // A write that failed is the page's to report; the reload goes ahead.
+  } finally {
+    ipcRenderer.send('zero:wrote-held', nonce);
+  }
+});
+
+contextBridge.exposeInMainWorld('zero', {
+  terminal: (payload) => ipcRenderer.invoke('zero:terminal', payload),
+  agentUpdate: (payload) => ipcRenderer.invoke('zero:agent-update', payload),
+  snapshot: (ask) => ipcRenderer.invoke('zero:snapshot', ask),
+  // Which thread is on screen, so the approval card in front is its own and
+  // ⌘Y answers the card being read (shared/which-card-is-in-front.mts).
+  looking: (payload) => ipcRenderer.invoke('zero:looking', payload),
+  refreshUsage: (p) => ipcRenderer.invoke('zero:refresh-usage', p),
+  accountUsage: (payload) => ipcRenderer.invoke('zero:account-usage', payload),
+  assistiveTech: () => ipcRenderer.invoke('zero:assistiveTech'),
+  olderItems: (payload) => ipcRenderer.invoke('zero:older-items', payload),
+  dashboard: (slug) => ipcRenderer.invoke('zero:dashboard', slug),
+  commandCatalog: (payload) => ipcRenderer.invoke('zero:command-catalog', payload),
+  remoteControl: (payload) => ipcRenderer.invoke('zero:remote-control', payload),
+  command: (payload) => ipcRenderer.invoke('zero:command', payload),
+  compact: (payload) => ipcRenderer.invoke('zero:compact', payload),
+  compactionStatus: (payload) => ipcRenderer.invoke('zero:compaction-status', payload),
+  answer: (payload) => ipcRenderer.invoke('zero:answer', payload),
+  sendNow: (payload) => ipcRenderer.invoke('zero:send-now', payload),
+  compose: (payload) => ipcRenderer.invoke('zero:compose', payload),
+  // Who takes a thread sent to Auto, when she picks.
+  routeThread: (payload) => ipcRenderer.invoke('zero:route-thread', payload),
+  answerRouteOffer: (payload) => ipcRenderer.invoke('zero:answer-route-offer', payload),
+  schedule: (payload) => ipcRenderer.invoke('zero:schedule', payload),
+  snooze: (payload) => ipcRenderer.invoke('zero:snooze', payload),
+  // Feedback to the Agentbox team, from the card the sidebar opens.
+  sendFeedback: (payload) => ipcRenderer.invoke('zero:send-feedback', payload),
+  // The team version: signing in, the team, and sharing a project.
+  teamSignIn: () => ipcRenderer.invoke('zero:team-sign-in'),
+  teamSignInCancel: () => ipcRenderer.invoke('zero:team-sign-in-cancel'),
+  teamSignInReopen: () => ipcRenderer.invoke('zero:team-sign-in-reopen'),
+  teamSignOut: () => ipcRenderer.invoke('zero:team-sign-out'),
+  teamSignInEmail: (payload) => ipcRenderer.invoke('zero:team-sign-in-email', payload),
+  teamSignUp: (payload) => ipcRenderer.invoke('zero:team-sign-up', payload),
+  teamConfirmation: () => ipcRenderer.invoke('zero:team-confirmation'),
+  teamResendConfirmation: () => ipcRenderer.invoke('zero:team-resend-confirmation'),
+  teamCreate: (payload) => ipcRenderer.invoke('zero:team-create', payload),
+  teamAcceptInvite: (payload) => ipcRenderer.invoke('zero:team-accept-invite', payload),
+  teamInvite: (payload) => ipcRenderer.invoke('zero:team-invite', payload),
+  teamRename: (payload) => ipcRenderer.invoke('zero:team-rename', payload),
+  teamRemoveMember: (payload) => ipcRenderer.invoke('zero:team-remove-member', payload),
+  teamLeave: () => ipcRenderer.invoke('zero:team-leave'),
+  teamCancelInvite: (payload) => ipcRenderer.invoke('zero:team-cancel-invite', payload),
+  teamStatus: (payload) => ipcRenderer.invoke('zero:team-status', payload),
+  teamShare: (payload) => ipcRenderer.invoke('zero:team-share', payload),
+  teamSync: () => ipcRenderer.invoke('zero:team-sync'),
+  teamRoute: (payload) => ipcRenderer.invoke('zero:team-route', payload),
+  teamThreadWork: (payload) => ipcRenderer.invoke('zero:team-thread-work', payload),
+  findInThreads: (payload) => ipcRenderer.invoke('zero:find-in-threads', payload),
+  warmFindInThreads: () => ipcRenderer.invoke('zero:warm-find-in-threads'),
+  teamComment: (payload) => ipcRenderer.invoke('zero:team-comment', payload),
+  teamContinueBrief: (payload) => ipcRenderer.invoke('zero:team-continue-brief', payload),
+  teamContinued: (payload) => ipcRenderer.invoke('zero:team-continued', payload),
+  teamReact: (payload) => ipcRenderer.invoke('zero:team-react', payload),
+  fileMark: (payload) => ipcRenderer.invoke('zero:file-mark', payload),
+  fileNewVersion: (payload) => ipcRenderer.invoke('zero:file-new-version', payload),
+  teamMarkFile: (payload) => ipcRenderer.invoke('zero:team-mark-file', payload),
+  filesPlace: () => ipcRenderer.invoke('zero:files-place'),
+  filesPlaceOpen: (payload) => ipcRenderer.invoke('zero:files-place-open', payload),
+  filesPlaceEdit: (payload) => ipcRenderer.invoke('zero:files-place-edit', payload),
+  filesPlaceMark: (payload) => ipcRenderer.invoke('zero:files-place-mark', payload),
+  filesPlaceFolder: (payload) => ipcRenderer.invoke('zero:files-place-folder', payload),
+  filesPlaceNew: (payload) => ipcRenderer.invoke('zero:files-place-new', payload),
+  filesPlaceUpload: (payload) => ipcRenderer.invoke('zero:files-place-upload', payload),
+  filesPlaceTrash: (payload) => ipcRenderer.invoke('zero:files-place-trash', payload),
+  filesPlaceUntrash: (payload) => ipcRenderer.invoke('zero:files-place-untrash', payload),
+  filesCloud: () => ipcRenderer.invoke('zero:files-cloud'),
+  fileElsewhere: (payload) => ipcRenderer.invoke('zero:file-elsewhere', payload),
+  fileLine: (payload) => ipcRenderer.invoke('zero:file-line', payload),
+  connections: () => ipcRenderer.invoke('zero:connections'),
+  connectionsConnect: (payload) => ipcRenderer.invoke('zero:connections-connect', payload),
+  connectionsCancel: (payload) => ipcRenderer.invoke('zero:connections-cancel', payload),
+  connectionsCheck: (payload) => ipcRenderer.invoke('zero:connections-check', payload),
+  connectionsDisconnect: (payload) => ipcRenderer.invoke('zero:connections-disconnect', payload),
+  connectionsAccept: (payload) => ipcRenderer.invoke('zero:connections-accept', payload),
+  connectionsAdd: (payload) => ipcRenderer.invoke('zero:connections-add', payload),
+  connectionsChoose: (payload) => ipcRenderer.invoke('zero:connections-choose', payload),
+  connectionsCopy: (payload) => ipcRenderer.invoke('zero:connections-copy', payload),
+  teamEdit: (payload) => ipcRenderer.invoke('zero:team-edit', payload),
+  micAccess: () => ipcRenderer.invoke('zero:mic-access'),
+  teamMessage: (payload) => ipcRenderer.invoke('zero:team-message', payload),
+  teamSeen: (payload) => ipcRenderer.invoke('zero:team-seen', payload),
+  teamMoveToThread: (payload) => ipcRenderer.invoke('zero:team-move-to-thread', payload),
+  teamMessageMate: (payload) => ipcRenderer.invoke('zero:team-message-mate', payload),
+  teamGiveTask: (payload) => ipcRenderer.invoke('zero:team-give-task', payload),
+  teamHandOn: (payload) => ipcRenderer.invoke('zero:team-hand-on', payload),
+  teamTaskBrief: (payload) => ipcRenderer.invoke('zero:team-task-brief', payload),
+  rooms: (payload) => ipcRenderer.invoke('zero:rooms', payload),
+  teammates: (payload) => ipcRenderer.invoke('zero:teammates', payload),
+  takeJoin: () => ipcRenderer.invoke('zero:take-join'),
+  takeThreadLink: () => ipcRenderer.invoke('zero:take-thread-link'),
+  threadEdit: (payload) => ipcRenderer.invoke('zero:thread-edit', payload),
+  moveItem: (payload) => ipcRenderer.invoke('zero:move-item', payload),
+  // Repeating tasks. A rule, not a work item, so it has its own channels
+  // rather than a flag on compose.
+  repeats: () => ipcRenderer.invoke('zero:repeats'),
+  composeRepeat: (payload) => ipcRenderer.invoke('zero:compose-repeat', payload),
+  setRepeat: (payload) => ipcRenderer.invoke('zero:set-repeat', payload),
+  endRepeat: (payload) => ipcRenderer.invoke('zero:end-repeat', payload),
+  pauseSupervisor: (paused) => ipcRenderer.invoke('zero:supervisor-pause', paused),
+  createProduct: (payload) => ipcRenderer.invoke('zero:create-product', payload),
+  // The first run. Its example task is a real row with no session behind it,
+  // and while the walk is up nothing else is allowed to start.
+  firstRunAnswer: (payload) => ipcRenderer.invoke('zero:first-run-answer', payload),
+  firstRunExamples: (payload) => ipcRenderer.invoke('zero:first-run-examples', payload),
+  // The practice project: made with its three rows, archived when the walk ends.
+  firstRunPractice: (opts) => ipcRenderer.invoke('zero:first-run-practice', opts),
+  firstRunPracticeEnd: () => ipcRenderer.invoke('zero:first-run-practice-end'),
+  firstRunWalking: (payload) => ipcRenderer.invoke('zero:first-run-walking', payload),
+  // A second Agentbox, in a throwaway home, as somebody who has never opened it.
+  // It adds a window; it removes nothing (main/fresh-user.mts).
+  openFreshUser: (payload) => ipcRenderer.invoke('zero:open-fresh-user', payload ?? {}),
+  // The same again, on an invented studio's inbox instead of an empty one, so a
+  // demo does not have to be her own screen (main/demo.mts).
+  openDemo: () => ipcRenderer.invoke('zero:open-demo'),
+  // The Mac's own folder chooser, for the new project card's "Where's its code?"
+  chooseFolder: (payload) => ipcRenderer.invoke('zero:choose-folder', payload ?? {}),
+  // The picker the app draws itself, when there is no Mac dialog to open. It
+  // walks this machine's disk a folder at a time (main/folders.mts).
+  listFolders: (payload) => ipcRenderer.invoke('zero:list-folders', payload ?? {}),
+  folderExists: (payload) => ipcRenderer.invoke('zero:folder-exists', payload ?? {}),
+  agentFiles: (payload) => ipcRenderer.invoke('zero:agent-files', payload ?? {}),
+  // The folders on this Mac with agents of their own that no project points at
+  // yet, so the card can offer to make the project.
+  agentFolders: () => ipcRenderer.invoke('zero:agent-folders'),
+  // Taking them: saves the ticks and files one inbox row per agent.
+  importAgents: (payload) => ipcRenderer.invoke('zero:import-agents', payload ?? {}),
+  // The Claude Code threads she started herself in the last few days, which is
+  // what she meant by her agents, and taking one as a task.
+  agentThreads: () => ipcRenderer.invoke('zero:agent-threads'),
+  // Every chat the card's name field can search, which reaches a year back
+  // rather than ten days. Read once and kept by the window (w-6418318cd5).
+  searchAgentThreads: (payload) => ipcRenderer.invoke('zero:search-agent-threads', payload ?? {}),
+  importThreads: (payload) => ipcRenderer.invoke('zero:import-threads', payload ?? {}),
+  badge: (count) => ipcRenderer.invoke('zero:badge', count),
+  // What the corner tag says when she is in another app: what is ready for
+  // her, and how many are working (main/corner-tag.mts).
+  cornerTag: (state) => ipcRenderer.invoke('zero:corner-tag', state),
+  // Whether this page came up from ⌘R, and which build it is running.
+  bootInfo: () => ipcRenderer.invoke('zero:boot-info'),
+  // Which appearance the window's glass is drawn in (main/window-glass.mts).
+  glassTone: (payload) => ipcRenderer.invoke('zero:glass-tone', payload),
+  // KEEPING AGENTBOX CURRENT (main/updater.mts). The state of it rides the
+  // snapshot, so these two are only the verbs: look again now, and restart onto
+  // the version that has already downloaded. Nothing here can start a download,
+  // because nothing needs to; that happens on its own in the background.
+  updateCheck: () => ipcRenderer.invoke('zero:update-check'),
+  updateInstall: () => ipcRenderer.invoke('zero:update-install'),
+  updateMove: () => ipcRenderer.invoke('zero:update-move'),
+  // What just arrived, not what to say about it. Whether she is looking at the
+  // window is a fact only the main process holds, so the page reports and does
+  // not decide (main/notify.mts).
+  notify: (arrivals, needsYou) => ipcRenderer.invoke('zero:notify', { arrivals, needsYou }),
+  notifyTest: () => ipcRenderer.invoke('zero:notify-test'),
+  notifySettings: () => ipcRenderer.invoke('zero:notify-settings'),
+  stopSession: (payload) => ipcRenderer.invoke('zero:stop-session', payload),
+  runNow: (payload) => ipcRenderer.invoke('zero:run-now', payload),
+  reopen: (payload) => ipcRenderer.invoke('zero:reopen', payload),
+  // Her standing instructions: the text every session is briefed with.
+  instructionRead: (id) => ipcRenderer.invoke('zero:instruction-read', id),
+  instructionWrite: (id, text) => ipcRenderer.invoke('zero:instruction-write', {id,text}),
+  // Her earlier versions of one box, and one of them read back in full.
+  instructionHistory: (id) => ipcRenderer.invoke('zero:instruction-history', id),
+  instructionVersion: (id, at) => ipcRenderer.invoke('zero:instruction-version', {id,at}),
+  standingRead: () => ipcRenderer.invoke('zero:standing-read'),
+  standingWrite: (payload) => ipcRenderer.invoke('zero:standing-write', payload),
+  // The message rules: how agents write to her during a task and how a run
+  // ends. One document since w-3dc46f3a67, hers to change or empty.
+  messageRulesRead: () => ipcRenderer.invoke('zero:message-rules-read'),
+  messageRulesWrite: (payload) => ipcRenderer.invoke('zero:message-rules-write', payload),
+  // The settings screen: the workspace, and every project's own settings.
+  settingsRead: () => ipcRenderer.invoke('zero:settings-read'),
+  // Look for Claude Code again, from scratch. The last card of the walk is the
+  // only caller: it will not open the inbox without Claude Code, so it owes
+  // whoever installs it a search that is really a search.
+  claudeRecheck: () => ipcRenderer.invoke('zero:claude-recheck'),
+  // And for the second coding agent, from the Codex card on Settings. Finding
+  // it is also what makes the Coding agent row appear, because the path the
+  // search lands on is the one that row is drawn from.
+  codexRecheck: () => ipcRenderer.invoke('zero:codex-recheck'),
+  // AND WHEN NEITHER SEARCH CAN FIND IT: point at the file yourself, or hand
+  // the choice back so the search takes over again. `{ engine }` opens the
+  // picker in main and applies what it produced in the same trip, so no path
+  // off anybody's disk crosses this bridge in the direction of being trusted;
+  // `{ engine, action: 'search' }` needs no picker at all.
+  engineBin: (payload) => ipcRenderer.invoke('zero:engine-bin', payload),
+  // Install a coding agent and start its own sign-in, for somebody who has a
+  // plan and nothing installed. Actions: ready, start, status, again, cancel.
+  engineSetup: (payload) => ipcRenderer.invoke('zero:engine-setup', payload),
+  codexAddAccount: () => ipcRenderer.invoke('zero:codex-add-account'),
+  // A second login for either agent is a second home folder. Main makes it and
+  // hands back the line the built-in terminal runs to sign in.
+  claudeAddAccount: () => ipcRenderer.invoke('zero:claude-add-account'),
+  setProjectSetting: (payload) => ipcRenderer.invoke('zero:settings-set-project', payload),
+  setWorkspaceSetting: (payload) => ipcRenderer.invoke('zero:settings-set-workspace', payload),
+  cloudSignIn: (payload) => ipcRenderer.invoke('zero:cloud-signin', payload),
+  cloudKey: (payload) => ipcRenderer.invoke('zero:cloud-key', payload),
+  gitHubSignIn: (payload) => ipcRenderer.invoke('zero:github-sign-in', payload),
+  gitHubBrowserSignIn: () => ipcRenderer.invoke('zero:github-browser-sign-in'),
+  gitHubCloudSignIn: (payload) => ipcRenderer.invoke('zero:github-cloud-sign-in', payload),
+  signInAnswer: (payload) => ipcRenderer.invoke('zero:sign-in-answer', payload),
+  cloudSendFile: (payload) => ipcRenderer.invoke('zero:cloud-send-file', payload),
+  cloudSendCode: (payload) => ipcRenderer.invoke('zero:cloud-send-code', payload),
+  cloudFileInfo: (payload) => ipcRenderer.invoke('zero:cloud-file-info', payload),
+  cloudAccountSignIn: (payload) => ipcRenderer.invoke('zero:cloud-account-sign-in', payload),
+  cloudAccountCancel: () => ipcRenderer.invoke('zero:cloud-account-cancel'),
+  cloudAccountReopen: () => ipcRenderer.invoke('zero:cloud-account-reopen'),
+  cloudAccountSignOut: () => ipcRenderer.invoke('zero:cloud-account-sign-out'),
+  cloudAccountPlan: () => ipcRenderer.invoke('zero:cloud-account-plan'),
+  cloudAccountPay: (payload) => ipcRenderer.invoke('zero:cloud-account-pay', payload),
+  cloudAccountFromTeam: (payload) => ipcRenderer.invoke('zero:cloud-account-from-team', payload),
+  cloudAccountBilling: () => ipcRenderer.invoke('zero:cloud-account-billing'),
+  cloudAccountTeamBilling: () => ipcRenderer.invoke('zero:cloud-account-team-billing'),
+  cloudClipboardCode: () => ipcRenderer.invoke('zero:cloud-clipboard-code'),
+  // What a project is CALLED, and the mark beside the name. Not settings: both
+  // are written into the project's own project.json and travel with the folder.
+  // `projectIcon` opens the picker itself, so no path off her disk ever crosses
+  // this bridge in the direction of being trusted.
+  projectRename: (payload) => ipcRenderer.invoke('zero:project-rename', payload),
+  projectIcon: (payload) => ipcRenderer.invoke('zero:project-icon', payload),
+  projectIconClear: (payload) => ipcRenderer.invoke('zero:project-icon-clear', payload),
+  // Archive a project or bring it back; also a flag in its own project.json.
+  projectArchive: (payload) => ipcRenderer.invoke('zero:project-archive', payload),
+  projectSeenBy: (payload) => ipcRenderer.invoke('zero:project-seen-by', payload),
+  // Her rules for one project, briefed after the standing ones.
+  projectInstructionsRead: (payload) => ipcRenderer.invoke('zero:project-instructions-read', payload),
+  projectInstructionsWrite: (payload) => ipcRenderer.invoke('zero:project-instructions-write', payload),
+  saveAttachments: (payload) => ipcRenderer.invoke('zero:save-attachments', payload),
+  // A pasted screenshot's bytes, straight to disk, so the draft carries a path
+  // and never an image budget.
+  stageAttachment: (payload) => ipcRenderer.invoke('zero:stage-attachment', payload),
+  stageAttachmentPart: (payload) => ipcRenderer.invoke('zero:stage-attachment-part', payload),
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch { return null; } },
+  // One way, name/message/stack only, scrubbed on the far side before it is
+  // written. The window never chooses what a crash report contains.
+  crash: (payload) => ipcRenderer.invoke('zero:crash', payload),
+  // Read once before the first screen, so it is the one call here that waits (renderer/src/draft-copy.ts).
+  draftCopy: {
+    read: () => ipcRenderer.sendSync('zero:draft-copy-read'),
+    write: (text) => ipcRenderer.send('zero:draft-copy-write', text),
+  },
+  // What an opened thread laid out, so the app can check it painted it (main/blank-page.mts).
+  blankCheck: (payload) => ipcRenderer.invoke('zero:blank-check', payload),
+  // A COUNT, AND THE NAME IS THE WHOLE MESSAGE. There is no analytics SDK in
+  // this window on purpose (a browser one autocaptures the text of what was
+  // clicked, and here that text is task titles), so the page can say THAT
+  // something happened and can say nothing about what.
+  // A number may ride with it (which setup step), and main keeps only a number.
+  track: (name, count) => ipcRenderer.invoke('zero:track', { name, count }),
+  onboardingArm: () => ipcRenderer.invoke('zero:onboarding-arm'),
+  sessionTrace: (payload) => ipcRenderer.invoke('zero:session-trace', payload),
+  // Everything that happened on one task, as the ledger lines it happened as.
+  itemHistory: (payload) => ipcRenderer.invoke('zero:item-history', payload),
+  openArtifact: (payload) => ipcRenderer.invoke('zero:open-artifact', payload),
+  // The pictures in a folder a message names on its own line (main/folder-pictures.mts).
+  folderPictures: (payload) => ipcRenderer.invoke('zero:folder-pictures', payload),
+  // The document pane's own two: the text of a file it has open, and her edit
+  // going back onto disk. Markdown only on the way back (main/doc-file.mts).
+  readDoc: (payload) => ipcRenderer.invoke('zero:read-doc', payload),
+  // A link anyone can open, to one of her files (main/file-link.mts).
+  fileLink: (payload) => ipcRenderer.invoke('zero:file-link', payload),
+  fileLinkShare: (payload) => ipcRenderer.invoke('zero:file-link-share', payload),
+  fileLinkStop: (payload) => ipcRenderer.invoke('zero:file-link-stop', payload),
+  fileLinks: () => ipcRenderer.invoke('zero:file-links'),
+  fileLinkComments: (payload) => ipcRenderer.invoke('zero:file-link-comments', payload),
+  fileLinkComment: (payload) => ipcRenderer.invoke('zero:file-link-comment', payload),
+  fileLinkAccess: (payload) => ipcRenderer.invoke('zero:file-link-access', payload),
+  fileLinkPeople: (payload) => ipcRenderer.invoke('zero:file-link-people', payload),
+  fileLinkPerson: (payload) => ipcRenderer.invoke('zero:file-link-person', payload),
+  bringSharedFile: (payload) => ipcRenderer.invoke('zero:bring-shared-file', payload),
+  takeSharedFile: () => ipcRenderer.invoke('zero:take-shared-file'),
+  retryFile: (payload) => ipcRenderer.invoke('zero:retry-file', payload),
+  // The change a run made, read as a built artifact.
+  codeChange: (payload) => ipcRenderer.invoke('zero:code-change', payload),
+  codeFile: (payload) => ipcRenderer.invoke('zero:code-file', payload),
+  saveCodeFile: (payload) => ipcRenderer.invoke('zero:save-code-file', payload),
+  writeDoc: (payload) => ipcRenderer.invoke('zero:write-doc', payload),
+  liveRoom: (payload) => ipcRenderer.invoke('zero:live-room', payload),
+  railNote: (payload) => ipcRenderer.invoke('zero:rail-note', payload),
+  saveRailNote: (payload) => ipcRenderer.invoke('zero:save-rail-note', payload),
+  // The shelf: what this product has made, and whether each thing is still the
+  // live answer. The status write lands in the store's catalog, not in the inbox.
+  // Her Claude Code agents. The list rides the snapshot; these two are the only
+  // things Agentbox can do to one, and the second is only "bring its app to the
+  // front" because nothing public can focus a pane inside another app.
+  agentReply: (payload) => ipcRenderer.invoke('zero:agent-reply', payload),
+  agentReveal: (payload) => ipcRenderer.invoke('zero:agent-reveal', payload),
+  agentConversation: (payload) => ipcRenderer.invoke('zero:agent-conversation', payload),
+  scheduleAgent: (payload) => ipcRenderer.invoke('zero:schedule-agent', payload),
+  closeAgent: (payload) => ipcRenderer.invoke('zero:close-agent', payload),
+  unreplyAgent: (payload) => ipcRenderer.invoke('zero:unreply-agent', payload),
+  resumeAgents: (payload) => ipcRenderer.invoke('zero:resume-agents', payload),
+  resumeItems: (payload) => ipcRenderer.invoke('zero:resume-items', payload),
+  redeliver: (payload) => ipcRenderer.invoke('zero:redeliver', payload),
+  setProductOrder: (payload) => ipcRenderer.invoke('zero:set-product-order', payload),
+  setThreadPlaces: (payload) => ipcRenderer.invoke('zero:set-thread-places', payload),
+  setThreadPins: (payload) => ipcRenderer.invoke('zero:set-thread-pins', payload),
+  seenHere: (payload) => ipcRenderer.invoke('zero:seen-here', payload),
+  setThreadOnMac: (payload) => ipcRenderer.invoke('zero:set-thread-on-mac', payload),
+  moveToCloud: (payload) => ipcRenderer.invoke('zero:move-to-cloud', payload),
+  setProductHidden: (payload) => ipcRenderer.invoke('zero:set-product-hidden', payload),
+  approve: (payload) => ipcRenderer.invoke('zero:approve', payload),
+  // The phone door (main/phone-link.mts): { action: 'status' | 'on' | 'off' | 'reset' | 'via', via }.
+  phoneLink: (payload) => ipcRenderer.invoke('zero:phone-link', payload),
+  onPhoneChanged: (fn) => {
+    const handler = () => fn();
+    ipcRenderer.on('zero:phone-changed', handler);
+    return () => ipcRenderer.removeListener('zero:phone-changed', handler);
+  },
+  // What was just decided, and on which card. The Cmd+Y chord is caught in the
+  // main process (it has to outrank the game), so this is the only way the page
+  // can know a press landed; the card's exit is drawn from it.
+  onApprovalAnswered: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:approval-answered', handler);
+    return () => ipcRenderer.removeListener('zero:approval-answered', handler);
+  },
+  onChanged: (fn) => {
+    const handler = () => fn();
+    ipcRenderer.on('zero:changed', handler);
+    return () => ipcRenderer.removeListener('zero:changed', handler);
+  },
+  // ⌘F (step 0), ⌘G (1) or ⇧⌘G (-1). Caught in the main process so it works
+  // with the keyboard inside an open file, and drawn by FindBar.tsx.
+  onFind: (fn) => {
+    const handler = (_e, payload) => fn(payload ?? {});
+    ipcRenderer.on('zero:find', handler);
+    return () => ipcRenderer.removeListener('zero:find', handler);
+  },
+  // The zoom moved, and by how much. The chords are caught in the main process
+  // (they have to outrank the game and the junk browser's guest page), so this
+  // is the only way the page can know one landed and echo the percentage.
+  onZoomPercent: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:zoom-percent', handler);
+    return () => ipcRenderer.removeListener('zero:zoom-percent', handler);
+  },
+  // She opened the lid and the app put the agents back on their work. This is the
+  // only trace it leaves, for two and a half seconds. The startup sweep's line
+  // arrives on bootInfo instead, because it happens before this page exists.
+  onRecovered: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:recovered', handler);
+    return () => ipcRenderer.removeListener('zero:recovered', handler);
+  },
+  // A thread opened on the phone, so it reads as read here too.
+  onSeenOnPhone: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:seen-on-phone', handler);
+    return () => ipcRenderer.removeListener('zero:seen-on-phone', handler);
+  },
+  // A thread's link opened the app.
+  onThreadLink: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:thread-link', handler);
+    return () => ipcRenderer.removeListener('zero:thread-link', handler);
+  },
+  // A room invite link opened the app (Rooms, alpha).
+  onJoinRoom: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:join-room', handler);
+    return () => ipcRenderer.removeListener('zero:join-room', handler);
+  },
+  // A shared file's app link opened the app (main/bring-shared-file.mts).
+  onSharedFile: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:shared-file', handler);
+    return () => ipcRenderer.removeListener('zero:shared-file', handler);
+  },
+  // She clicked the banner. The window is already coming forward; this says
+  // which row it was about, so she lands on it rather than on wherever she
+  // left the cursor.
+  onOpenItem: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:open-item', handler);
+    return () => ipcRenderer.removeListener('zero:open-item', handler);
+  },
+  // The corner tag's "Turn off…": opens Settings at the switch that does it.
+  onOpenSettings: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:open-settings', handler);
+    return () => ipcRenderer.removeListener('zero:open-settings', handler);
+  },
+  // The window moved to a screen that wants the other set of theme pictures.
+  // Only main can see which physical display a window is on, and only main can
+  // read a display's density without page zoom folded into it, so this is the
+  // only way the page can know. It fires on a change, never on every drag.
+  onScreenDetail: (fn) => {
+    const handler = (_e, payload) => fn(payload);
+    ipcRenderer.on('zero:screen-detail', handler);
+    return () => ipcRenderer.removeListener('zero:screen-detail', handler);
+  },
+  // ⌘R is about to reload the page. Whatever she did in the last three seconds
+  // is still held for Z (`deferCommit`), so the page writes it first. One
+  // handler at a time, and the ask is answered above whether or not one is set.
+  onWriteHeld: (fn) => holdWriter(fn),
+  onEscapeBrowser: (fn) => {
+    const handler = () => fn();
+    ipcRenderer.on('zero:escape-browser', handler);
+    return () => ipcRenderer.removeListener('zero:escape-browser', handler);
+  },
+  // THE KEYS THE APP OWNS, forwarded from below the page, because the file in
+  // the document pane is its own document and no key reaches the app's own
+  // window listener from inside it.
+  //
+  // It carried Escape alone until 2026-08-24, which is why ⌘K was dead inside
+  // an open page and she reported it. It carries the press now and
+  // shared/artifact-keys.mts decides what the app does with it.
+  onKeyInTheFile: (fn) => {
+    const handler = (_e, payload) => fn(payload ?? {});
+    ipcRenderer.on('zero:key-in-the-file', handler);
+    return () => ipcRenderer.removeListener('zero:key-in-the-file', handler);
+  },
+});

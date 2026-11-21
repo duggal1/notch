@@ -1,0 +1,95 @@
+// A TEST THAT READS A FILE RUNS WHEN THAT FILE CHANGES.
+//
+// Measured 2026-10-04: a359d81 (w-f37a34def6) shipped with three tests red on
+// main. All three read renderer/src/components/Thread.tsx as TEXT
+// (readFileSync), so `vitest related Thread.tsx` -- what both the ship script
+// and the push hook run -- ran one test file and not those three. 75 test
+// files here read a source file that way. scripts/lib/tests-that-read.mjs
+// finds them, and both checks add them to what they run.
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { testsThatRead } from '../scripts/lib/tests-that-read.mjs';
+
+function repo(files) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reads-'));
+  for (const [f, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(root, f)), { recursive: true });
+    fs.writeFileSync(path.join(root, f), text);
+  }
+  return root;
+}
+
+describe('the tests that read a changed file', () => {
+  const root = repo({
+    'tests/joined.test.mjs': "const s = read('renderer', 'src', 'components', 'Thread.tsx');",
+    'tests/whole-path.test.mjs': "fs.readFileSync('renderer/src/components/Thread.tsx', 'utf8')",
+    'tests/url.test.mjs': "new URL('../renderer/src/components/Thread.tsx', import.meta.url)",
+    'tests/other.test.mjs': "read('renderer', 'src', 'components', 'AgentThread.tsx')",
+    'tests/word.test.mjs': '// the Thread component is drawn here',
+  });
+
+  it('includes a test naming it in any of the ways tests here read files', () => {
+    expect(testsThatRead(['renderer/src/components/Thread.tsx'], root).sort())
+      .toEqual(['tests/joined.test.mjs', 'tests/url.test.mjs', 'tests/whole-path.test.mjs']);
+  });
+
+  it('does not include a test that reads a file whose name only ends the same', () => {
+    expect(testsThatRead(['renderer/src/components/Thread.tsx'], root)).not.toContain('tests/other.test.mjs');
+  });
+
+  it('does not include a test that only says the word', () => {
+    expect(testsThatRead(['renderer/src/components/Thread.tsx'], root)).not.toContain('tests/word.test.mjs');
+  });
+
+  it('is nothing for nothing changed', () => {
+    expect(testsThatRead([], root)).toEqual([]);
+  });
+});
+
+// THE GATE THAT BLOCKS A PUSH USES IT. Since 2026-10-19 there is one such
+// gate: the hook. The ship script ran the same selection first and the push
+// ran it again, so it no longer selects anything
+// (tests/a-ship-runs-the-tests-once-not-twice).
+describe('the gate that blocks a push uses it', () => {
+  const here = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const read = (...f) => fs.readFileSync(path.join(here, ...f), 'utf8');
+
+  it('through what the hook asks for its test files', () => {
+    expect(read('scripts', 'hooks', 'pre-push')).toMatch(/tests-the-push-runs\.mjs/);
+    expect(read('scripts', 'lib', 'tests-the-push-runs.mjs')).toMatch(/testsThatRead\(/);
+  });
+
+  it('and still names it directly, for a checkout that has no such helper', () => {
+    expect(read('scripts', 'hooks', 'pre-push')).toMatch(/tests-that-read\.mjs/);
+  });
+
+  it('and the ship script selects no tests at all, so it cannot skip them', () => {
+    expect(read('scripts', 'ship.mjs')).not.toMatch(/vitest/);
+  });
+});
+
+// AND SO DOES THE CHECK AN AGENT MAKES BY HAND (w-89f1e810b4, 2026-10-05).
+//
+// The two above run at the end, when it is already a bounced ship. The one
+// before that is the command CLAUDE.md tells every agent to run before it
+// reports, and it was the bare `vitest related --run <changed files>`, which
+// is the selection this whole file exists because of. So the readers go in
+// there too, as one command, and CLAUDE.md names that one.
+describe('the check an agent makes before it reports', () => {
+  const here = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const read = (...f) => fs.readFileSync(path.join(here, ...f), 'utf8');
+
+  it('is one command, which selects the readers as well', () => {
+    expect(JSON.parse(read('package.json')).scripts['test:changed']).toBe('node scripts/test-what-changed.mjs');
+    expect(read('scripts', 'test-what-changed.mjs')).toMatch(/testsThatRead\(/);
+  });
+
+  it('is the command CLAUDE.md tells an agent to run', () => {
+    const rules = read('CLAUDE.md');
+    expect(rules).toMatch(/npm run test:changed/);
+    // And no longer the bare one, which skips a test that reads a file.
+    expect(rules).not.toMatch(/vitest related --run/);
+  });
+});
