@@ -13,7 +13,7 @@ This file is the truthful ledger: what was asked, what exists, what the evidence
 3. Stack, after your correction: **Tauri v2 + Rust + React 19 + TS strict + Tailwind v4 + Vite 8** (Swift host deleted).
 4. **DESIGN.md/FONT.md applied brutally**; typography overrides: Inter only, weights 400/500, sentence case (no all caps), tracking tied to size, grayscale-AA smoothing. Darker flat cards (`#171826`), pointer everywhere, zero slop (zero templates), SF Symbols rendered **on-device** only.
 5. A **standard macOS app** too — regular window, Dock icon, ⌘Tab, real composer; plus the notch popover.
-6. ~~Testing with headless **`opencode run --model opencode/hy4-flash-free`** discipline; panes run that machine default too (2026-11-19).~~ **Superseded 2026-11-20:** notch no longer forces any model. The judge omits `--model` and uses the operator's harness default; on rate limit it swaps once to a good free model that OpenCode actually lists.
+6. Testing with headless **`opencode run --model opencode/hy4-flash-free`** discipline; panes now run the machine default **`opencode/hy4-flash-free`** too (user reversal 2026-11-19: HY4 Flash Free, not inkling-2-small-free).
 7. "Open it up for me" — the app has been compiled, rebuilt, and **opened on your screen** (pid-verified).
 8. Backend finished by ≥ 6 sub-agents with aggressive headless testing; code quality genuinely better. **Eight agents launched** (see §7); not all have reported.
 
@@ -72,7 +72,7 @@ UI screenshots live in `.proof/agents/web-ui/` (rest/peek/open × 6 demos, pill 
 
 ## 6. Architecture discipline (unchanged)
 
-OpenCode is a black box. notch never touches its sub-agents/tool loop. All OpenCode traffic goes through herdr CLI, `opencode api GET /api/session` (read-only), `opencode models` (read-only), and `opencode run [--model …]` for supervisor decider calls only. The judge defaults to the operator's harness model (no `--model`); an explicit per-session model is passed through, and a rate limit triggers one swap to a good-quality free model from `opencode models`. No new multiplexer, no new windows, no Ghostty fight; panes stay in herdr; "Open in herdr" focuses them.
+OpenCode is a black box. notch never touches its sub-agents/tool loop. All OpenCode traffic goes through herdr CLI, `opencode api GET /api/session` (read-only), `opencode models` (read-only), and `opencode run --model …` for supervisor decider calls only (free model `hy4-flash-free`). No new multiplexer, no new windows, no Ghostty fight; panes stay in herdr; "Open in herdr" focuses them.
 
 ## 7. The eight backend agents (requested ≥ 6; running concurrently)
 
@@ -109,10 +109,10 @@ Each must land with evidence or it does not count. No `cargo clean` anywhere; no
 
 ## 5.1 The gate, twice, with exact numbers
 ```
-cargo test --workspace --no-fail-fast   → 294 passed, 0 failed, 7 ignored (exit 0)
+cargo test --workspace --no-fail-fast   → 387 passed, 0 failed, 7 ignored (exit 0)   [pinned baseline 7b29c4f]
 cargo clippy --workspace --all-targets -- -D warnings → finished, exit 0, zero diagnostics
 ```
-Two consecutive full passes with no code changes between them: pass 3 and pass 4 both `294/0/7`, log at `.proof/agents/final-gate-{3,4}.log`; clippy at `.proof/agents/final-clippy.log`. The 7 ignores are pre-existing and documented (watchdog frozen-revision probe, real-git cost probe, soak wall-time probe, two fault probes, perf benchmark, shared-cwd twin now proven passing and un-ignored in attribution).
+The pinned baseline is 387/0/7, recomputed from the raw audit run1 log (`.proof/audit-ledger.md:56`: 64 result summaries, `RUN1_EXIT` present). The former `294/0/7` figure came from the later hardening-round logs `.proof/agents/final-gate-{3,4}.log`; those are a different run and were wrongly presented as the pin baseline. Post-fix final counts come from `scripts/gate.sh` at phase 3 (raw output in `.proof/fix/`); neither figure above is the final number. The 7 ignores are pre-existing and documented (watchdog frozen-revision probe, real-git cost probe, soak wall-time probe, two fault probes, perf benchmark, shared-cwd twin now proven passing and un-ignored in attribution).
 
 ## 5.2 V1 hardening verifier — 10 defects, all now closed
 V1's pre-fix verdict: 2 PASS / 8 FAIL (`.proof/agents/verify-hardening/REPORT.md`, 313 lines). Every FAIL was routed red→green:

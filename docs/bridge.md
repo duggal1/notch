@@ -72,7 +72,7 @@ Mapping from herdr (`agent_status`): `working→working`, `idle→idle`, `done�
       "maxIterations": 8,                    // v1.3 optional; budget (default 8)
       "wallClockDeadline": 1763523600000,    // v1.3 optional; ms epoch
       "lastSupervisorAction": "re-prompt: tests not run",  // v1.3 optional + reason, one line
-      "model": "auto"                        // v1.3 optional; "auto" = harness default
+      "model": "opencode/hy4-flash-free"     // v1.3 optional
     }
   ],
   "eps": 6.5,                                // bus events/sec, float
@@ -191,11 +191,11 @@ Per session the supervisor tracks:
 
 **Supervisor decision loop** (when a session's idle is detected):
 1. Read the session's tail output (`herdr agent read <target>`, last ~200 lines).
-2. Ask an OpenCode call (black-box headless `opencode run [--model …]`) to judge: `done` / `continue` / `stuck` — with the goal, the DoD, the tail output, and the iteration counter. **Default: no `--model` flag**, so the operator's own OpenCode default model is used; an explicit per-session model (UI/`--model`) is passed through verbatim. The orchestrator makes **zero** model calls.
+2. Ask an OpenCode call (**free model `opencode/hy4-flash-free`** via `opencode run --model …`, black-box headless) to judge: `done` / `continue` / `stuck` — with the goal, the DoD, the tail output, and the iteration counter. The orchestrator makes **zero** model calls.
 3. `done` → verify DoD via the same call demanding evidence (tests/output/screenshot paths). Only mark session `done` when the verifier accepts evidence; otherwise re-prompt for the missing evidence.
 4. `continue` → paste the next prompt (concrete, specific, references what's missing). `iterations += 1`.
 5. `stuck` → re-prompt with a **different framing** (new instruction, not the same one). If stuck persists across 3 consecutive identical outputs or the same error repeats → **loop detection** → change strategy (fresh framing / new session / model swap) once, then **escalate**.
-6. Budgets: `iterations ≥ maxIterations` or wall-clock exceeded → **escalate**. Rate-limit (429/quota in the pane tail or the decider call) → backoff with jitter and **one** retry/swap to a good-quality free model that the operator's `opencode models` actually lists (toy/tiny models excluded); the choice is persisted on the session. Never hammer; no forced house model.
+6. Budgets: `iterations ≥ maxIterations` or wall-clock exceeded → **escalate**. Rate-limit (429/quota) → backoff with jitter + swap model once, never hammer.
 7. **Never** re-prompt a session that is `working`. **Never** re-prompt during an active tool call.
 8. Concurrent edits: attribute every change to a session id; serialize sessions touching the same files (wait for one to go idle); real conflicts → escalate, never auto-merge.
 9. **Kill switch**: `kill_switch` (§2/§3) — one click, closes all managed panes, marks failed, cleans up. **Pause**: `pause_supervisor` per supervisor. Both always one click, always work.

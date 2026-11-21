@@ -20,14 +20,13 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
   const last = useMemo(() => decisions?.find((d) => d.supervisor === sup.id) ?? null, [decisions, sup.id]);
 
   const charter = useMemo(() => {
-    if (sup.title) return sup.title;
     if (last) return capitalizeSentence(last.reason);
     const working = own.find((s) => s.status === 'working');
     if (working?.lastAction) return `${working.id} ${working.lastAction}`;
     if (sup.paused) return 'Paused — live sessions keep running';
     if (own.length === 0) return 'No sessions assigned';
     return 'Idle — no decisions yet';
-  }, [last, own, sup.paused, sup.title]);
+  }, [last, own, sup.paused]);
 
   const model = useMemo(() => own.find((s) => s.model)?.model ?? null, [own]);
   const age = last ? fmtAge(last.at, now) : '—';
@@ -52,15 +51,15 @@ export const SupervisorRow = memo(function SupervisorRow({ sup, sessions, decisi
           <span className="sup-actions" data-actions>
             <button className="act" aria-label={`Message ${sup.id}`} title="Message supervisor"
               onClick={(e) => { e.stopPropagation(); onMessage(sup.id); }}>
-              <PixelIcon name="bubble" size={24} />
+              <PixelIcon name="bubble" size={12} />
             </button>
             <button className="act" aria-label={sup.paused ? `Resume ${sup.id}` : `Pause ${sup.id}`} title={sup.paused ? 'Resume' : 'Pause'}
               onClick={(e) => { e.stopPropagation(); onTogglePause(sup); }}>
-              {sup.paused ? <PixelIcon name="play" size={24} /> : <PixelIcon name="pause" size={24} />}
+              {sup.paused ? <PixelIcon name="play" size={12} /> : <PixelIcon name="pause" size={12} />}
             </button>
             <button className="act" aria-label={`Kill all sessions under ${sup.id}`} title={`Kill every session under ${sup.id}`}
               onClick={(e) => { e.stopPropagation(); onKill(sup.id); }}>
-              <PixelIcon name="kill" size={24} />
+              <PixelIcon name="kill" size={12} />
             </button>
           </span>
         </span>

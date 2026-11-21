@@ -22,78 +22,9 @@ use crate::model::single_line;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// Default decider model selection: `auto` means **use the harness default**.
-/// The decider then omits `--model` entirely, so OpenCode uses whatever model
-/// the operator configured in their own harness — no house model is forced on
-/// anyone. A per-session `model` (UI or `--model`) still overrides this.
-pub const DECIDER_MODEL: &str = "auto";
-
-/// `true` for sentinel values that mean "let the harness choose its default".
-pub fn is_default_model(model: &str) -> bool {
-    matches!(model.trim().to_ascii_lowercase().as_str(), "" | "auto" | "default")
-}
-
-/// Free models have a `free` label in their OpenCode model id (`-free` for the
-/// built-in provider, `:free` for OpenRouter-style ids).
-pub fn is_free_model(id: &str) -> bool {
-    let lower = id.to_ascii_lowercase();
-    lower.contains("-free") || lower.contains(":free")
-}
-
-/// Ordered shortlist of good-quality free models. This is a preference order,
-/// not a forced default: a fallback is only ever picked from models the
-/// operator's OpenCode actually reports via `opencode models`.
-const PREFERRED_FREE_MODELS: &[&str] = &[
-    "opencode/deepseek-v4.1-flash-free",
-    "opencode/mimo-v2.6-flash-free",
-    "opencode/nemotron-3.5-super-vl-free",
-    "opencode/hy4-flash-free",
-    "opencode/flint-40b-free",
-    "opencode/longcat-2.5-free",
-    "opencode/inkling-2-small-free",
-    "opencode/iceman-free",
-    "opencode/beam-free",
-    "opencode/tidepool-alpha-free",
-];
-
-/// Tiny/toy models are not good enough to supervise an overnight run, even
-/// when they carry a free label.
-fn is_toy_model(id: &str) -> bool {
-    let lower = id.to_ascii_lowercase();
-    ["0.5b", "0.6b", "1.7b", "nano", "micro", "tiny"]
-        .iter()
-        .any(|needle| lower.contains(needle))
-}
-
-/// Pick one good-quality free model from `available`, deterministically.
-/// Never returns the current model (so a repeat rate limit can move on), never
-/// returns a toy model, and returns `None` when nothing suitable is installed.
-pub fn pick_free_fallback(available: &[String], current: &str) -> Option<String> {
-    let current = current.trim();
-    let suitable = |id: &String| -> bool {
-        is_free_model(id) && !is_toy_model(id) && !(current == id && !is_default_model(current))
-    };
-    for wanted in PREFERRED_FREE_MODELS {
-        if let Some(found) = available.iter().find(|id| id.as_str() == *wanted && suitable(id)) {
-            return Some(found.clone());
-        }
-    }
-    let mut any: Vec<&String> = available.iter().filter(|id| suitable(id)).collect();
-    any.sort();
-    any.dedup();
-    any.first().map(|id| (*id).clone())
-}
-
-/// Shared rate-limit classifier. Used for pane tails, decider error output and
-/// subprocess stderr so the marker list lives in exactly one place.
-pub fn contains_rate_limit(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("429")
-        || lower.contains("rate limit")
-        || lower.contains("quota")
-        || lower.contains("resource_exhausted")
-        || lower.contains("too many requests")
-}
+/// Decider model for supervision passes. The user's explicit testing rule:
+/// hy4-flash-free. Per-session `model` overrides it.
+pub const DECIDER_MODEL: &str = "opencode/hy4-flash-free";
 
 /// Long-lived decider session id. `opencode run --session` requires ids that
 /// start with `ses` (verified against opencode v2.3.2). Override with
@@ -116,10 +47,20 @@ pub fn decider_session_id_for(session_id: &str) -> String {
     let safe: String = session_id
         .trim()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect();
-    let safe = if safe.is_empty() { "unknown".to_string() } else { safe };
+    let safe = if safe.is_empty() {
+        "unknown".to_string()
+    } else {
+        safe
+    };
     format!("ses_notch_{safe}")
 }
 
@@ -141,7 +82,11 @@ pub fn random_marker() -> String {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
         bytes = t
-            .wrapping_add(NONCE.fetch_add(1, Ordering::SeqCst).wrapping_mul(0x9E3779B97F4A7C15))
+            .wrapping_add(
+                NONCE
+                    .fetch_add(1, Ordering::SeqCst)
+                    .wrapping_mul(0x9E3779B97F4A7C15),
+            )
             .to_le_bytes();
     }
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -259,47 +204,67 @@ pub fn parse_decider_output(raw: &str) -> DeciderVerdict {
         .find(|l| !l.is_empty())
         .unwrap_or_default();
     if is_fence_line(&first) || first.is_empty() {
-        return DeciderVerdict::Unparseable { head: first.chars().take(120).collect() };
+        return DeciderVerdict::Unparseable {
+            head: first.chars().take(120).collect(),
+        };
     }
     let line = first.trim_matches('`').trim();
     let upper = line.to_uppercase();
     if upper.starts_with("DONE:") {
         let rest = line["DONE:".len()..].trim();
         if rest.is_empty() {
-            return DeciderVerdict::Unparseable { head: line.to_string() };
+            return DeciderVerdict::Unparseable {
+                head: line.to_string(),
+            };
         }
-        return DeciderVerdict::Done { evidence: rest.to_string() };
+        return DeciderVerdict::Done {
+            evidence: rest.to_string(),
+        };
     }
     if upper.starts_with("CONTINUE:") {
         let rest = line["CONTINUE:".len()..].trim();
         // A shell-shaped instruction is not a usable next step: it takes the
         // honest unparseable-strike path instead of being typed into a pane.
         let Some(instruction) = sanitize_instruction(rest) else {
-            return DeciderVerdict::Unparseable { head: line.chars().take(120).collect() };
+            return DeciderVerdict::Unparseable {
+                head: line.chars().take(120).collect(),
+            };
         };
         return DeciderVerdict::Continue { instruction };
     }
     if upper.starts_with("STUCK:") {
         let rest = line["STUCK:".len()..].trim();
         if rest.is_empty() {
-            return DeciderVerdict::Unparseable { head: line.to_string() };
+            return DeciderVerdict::Unparseable {
+                head: line.to_string(),
+            };
         }
-        return DeciderVerdict::Stuck { blocker: rest.to_string() };
+        return DeciderVerdict::Stuck {
+            blocker: rest.to_string(),
+        };
     }
     // A bare keyword with no colon is still a valid verdict ("DONE").
     if upper == "DONE" || upper.starts_with("DONE ") {
-        return DeciderVerdict::Done { evidence: line[4..].trim().to_string() };
+        return DeciderVerdict::Done {
+            evidence: line[4..].trim().to_string(),
+        };
     }
     if upper == "CONTINUE" || upper.starts_with("CONTINUE ") {
         let Some(instruction) = sanitize_instruction(&line[8..]) else {
-            return DeciderVerdict::Unparseable { head: line.chars().take(120).collect() };
+            return DeciderVerdict::Unparseable {
+                head: line.chars().take(120).collect(),
+            };
         };
         return DeciderVerdict::Continue { instruction };
     }
     if upper == "STUCK" || upper.starts_with("STUCK ") {
-        return DeciderVerdict::Stuck { blocker: line[5..].trim().to_string() };
+        return DeciderVerdict::Stuck {
+            blocker: line[5..].trim().to_string(),
+        };
     }
-    DeciderVerdict::Unparseable { head: line.chars().take(120).collect() }
+    DeciderVerdict::Unparseable {
+        head: line.chars().take(120).collect(),
+    }
 }
 
 /// Verifier verdicts for the DONE path.
@@ -318,31 +283,47 @@ pub fn parse_verifier_output(raw: &str) -> VerifierVerdict {
         .find(|l| !l.is_empty())
         .unwrap_or_default();
     if is_fence_line(&first) || first.is_empty() {
-        return VerifierVerdict::Unparseable { head: first.chars().take(120).collect() };
+        return VerifierVerdict::Unparseable {
+            head: first.chars().take(120).collect(),
+        };
     }
     let line = first.trim_matches('`').trim();
     let upper = line.to_uppercase();
     if upper.starts_with("YES:") {
         let rest = line["YES:".len()..].trim();
         if rest.is_empty() {
-            return VerifierVerdict::Unparseable { head: line.to_string() };
+            return VerifierVerdict::Unparseable {
+                head: line.to_string(),
+            };
         }
-        return VerifierVerdict::Yes { why: rest.to_string() };
+        return VerifierVerdict::Yes {
+            why: rest.to_string(),
+        };
     }
     if upper.starts_with("NO:") {
         let rest = line["NO:".len()..].trim();
         if rest.is_empty() {
-            return VerifierVerdict::Unparseable { head: line.to_string() };
+            return VerifierVerdict::Unparseable {
+                head: line.to_string(),
+            };
         }
-        return VerifierVerdict::No { missing: rest.to_string() };
+        return VerifierVerdict::No {
+            missing: rest.to_string(),
+        };
     }
     if upper == "YES" || upper.starts_with("YES ") {
-        return VerifierVerdict::Yes { why: line[3..].trim().to_string() };
+        return VerifierVerdict::Yes {
+            why: line[3..].trim().to_string(),
+        };
     }
     if upper == "NO" || upper.starts_with("NO ") {
-        return VerifierVerdict::No { missing: line[2..].trim().to_string() };
+        return VerifierVerdict::No {
+            missing: line[2..].trim().to_string(),
+        };
     }
-    VerifierVerdict::Unparseable { head: line.chars().take(120).collect() }
+    VerifierVerdict::Unparseable {
+        head: line.chars().take(120).collect(),
+    }
 }
 
 pub fn decider_prompt(
@@ -423,7 +404,13 @@ that proves it, or state precisely what is in the way."
 pub fn normalize(s: &str) -> String {
     s.to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c.is_whitespace() {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -474,12 +461,16 @@ pub fn parse_local_check(line: &str) -> Option<LocalCheck> {
     let s = line.trim();
     if let Some(text) = s.strip_prefix("output contains:") {
         let text = text.trim();
-        return (!text.is_empty()).then(|| LocalCheck::OutputContains { text: text.to_string() });
+        return (!text.is_empty()).then(|| LocalCheck::OutputContains {
+            text: text.to_string(),
+        });
     }
     let rest = s.strip_prefix("file:")?;
     if let Some(path) = rest.strip_suffix(" exists") {
         let path = path.trim();
-        return (!path.is_empty()).then(|| LocalCheck::FileExists { path: path.to_string() });
+        return (!path.is_empty()).then(|| LocalCheck::FileExists {
+            path: path.to_string(),
+        });
     }
     if let Some((path, text)) = rest.split_once(" contains:") {
         let (path, text) = (path.trim(), text.trim());
@@ -516,7 +507,11 @@ pub fn evaluate_local_dod(dod: Option<&str>, cwd: &str, tail: &str) -> LocalChec
     let Some(dod) = dod else {
         return LocalCheckOutcome::NotRunnable;
     };
-    let lines: Vec<&str> = dod.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = dod
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     if lines.is_empty() {
         return LocalCheckOutcome::NotRunnable;
     }
@@ -555,10 +550,7 @@ pub fn evaluate_local_dod(dod: Option<&str>, cwd: &str, tail: &str) -> LocalChec
                     evidence.push(format!("file {path} contains '{}'", log_head(&text, 60)));
                 } else {
                     return LocalCheckOutcome::Missing {
-                        reason: format!(
-                            "file {path} does not contain '{}'",
-                            log_head(&text, 60)
-                        ),
+                        reason: format!("file {path} does not contain '{}'", log_head(&text, 60)),
                     };
                 }
             }
@@ -567,16 +559,15 @@ pub fn evaluate_local_dod(dod: Option<&str>, cwd: &str, tail: &str) -> LocalChec
                     evidence.push(format!("pane output contains '{}'", log_head(&text, 60)));
                 } else {
                     return LocalCheckOutcome::Missing {
-                        reason: format!(
-                            "pane output does not contain '{}'",
-                            log_head(&text, 60)
-                        ),
+                        reason: format!("pane output does not contain '{}'", log_head(&text, 60)),
                     };
                 }
             }
         }
     }
-    LocalCheckOutcome::Satisfied { evidence: evidence.join("; ") }
+    LocalCheckOutcome::Satisfied {
+        evidence: evidence.join("; "),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -719,7 +710,9 @@ mod tests {
     fn parse_local_check_accepts_only_the_three_forms() {
         assert_eq!(
             parse_local_check("file:tests/a.rs exists"),
-            Some(LocalCheck::FileExists { path: "tests/a.rs".into() })
+            Some(LocalCheck::FileExists {
+                path: "tests/a.rs".into()
+            })
         );
         assert_eq!(
             parse_local_check("file:tests/a.rs contains:test_jsonify"),
@@ -730,7 +723,9 @@ mod tests {
         );
         assert_eq!(
             parse_local_check("output contains:2 passed"),
-            Some(LocalCheck::OutputContains { text: "2 passed".into() })
+            Some(LocalCheck::OutputContains {
+                text: "2 passed".into()
+            })
         );
         // Honest rejection: anything else falls through to the model.
         for bad in [
@@ -751,7 +746,9 @@ mod tests {
         fs::create_dir_all(d.join("tests")).unwrap();
         fs::write(d.join("tests/a.rs"), "fn test_jsonify() {}").unwrap();
         let outcome = evaluate_local_dod(
-            Some("file:tests/a.rs exists\nfile:tests/a.rs contains:test_jsonify\noutput contains:ok"),
+            Some(
+                "file:tests/a.rs exists\nfile:tests/a.rs contains:test_jsonify\noutput contains:ok",
+            ),
             d.to_str().unwrap(),
             "tests passed: ok",
         );
@@ -770,11 +767,8 @@ mod tests {
     fn evaluate_missing_is_specific_and_never_faked() {
         let d = tmp_dir();
         fs::write(d.join("a.txt"), "hello world").unwrap();
-        let outcome = evaluate_local_dod(
-            Some("file:a.txt contains:goodbye"),
-            d.to_str().unwrap(),
-            "",
-        );
+        let outcome =
+            evaluate_local_dod(Some("file:a.txt contains:goodbye"), d.to_str().unwrap(), "");
         match outcome {
             LocalCheckOutcome::Missing { reason } => {
                 assert!(reason.contains("a.txt"), "{reason}");
@@ -793,11 +787,18 @@ mod tests {
         let d = tmp_dir();
         // A single non-grammar line makes the whole DoD non-checkable.
         assert!(matches!(
-            evaluate_local_dod(Some("file:a.txt exists\ncargo test passes"), d.to_str().unwrap(), ""),
+            evaluate_local_dod(
+                Some("file:a.txt exists\ncargo test passes"),
+                d.to_str().unwrap(),
+                ""
+            ),
             LocalCheckOutcome::NotRunnable
         ));
         // No DoD at all.
-        assert!(matches!(evaluate_local_dod(None, d.to_str().unwrap(), ""), LocalCheckOutcome::NotRunnable));
+        assert!(matches!(
+            evaluate_local_dod(None, d.to_str().unwrap(), ""),
+            LocalCheckOutcome::NotRunnable
+        ));
         // A missing file is a concrete Missing condition (honest, specific),
         // never a fake pass and never a silent fall-through.
         assert!(matches!(
@@ -830,7 +831,10 @@ mod tests {
     #[test]
     fn decider_session_id_is_opencode_compatible() {
         let id = decider_session_id();
-        assert!(id.starts_with("ses"), "opencode requires a ses-prefixed id: {id}");
+        assert!(
+            id.starts_with("ses"),
+            "opencode requires a ses-prefixed id: {id}"
+        );
         assert!(!id.is_empty());
     }
 }

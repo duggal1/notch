@@ -1,6 +1,6 @@
 //! Per-session attribution: which session touched which file.
 //!
-//! `git --no-optional-locks -C <cwd> status --porcelain=v1` is sampled while
+//! `git --no-optional-locks -C <cwd> status --porcelain=v1 -z` is sampled while
 //! a session is working. Any git failure (not a repo, no git, timeout) is a
 //! NON-signal, never an error — the daemon keeps running and attribution
 //! simply has no entry for that poll.
@@ -14,39 +14,31 @@ const PER_SESSION_CAP: usize = 64;
 const SNAPSHOT_CAP: usize = 24;
 const TRACKED_CAP: usize = 512;
 
-/// Parse `git status --porcelain=v1` output into relative file paths.
-/// Handles `XY path`, untracked `?? path`, and rename lines `R  old -> new`
-/// (the new path wins). Paths with quotes are unquoted and C-unescaped.
-pub fn parse_porcelain(out: &str) -> Vec<String> {
-    let mut files = Vec::new();
-    for line in out.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-        let path = &line[3..];
-        let path = if let Some((_, new)) = path.split_once(" -> ") {
-            new
-        } else {
-            path
-        };
-        let path = unquote_git_path(path.trim());
-        if !path.is_empty() {
-            files.push(path);
-        }
-    }
-    files.sort();
-    files.dedup();
-    files
+// Preserve exact artifact identity, as AgentBox does in
+// shared/artifact-marks.mts:779-796. Git's NUL mode keeps whitespace and
+// punctuation literal. Ignore an incomplete final record after output capping.
+fn paths(out: &str) -> impl Iterator<Item = &str> {
+    out.split_inclusive('\0')
+        .filter_map(|record| record.strip_suffix('\0'))
 }
 
-fn unquote_git_path(p: &str) -> String {
-    let p = p.trim();
-    if p.len() >= 2 && p.starts_with('"') && p.ends_with('"') {
-        // git quotes paths with special chars as C-style strings; strips quotes
-        // and leave the interior as-is (good enough for tracking purposes).
-        return p[1..p.len() - 1].to_string();
+fn parse_porcelain(out: &str) -> Vec<String> {
+    let mut records = paths(out);
+    let mut files = Vec::new();
+    while let Some(record) = records.next() {
+        let Some(path) = record.get(3..) else {
+            continue;
+        };
+        if record.as_bytes()[..2]
+            .iter()
+            .any(|b| matches!(b, b'R' | b'C'))
+            && records.next().is_none()
+        {
+            break;
+        }
+        files.push(path.to_string());
     }
-    p.to_string()
+    files
 }
 
 /// Sample one worktree's exact file set: commits since this session's base
@@ -59,37 +51,36 @@ pub fn sample_git(cwd: &Path) -> Vec<String> {
 }
 
 /// Exact attribution for `cwd` relative to `base_rev`:
-/// `git diff --name-only <base>..HEAD` (committed by this session) unioned
-/// with `git status --porcelain=v1` (WIP). Sorted, deduped, capped by caller.
+/// Committed paths since `base_rev` plus working tree changes. Sorted,
+/// deduped, capped by caller.
 pub fn sample_git_at(cwd: &Path, base_rev: Option<&str>) -> Vec<String> {
     let mut files = Vec::new();
-    if let Ok(out) = crate::worktree::git_run(&["status", "--porcelain=v1"], Some(cwd)) {
+    if let Ok(out) = crate::worktree::git_run(
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ],
+        Some(cwd),
+    ) {
         if out.ok {
             files.extend(parse_porcelain(&out.stdout));
         }
     }
     if let Some(base) = base_rev {
         let range = format!("{base}..HEAD");
-        if let Ok(out) = crate::worktree::git_run(&["diff", "--name-only", range.as_str()], Some(cwd)) {
+        if let Ok(out) =
+            crate::worktree::git_run(&["diff", "--name-only", "-z", range.as_str()], Some(cwd))
+        {
             if out.ok {
-                files.extend(parse_name_only(&out.stdout));
+                files.extend(paths(&out.stdout).map(str::to_string));
             }
         }
     }
     files.sort();
     files.dedup();
-    files
-}
-
-/// `git diff --name-only` emits bare paths (no `XY ` status prefix).
-fn parse_name_only(out: &str) -> Vec<String> {
-    let mut files = Vec::new();
-    for line in out.lines() {
-        let path = unquote_git_path(line.trim());
-        if !path.is_empty() {
-            files.push(path);
-        }
-    }
     files
 }
 

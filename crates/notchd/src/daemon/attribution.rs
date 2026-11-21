@@ -127,11 +127,9 @@ impl Daemon {
             let mut inner = lock(&self.inner);
             // Drop only conflicts whose BOTH sessions are isolated (those are
             // now decided by merge-tree). Legacy filename conflicts survive.
-            inner.conflicts.retain(|c| {
-                c.sessions
-                    .iter()
-                    .any(|s| !worktrees.contains_key(s))
-            });
+            inner
+                .conflicts
+                .retain(|c| c.sessions.iter().any(|s| !worktrees.contains_key(s)));
             for entry in fresh {
                 if !inner
                     .conflicts
@@ -145,7 +143,6 @@ impl Daemon {
         }
     }
 }
-
 
 /// Does this session run in a private worktree (rather than a shared cwd)?
 fn has_worktree(inner: &Inner, session: &str) -> bool {
@@ -196,8 +193,8 @@ pub(crate) fn record_attribution_locked(
         // Isolated worktrees make a shared FILE NAME a non-signal: two agents
         // may touch `src/x.rs` in their own worktree without any real merge
         // conflict. `Daemon::refresh_conflicts` decides those via merge-tree.
-        let isolated = has_worktree(inner, session)
-            && others.iter().all(|s| has_worktree(inner, s));
+        let isolated =
+            has_worktree(inner, session) && others.iter().all(|s| has_worktree(inner, s));
         if !others.is_empty() && !isolated {
             let mut sessions: Vec<String> = others.into_iter().collect();
             sessions.push(session.to_string());

@@ -4,10 +4,7 @@
 //! process: every command line is built from a definition's `RunFlags`, and an
 //! engine that did not declare pane capability cannot reach a spawn operation.
 
-#[path = "../src/harness_registry.rs"]
-mod harness_registry;
-
-use harness_registry::*;
+use notchd::harness_registry::*;
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -34,10 +31,7 @@ fn absent_flags_are_omitted_and_flag_order_is_stable() {
         pre_payload: Vec::new(),
         post_payload: Vec::new(),
     };
-    assert_eq!(
-        worker_args(&bare, &req),
-        vec!["pane", "split", "do work"]
-    );
+    assert_eq!(worker_args(&bare, &req), vec!["pane", "split", "do work"]);
 }
 
 #[test]
@@ -169,9 +163,17 @@ fn engine_ids_are_validated_as_literal_lowercase_names() {
     assert!(is_valid_engine_id("herdr"));
     assert!(is_valid_engine_id("open-code"));
     assert!(is_valid_engine_id("a"));
-    for bad in ["", "Herdr", "1herdr", "-herdr", "herdr!", "has space", "../etc"] {
+    for bad in [
+        "",
+        "Herdr",
+        "1herdr",
+        "-herdr",
+        "herdr!",
+        "has space",
+        "../etc",
+    ] {
         assert!(!is_valid_engine_id(bad), "{bad:?} must be rejected");
     }
-    let long = "a".repeat(crate::harness_registry::MAX_ENGINE_ID_LEN + 1);
+    let long = "a".repeat(notchd::harness_registry::MAX_ENGINE_ID_LEN + 1);
     assert!(!is_valid_engine_id(&long));
 }

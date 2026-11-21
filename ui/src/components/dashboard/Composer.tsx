@@ -2,7 +2,7 @@
 // A prompt gutter and a hard 1px well: this is a terminal you type work into, not a chat box.
 // The dither appears only during `sending`: pixels leave the Assign button and fly into the beam.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { submitTask, listModels, type Session } from '../../lib/bridge';
+import { submitTask, listModels, invokePayload, type Session } from '../../lib/bridge';
 import { PixelIcon } from '../PixelIcon';
 
 export type ComposerTarget = { kind: 'supervisor' | 'session'; id: string } | null;
@@ -24,7 +24,10 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     } catch { /* storage may be unavailable */ }
     return '';
   });
-  const [cwd] = useState(() => { try { return localStorage.getItem('notch.cwd') ?? '/Users/harshitduggal'; } catch { return '/Users/harshitduggal'; } });
+  const [dod, setDod] = useState('');
+  const [dodOpen, setDodOpen] = useState(false);
+  const [cwd, setCwd] = useState(() => { try { return localStorage.getItem('notch.cwd') ?? '/Users/harshitduggal'; } catch { return '/Users/harshitduggal'; } });
+  const [cwdHint, setCwdHint] = useState(false);
   const [model, setModel] = useState(() => { try { return localStorage.getItem('notch.model') ?? 'auto'; } catch { return 'auto'; } });
   const [models, setModels] = useState<string[]>(FALLBACK_MODELS);
   const [modelOpen, setModelOpen] = useState(false);
@@ -41,7 +44,7 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
   // prefills (escalations "Re-prompt fresh"): replace contents and focus
   useEffect(() => {
     if (prefill) {
-      setTask((p) => (p.trim() ? p : prefill.text));
+      setTask(prefill.text);
       taRef.current?.focus();
     }
   }, [prefill?.at]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -89,19 +92,20 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
     const text = task.trim();
     if (!text || state === 'sending') return;
     const cwdClean = cwd.trim();
+    if (!targetSession && cwdClean && !cwdClean.startsWith('/')) { setCwdHint(true); return; }
     const t0 = performance.now();
     setState('sending');
-    try { localStorage.setItem('notch.model', model); } catch { /* storage may be unavailable */ }
-    const res = await submitTask({
-      task: text,
-      cwd: cwdClean || undefined,
-      model: model || undefined,
-      supervisorId: targetSupervisorId,
-    });
+    try { localStorage.setItem('notch.cwd', cwdClean); localStorage.setItem('notch.model', model); } catch { /* storage may be unavailable */ }
+    const res = targetSession
+      ? await invokePayload({ cmd: 'reprompt', id: targetSession, text }, { ok: false, error: 'Could not re-prompt the session', sessionId: targetSession })
+      : await submitTask({
+          task: text, cwd: cwdClean || undefined, definitionOfDone: dod.trim() || undefined,
+          model: model || undefined, supervisorId: targetSupervisorId,
+        });
     const ms = Math.round(performance.now() - t0);
     if (res.ok) {
-      setTask('');
-      setState({ ok: true, id: res.sessionId, ms });
+      setTask(''); setDod(''); setCwdHint(false);
+      setState({ ok: true, id: res.sessionId ?? targetSession ?? undefined, ms });
       window.setTimeout(autosize, 0);
       window.setTimeout(() => setState('idle'), 2400);
     } else {
@@ -121,50 +125,72 @@ export function Composer({ selection, sessions, prefill, focusSignal }: {
 
   return (
     <div className="composer">
-      {targetChipLabel && (
-        <div className="composer-target">
-          <span>→ {targetChipLabel}</span>
-          <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
-            onClick={() => setTargetSession(null)}>
-            <PixelIcon name="close" size={12} />
-          </button>
+      <div className="composer-beam">
+        {targetChipLabel && (
+          <div className="composer-target">
+            <span>→ {targetChipLabel}</span>
+            <button className="chip-clear" aria-label="Clear target — assign to a new supervisor" title="Clear target"
+              onClick={() => setTargetSession(null)}>
+              <PixelIcon name="close" size={12} />
+            </button>
+          </div>
+        )}
+        <div className="composer-box">
+          <span className="composer-prompt" aria-hidden="true">›</span>
+          <textarea
+            ref={taRef}
+            className="composer-input"
+            rows={1}
+            placeholder={targetSession ? "What should this agent do next?" : "What should the agent do?"}
+            value={task}
+            onChange={(e) => { setTask(e.target.value); autosize(); }}
+            onKeyDown={onKeyDown}
+            aria-label="Assign work to a session"
+          />
         </div>
-      )}
-      <div className="composer-box">
-        <textarea
-          ref={taRef}
-          className="composer-input"
-          rows={1}
-          placeholder="What should the agent do?"
-          value={task}
-          onChange={(e) => { setTask(e.target.value); autosize(); }}
-          onKeyDown={onKeyDown}
-          aria-label="Assign work to a session"
-        />
-      </div>
-      <div className="composer-row">
-        <div ref={menuRef} className="model-picker">
-          <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
-            <span className="tabular-nums">{model}</span>
-            <PixelIcon name="chevron" size={12} />
+        {!targetSession && <div className="composer-dod">
+          <button className="linklike" onClick={() => setDodOpen((v) => !v)} aria-expanded={dodOpen}>
+            <PixelIcon name="chevron" size={12} className={dodOpen ? 'rotate-180' : ''} />
+            Done when…
           </button>
-          {modelOpen && (
-            <ul className="model-menu" role="listbox" aria-label="Model">
-              {models.map((m) => (
-                <li key={m} role="option" aria-selected={m === model}>
-                  <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
-                    <span className="tabular-nums">{m}</span>
-                    {m === model && <PixelIcon name="check" size={12} />}
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {dodOpen && (
+            <input className="dod-input" value={dod} onChange={(e) => setDod(e.target.value)}
+              placeholder="tests pass, docs updated, evidence pasted" aria-label="Definition of done" />
           )}
+        </div>}
+        <div className="composer-row">
+          {!targetSession && <>
+          <label className="cwd-field">
+            <PixelIcon name="folder" size={12} />
+            <input value={cwd} onChange={(e) => { setCwd(e.target.value); setCwdHint(false); }}
+              onBlur={() => setCwdHint(cwd.trim().length > 0 && !cwd.trim().startsWith('/'))}
+              spellCheck={false} aria-label="Working directory" />
+          </label>
+          <div ref={menuRef} className="model-picker">
+            <button className="model-btn" onClick={() => setModelOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={modelOpen}>
+              <span className="tabular-nums">{model}</span>
+              <PixelIcon name="chevron" size={12} />
+            </button>
+            {modelOpen && (
+              <ul className="model-menu" role="listbox" aria-label="Model">
+                {models.map((m) => (
+                  <li key={m} role="option" aria-selected={m === model}>
+                    <button className="model-item" onClick={() => { setModel(m); setModelOpen(false); }}>
+                      <span className="tabular-nums">{m}</span>
+                      {m === model && <PixelIcon name="check" size={12} />}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          </>}
+          <button className="assign-btn" data-sending={state === 'sending' || undefined} onClick={send} disabled={state === 'sending' || !task.trim()}>
+            {state === 'sending' ? 'Sending…' : targetSession ? 'Re-prompt' : 'Assign'}
+          </button>
         </div>
-        <button className="assign-btn" data-sending={state === 'sending' || undefined} onClick={send} disabled={state === 'sending' || !task.trim()}>
-          {state === 'sending' ? 'Assigning…' : 'Assign'}
-        </button>
       </div>
+      {cwdHint && <div className="composer-hint">absolute path expected (e.g. /Users/you/project)</div>}
       {error && <div className="composer-error" role="alert"><PixelIcon name="alert" size={12} />{error}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
       {done && state.id && <div className="composer-ok"><PixelIcon name="check" size={12} /> Submitted {state.id}{roundtrip !== undefined ? ` · ${roundtrip} ms` : ''}</div>}
     </div>

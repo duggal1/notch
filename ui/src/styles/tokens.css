@@ -1,24 +1,24 @@
 @import "tailwindcss";
 
-/* Diether — Jupiter's ultra-dark palette: void, ground, midnight card,
-   pale/midnight-sky text and blue accents. */
+/* One family plus mono. Instrument Sans for voice, system mono for raw IDs / terminal only.
+   Tight tracking, grayscale smoothing, large continuous radii, eased motion. */
 @theme {
   --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
   --font-serif: 'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif;
 
-  --color-void: #050505;
-  --color-ground: #09090F;
-  --color-card: #0E0E14;
+  --color-void: #000000;
+  --color-ground: #0B0210;
+  --color-card: #12041A;
   --color-ink: #000000;
-  --color-f0: #121212;
-  --color-f1: #191921;
-  --color-f2: #2B2B33;
-  --color-f3: #606070;
-  --color-f4: #FBFBFB;
-  --color-lilac: #FBFBFB;
-  --color-red: #FBFBFB;
-  --color-pink: #FBFBFB;
+  --color-f1: #2A0A33;
+  --color-f2: #701A75;
+  --color-f3: #A21CAF;
+  --color-f4: #D946EF;
+  --color-f5: #F5D0FE;
+  --color-lilac: #F5D0FE;
+  --color-red: #D946EF;
+  --color-pink: #F5D0FE;
 
   --radius-xs: 8px;
   --radius-s: 12px;
@@ -29,10 +29,4 @@
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-release: cubic-bezier(0.16, 1, 0.3, 1);
-
-  /* Diether blue — the only brand color */
-  --color-accent: #2563EB;
-  --color-accent-mid: #1E3A8A;
-  --color-accent-pale: #60A5FA;
-  --color-accent-pale-2: #93C5FD;
 }

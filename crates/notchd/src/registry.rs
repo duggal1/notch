@@ -151,7 +151,12 @@ impl Registry {
     #[allow(dead_code)] // contract API: wired by load_or_recover in daemon/state.rs
     pub(crate) fn rebuild_from_state(state: &crate::model::StateFile) -> Registry {
         let mut reg = Registry::fresh();
-        reg.supervisor_count = state.supervisors.iter().map(|s| s.number).max().unwrap_or(0);
+        reg.supervisor_count = state
+            .supervisors
+            .iter()
+            .map(|s| s.number)
+            .max()
+            .unwrap_or(0);
         for sup in &state.supervisors {
             reg.ids.push(sup.id.clone());
         }
@@ -214,7 +219,10 @@ impl Registry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        crate::durable::write_atomic(path, &serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec()))
+        crate::durable::write_atomic(
+            path,
+            &serde_json::to_vec_pretty(self).unwrap_or_else(|_| b"{}".to_vec()),
+        )
     }
 
     pub fn ids(&self) -> &[String] {
@@ -222,17 +230,17 @@ impl Registry {
     }
 
     /// SV-<n>. Monotonic; collision-proof even against hand-edited registries.
-    /// Persists before the id is returned.
-    pub fn allocate_supervisor(&mut self) -> String {
+    /// Persists before the id is returned; a failed write is an error, never a
+    /// panic and never an unpersisted id.
+    pub fn allocate_supervisor(&mut self) -> io::Result<String> {
         self.try_allocate_supervisor()
-            .expect("registry: refusing to hand out an id that could not be persisted")
     }
 
     /// S<sup>-OC<nn>. nn is 1-based per supervisor, never reused.
-    /// Persists before the id is returned.
-    pub fn allocate_session(&mut self, supervisor_number: u32) -> String {
+    /// Persists before the id is returned; a failed write is an error, never a
+    /// panic and never an unpersisted id.
+    pub fn allocate_session(&mut self, supervisor_number: u32) -> io::Result<String> {
         self.try_allocate_session(supervisor_number)
-            .expect("registry: refusing to hand out an id that could not be persisted")
     }
 
     fn allocate_supervisor_inner(&mut self) -> String {
@@ -270,28 +278,26 @@ impl Registry {
 /// (and therefore re-enter) the registry mutex. Used by the daemon's `alloc_*`
 /// APIs; the public `Registry::allocate_*` methods remain for standalone
 /// clones such as plan building.
-pub fn allocate_session_at(path: &Path, supervisor_number: u32) -> String {
+pub fn allocate_session_at(path: &Path, supervisor_number: u32) -> io::Result<String> {
     let _guard = alloc_guard();
     let cached = registry_cache(path);
     let mut reg = cached.lock().unwrap_or_else(|e| e.into_inner());
     let id = reg.allocate_session_inner(supervisor_number);
     if let Some(p) = reg.path.clone() {
-        reg.save(&p)
-            .expect("registry: refusing to hand out an id that could not be persisted");
+        reg.save(&p)?;
     }
-    id
+    Ok(id)
 }
 
-pub fn allocate_supervisor_at(path: &Path) -> String {
+pub fn allocate_supervisor_at(path: &Path) -> io::Result<String> {
     let _guard = alloc_guard();
     let cached = registry_cache(path);
     let mut reg = cached.lock().unwrap_or_else(|e| e.into_inner());
     let id = reg.allocate_supervisor_inner();
     if let Some(p) = reg.path.clone() {
-        reg.save(&p)
-            .expect("registry: refusing to hand out an id that could not be persisted");
+        reg.save(&p)?;
     }
-    id
+    Ok(id)
 }
 
 pub fn persist_locked(reg: &Registry, path: &Path) -> io::Result<()> {
@@ -322,7 +328,10 @@ fn is_more_advanced(candidate: &Registry, current: Option<&Registry>) -> bool {
                 (
                     r.ids.len(),
                     r.supervisor_count as usize,
-                    r.session_counts.values().map(|n| *n as usize).sum::<usize>(),
+                    r.session_counts
+                        .values()
+                        .map(|n| *n as usize)
+                        .sum::<usize>(),
                 )
             };
             rank(candidate) > rank(best)
@@ -344,8 +353,7 @@ mod a4_tests {
     fn test_dir(tag: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir =
-            std::env::temp_dir().join(format!("notch-reg-{tag}-{}-{n}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("notch-reg-{tag}-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -360,9 +368,9 @@ mod a4_tests {
         let dir = test_dir("recover");
         let path = dir.join("registry.json");
         let mut reg = Registry::fresh();
-        reg.allocate_supervisor();
-        let a = reg.allocate_session(1);
-        let b = reg.allocate_session(1);
+        reg.allocate_supervisor().unwrap();
+        let a = reg.allocate_session(1).unwrap();
+        let b = reg.allocate_session(1).unwrap();
         reg.save(&path).unwrap();
         fs::copy(&path, backup(&path, 1)).unwrap();
 
@@ -374,7 +382,7 @@ mod a4_tests {
             "recovery must find ids in the rolling backup, not reset to SV-1"
         );
         // The next allocation must not repeat a recovered id.
-        let c = recovered.allocate_session(1);
+        let c = recovered.allocate_session(1).unwrap();
         assert_ne!(c, a);
         assert_ne!(c, b);
     }
@@ -384,24 +392,34 @@ mod a4_tests {
         let dir = test_dir("tmp");
         let path = dir.join("registry.json");
         let mut good = Registry::fresh();
-        good.allocate_supervisor();
-        let real = good.allocate_session(1);
+        good.allocate_supervisor().unwrap();
+        let real = good.allocate_session(1).unwrap();
         good.save(&path).unwrap();
         fs::copy(&path, backup(&path, 1)).unwrap();
 
         let mut canary = Registry::fresh();
-        canary.allocate_supervisor();
-        let _ = canary.allocate_session(1);
+        canary.allocate_supervisor().unwrap();
+        let _ = canary.allocate_session(1).unwrap();
         // Use a distinct id so the assertion is meaningful (S1-OC01 would
         // otherwise be identical in both registries).
-        let fake = canary.allocate_session(1);
+        let fake = canary.allocate_session(1).unwrap();
         assert_ne!(fake, real);
-        fs::write(crate::durable::tmp_path(&path), serde_json::to_vec(&canary).unwrap()).unwrap();
+        fs::write(
+            crate::durable::tmp_path(&path),
+            serde_json::to_vec(&canary).unwrap(),
+        )
+        .unwrap();
         fs::write(&path, b"not json").unwrap();
 
         let recovered = Registry::load(&path, &SystemClock);
-        assert!(recovered.ids().contains(&real), "backup ids must be recovered");
-        assert!(!recovered.ids().contains(&fake), "a .tmp file must NEVER be adopted");
+        assert!(
+            recovered.ids().contains(&real),
+            "backup ids must be recovered"
+        );
+        assert!(
+            !recovered.ids().contains(&fake),
+            "a .tmp file must NEVER be adopted"
+        );
     }
 
     #[test]
@@ -409,15 +427,33 @@ mod a4_tests {
         let dir = test_dir("persist");
         let path = dir.join("registry.json");
         let mut reg = Registry::fresh();
-        reg.allocate_supervisor();
+        reg.allocate_supervisor().unwrap();
         reg.save(&path).unwrap();
         // Re-load so the registry knows its own path (as open() does).
         let mut reg = Registry::load(&path, &SystemClock);
-        let id = reg.allocate_session(1);
+        let id = reg.allocate_session(1).unwrap();
         let on_disk: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert!(
             on_disk["ids"].as_array().unwrap().iter().any(|v| v == &id),
             "the id must be on disk before allocate returns it"
+        );
+    }
+
+    #[test]
+    fn allocation_returns_err_not_panic_on_save_failure() {
+        let dir = test_dir("savefail");
+        let path = dir.join("registry.json");
+        // A directory cannot be atomically replaced by the checkpoint temp
+        // file: the save inside allocation is forced to fail for real.
+        fs::create_dir(&path).unwrap();
+        let outcome = std::panic::catch_unwind(|| format!("{:?}", allocate_session_at(&path, 1)));
+        assert!(
+            outcome.is_ok(),
+            "registry allocation must not panic on a save failure: {outcome:?}"
+        );
+        assert!(
+            outcome.unwrap().starts_with("Err"),
+            "a failed save must be returned as Err, never a handed-out id"
         );
     }
 }

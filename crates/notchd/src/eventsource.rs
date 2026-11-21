@@ -100,9 +100,11 @@ impl Daemon {
             }
         }
         for (id, from, to) in &applied {
-            let _ = self
-                .event_log
-                .append(Some(id.clone()), "status", &format!("herdr event {from} -> {to}"));
+            let _ = self.event_log.append(
+                Some(id.clone()),
+                "status",
+                &format!("herdr event {from} -> {to}"),
+            );
             self.watchdog
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -134,7 +136,11 @@ pub struct EventDrivenSource {
 impl EventDrivenSource {
     /// Connect using herdr's configured private socket.
     pub fn connect(daemon: &Daemon, shutdown: Arc<AtomicBool>) -> Self {
-        Self::connect_at(&herdr::herdr_socket_path(), &managed_panes(daemon), shutdown)
+        Self::connect_at(
+            &herdr::herdr_socket_path(),
+            &managed_panes(daemon),
+            shutdown,
+        )
     }
 
     /// Connect to an explicit socket path (operator override / test seam).

@@ -73,7 +73,8 @@
 //! Handshake auth (3.7): any `Origin` is rejected, `Authorization: Bearer` is
 //! required and compared in constant time, and `Host` must be the bound
 //! `127.0.0.1:<port>`. No external network, no TLS. The endpoint stays UNWIRED
-//! until `NOTCH_WS=1`; no `cli.rs` call site starts it.
+//! until `NOTCH_WS=1`; the `notchd serve` path in `cli.rs` starts it when that
+//! flag is set (see the `ws_cli_wiring` test).
 //!
 //! # Browser-compatible opt-in (`NOTCH_WS_BROWSER=1`)
 //!
@@ -100,11 +101,15 @@
 //! the shutdown flag. To make it always-on in `notchd serve`, bind and spawn
 //! next to the NDJSON socket:
 //!
-//! ```ignore
-//! let ws_listener = notchd::ws::bind(notchd::ws::port_from_env())?;
-//! let ws_daemon = Arc::clone(&daemon);
-//! let ws_shutdown = Arc::clone(&shutdown);
-//! std::thread::spawn(move || { let _ = notchd::ws::serve(ws_listener, ws_daemon, ws_shutdown); });
+//! ```no_run
+//! use std::{io, sync::{Arc, atomic::AtomicBool}};
+//! use notchd::Daemon;
+//!
+//! fn start_websocket(daemon: Arc<Daemon>, shutdown: Arc<AtomicBool>) -> io::Result<()> {
+//!     let listener = notchd::ws::bind(notchd::ws::port_from_env())?;
+//!     std::thread::spawn(move || { let _ = notchd::ws::serve(listener, daemon, shutdown); });
+//!     Ok(())
+//! }
 //! ```
 
 use crate::daemon::Daemon;
@@ -123,7 +128,9 @@ use std::time::{Duration, Instant};
 use tungstenite::http::{self, Request};
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::protocol::{CloseFrame, WebSocketConfig};
-use tungstenite::{accept_with_config, accept_hdr_with_config, Error as WsError, Message, WebSocket};
+use tungstenite::{
+    accept_hdr_with_config, accept_with_config, Error as WsError, Message, WebSocket,
+};
 
 /// Default TCP port (`ws://127.0.0.1:7407`).
 pub const DEFAULT_PORT: u16 = 7407;
@@ -199,7 +206,9 @@ pub fn load_or_create_token(state_dir: &Path) -> io::Result<String> {
 /// Strict mode is the default. `NOTCH_WS_BROWSER=1` is the only opt-in to the
 /// query-token / Origin-tolerant handshake; any other value keeps strict mode.
 pub fn browser_ws_enabled() -> bool {
-    std::env::var("NOTCH_WS_BROWSER").map(|v| v == "1").unwrap_or(false)
+    std::env::var("NOTCH_WS_BROWSER")
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }
 
 /// Extract the `token` parameter from a URI query. Hex tokens need no URL
@@ -259,7 +268,15 @@ pub fn auth_headers_ok(
     expected_token: &str,
     expected_host: &str,
 ) -> bool {
-    handshake_auth_ok(origin, authorization, host, None, expected_token, expected_host, false)
+    handshake_auth_ok(
+        origin,
+        authorization,
+        host,
+        None,
+        expected_token,
+        expected_host,
+        false,
+    )
 }
 
 fn auth_rejection() -> http::Response<Option<String>> {
@@ -509,7 +526,7 @@ fn event_pump(daemon: Arc<Daemon>, clients: Arc<Mutex<Vec<Client>>>, shutdown: A
     // replayed as a "delta" when the first change arrives.
     let seeded = serde_json::to_value(daemon.snapshot()).ok();
     let mut prev = seeded.clone();
-    let mut last_fleet = seeded.as_ref().map(fleet_from_snapshot);
+    let mut last_fleet = seeded.as_ref().and_then(|s| fleet_frame(&daemon, s));
 
     while !shutdown.load(Ordering::SeqCst) {
         match rx.recv_timeout(DEBOUNCE_POLL) {
@@ -522,16 +539,17 @@ fn event_pump(daemon: Arc<Daemon>, clients: Arc<Mutex<Vec<Client>>>, shutdown: A
                 let deltas = snapshot_deltas(prev.as_ref(), &current);
                 prev = Some(current.clone());
 
-                // The fleet view is pure derivation from this snapshot, never
-                // a second source of truth. Equal views are not re-pushed.
-                let fleet = fleet_from_snapshot(&current);
-                let fleet_changed = last_fleet.as_ref() != Some(&fleet);
-                last_fleet = Some(fleet.clone());
+                // C3: the fleet view comes from A4's single Rust function in
+                // snapshot.rs using this exact snapshot and the real ledger
+                // seq/epoch. Equal views are not re-pushed.
+                let fleet = fleet_frame(&daemon, &current);
+                let fleet_changed = fleet.is_some() && last_fleet != fleet;
+                last_fleet = fleet.clone();
 
                 let mut frames = Vec::with_capacity(deltas.len() + 2);
                 frames.push(OutFrame::Snapshot(v));
                 if fleet_changed {
-                    frames.push(OutFrame::Event(fleet));
+                    frames.push(OutFrame::Event(fleet.expect("fleet is Some when changed")));
                 }
                 frames.extend(deltas.into_iter().map(OutFrame::Event));
 
@@ -549,64 +567,15 @@ fn event_pump(daemon: Arc<Daemon>, clients: Arc<Mutex<Vec<Client>>>, shutdown: A
     daemon.unregister_subscriber(sub_id);
 }
 
-/// Derive the additive `fleet` frame from one §1.3 snapshot. Every field is
-/// projected from data that already exists in the snapshot; no extra daemon
-/// state, no extra herdr call, no second poll. The unit order is ORCH, then
-/// supervisors (already id-sorted), then sessions (already id-sorted).
-pub fn fleet_from_snapshot(snapshot: &Value) -> Value {
-    let top = snapshot
-        .get("orchestrator")
-        .and_then(|o| o.get("status"))
-        .and_then(Value::as_str)
-        .unwrap_or("idle");
-    let at = snapshot.get("generatedAt").cloned().unwrap_or(Value::Null);
-    let mut units: Vec<Value> = Vec::new();
-
-    units.push(json!({
-        "id": "ORCH", "kind": "orchestrator", "status": top, "topStatus": top,
-        "paneId": Value::Null, "workspace": Value::Null,
-        "lastAction": Value::Null, "revision": Value::Null,
-    }));
-
-    if let Some(supervisors) = snapshot.get("supervisors").and_then(Value::as_array) {
-        for s in supervisors {
-            let status = s.get("status").and_then(Value::as_str).unwrap_or("idle");
-            units.push(json!({
-                "id": s.get("id").cloned().unwrap_or(Value::Null),
-                "kind": "supervisor",
-                "status": status,
-                "topStatus": top,
-                "title": s.get("title").cloned().unwrap_or(Value::Null),
-                "paused": s.get("paused").cloned().unwrap_or(Value::Null),
-                "paneId": Value::Null,
-                "workspace": Value::Null,
-                "lastAction": s.get("title").cloned().unwrap_or(Value::Null),
-                "revision": Value::Null,
-            }));
-        }
-    }
-
-    if let Some(sessions) = snapshot.get("sessions").and_then(Value::as_array) {
-        for s in sessions {
-            let status = s.get("status").and_then(Value::as_str).unwrap_or("idle");
-            units.push(json!({
-                "id": s.get("id").cloned().unwrap_or(Value::Null),
-                "kind": "session",
-                "status": status,
-                "topStatus": top,
-                "sup": s.get("sup").cloned().unwrap_or(Value::Null),
-                "paneId": s.get("paneId").cloned().unwrap_or(Value::Null),
-                "workspace": s.get("cwd").cloned().unwrap_or(Value::Null),
-                "lastAction": s.get("lastAction").cloned().unwrap_or(Value::Null),
-                "revision": s.get("lastRevision").cloned().unwrap_or(Value::Null),
-            }));
-        }
-    }
-
-    json!({
-        "event": "fleet",
-        "fleet": { "generatedAt": at, "topStatus": top, "units": units }
-    })
+/// The additive `fleet` frame is A4's single Rust derivation (C3): WS, the
+/// Tauri event and `fleet_state` all call `snapshot::fleet_view` on the same
+/// snapshot with the same real ledger seq/epoch. No WS-local derivation.
+/// `None` means the ledger could not be read; never fabricate seq/epoch zeroes.
+pub fn fleet_frame(daemon: &Daemon, snapshot: &Value) -> Option<Value> {
+    let ledger = crate::ledger::Ledger::open(&daemon.config.state_dir).ok()?;
+    let fleet =
+        crate::snapshot::fleet_view(snapshot, ledger.last_seq(), ledger.current_epoch("ORCH"));
+    Some(json!({ "event": "fleet", "fleet": fleet }))
 }
 
 /// Pure delta extractor used by the event pump: given the previous snapshot
@@ -651,7 +620,13 @@ pub fn snapshot_deltas(previous: Option<&Value>, current: &Value) -> Vec<Value> 
     let key_of = |v: &Value| -> String {
         let get = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("");
         let at = v.get("at").map(Value::to_string).unwrap_or_default();
-        format!("{at}|{}|{}|{}|{}", get("supervisor"), get("session"), get("action"), get("reason"))
+        format!(
+            "{at}|{}|{}|{}|{}",
+            get("supervisor"),
+            get("session"),
+            get("action"),
+            get("reason")
+        )
     };
     let mut seen: HashMap<String, usize> = HashMap::new();
     if let Some(items) = prev.get("decisions").and_then(Value::as_array) {
@@ -732,7 +707,10 @@ fn handle_conn(
     #[allow(clippy::result_large_err)]
     let callback = move |req: &Request<()>, response| {
         let origin = req.headers().get("origin").and_then(|v| v.to_str().ok());
-        let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok());
+        let authorization = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
         let host = req.headers().get("host").and_then(|v| v.to_str().ok());
         let query = req.uri().query();
         if handshake_auth_ok(
@@ -778,7 +756,9 @@ fn handle_conn(
             .unwrap_or(false)
     });
     if has_units {
-        outbox.push(OutFrame::Event(fleet_from_snapshot(&snapshot_value)));
+        if let Some(frame) = fleet_frame(&daemon, &snapshot_value) {
+            outbox.push(OutFrame::Event(frame));
+        }
     }
     if send_text(&mut ws, hello).is_err() {
         return;
@@ -855,18 +835,18 @@ fn conn_loop(
                     return;
                 }
                 Ok(Message::Binary(_)) => {
-                    if send_text(
-                        ws,
-                        ack("", false, json!({"error": "binary_not_supported"})),
-                    )
-                    .is_err()
+                    if send_text(ws, ack("", false, json!({"error": "binary_not_supported"})))
+                        .is_err()
                     {
                         return;
                     }
                 }
                 Ok(Message::Frame(_)) => {}
                 Err(WsError::Io(e))
-                    if matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock) =>
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) =>
                 {
                     break
                 }
@@ -914,7 +894,11 @@ fn ack(cmd: &str, ok: bool, extra: Value) -> Value {
 
 fn ack_from(cmd: &str, value: &impl serde::Serialize) -> Value {
     let body = serde_json::to_value(value).unwrap_or(Value::Null);
-    ack(cmd, body.get("ok").and_then(Value::as_bool).unwrap_or(false), body)
+    ack(
+        cmd,
+        body.get("ok").and_then(Value::as_bool).unwrap_or(false),
+        body,
+    )
 }
 
 fn snapshot_frame(daemon: &Daemon) -> Value {
@@ -1018,7 +1002,11 @@ fn handle_command(daemon: &Daemon, text: &str) -> Vec<Value> {
         "resume_supervisor" => {
             let id = str_field(&v, "id");
             match daemon.resume_supervisor(&id) {
-                Ok(_) => ack("resume_supervisor", true, json!({"id": id, "resumed": true})),
+                Ok(_) => ack(
+                    "resume_supervisor",
+                    true,
+                    json!({"id": id, "resumed": true}),
+                ),
                 Err(e) => ack("resume_supervisor", false, json!({"error": e})),
             }
         }

@@ -44,7 +44,6 @@ pub(crate) fn registry_for(state_dir: &Path) -> Arc<Mutex<Registry>> {
 
 /// Eager variant for `Daemon::open`: fails loudly when the registry and all
 /// backups are corrupt. Contracted to A2 in COORD.md.
-#[allow(dead_code)] // contract API: wired by A2 in lifecycle.rs
 pub(crate) fn prime_registry(state_dir: &Path) -> io::Result<Arc<Mutex<Registry>>> {
     let path = registry_path(state_dir);
     // Strict check first: unrecoverable corruption is a hard error.
@@ -90,7 +89,10 @@ fn writer_for(path: &Path) -> Arc<StateWriter> {
     });
     let thread_path = path.to_path_buf();
     let thread_writer = writer.clone();
-    let name = format!("notch-state-writer:{}", path.file_name().unwrap_or_default().to_string_lossy());
+    let name = format!(
+        "notch-state-writer:{}",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
     let built = std::thread::Builder::new().name(name).spawn(move || {
         writer_loop(thread_path, thread_writer);
     });
@@ -102,6 +104,35 @@ fn writer_for(path: &Path) -> Arc<StateWriter> {
     }
     map.insert(path.to_path_buf(), writer.clone());
     writer
+}
+
+// Write/append failures used to be dropped with `let _ =`, so a disk error
+// was invisible to the operator. Keep the latest failure per state path and
+// fold it into the existing snapshot `warnings` channel (no new error model).
+static WRITE_ERRORS: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+
+fn write_errors() -> &'static Mutex<HashMap<PathBuf, String>> {
+    WRITE_ERRORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn record_write_error(path: &Path, what: &str, e: &io::Error) {
+    let msg = format!("{what} failed for {}: {e}", path.display());
+    write_errors()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), msg);
+}
+
+/// Latest persistence failure for this daemon's state path, surfaced in
+/// `snapshot.warnings`. Kept per-path so test daemons never cross-talk.
+pub(crate) fn write_warnings_for(path: &Path) -> Vec<String> {
+    write_errors()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+        .into_iter()
+        .collect()
 }
 
 fn writer_loop(path: PathBuf, writer: Arc<StateWriter>) {
@@ -117,17 +148,20 @@ fn writer_loop(path: PathBuf, writer: Arc<StateWriter>) {
         if writer.stop.load(Ordering::SeqCst) {
             // Final drain: never lose the last dirty snapshot on shutdown.
             if let Some(bytes) = guard.take() {
-                let _ = durable::write_atomic(&path, &bytes);
+                if let Err(e) = durable::write_atomic(&path, &bytes) {
+                    record_write_error(&path, "state checkpoint write", &e);
+                }
                 *lock(&writer.last_write) = Instant::now();
             }
             break;
         }
 
-        let due = timed_out.timed_out()
-            || lock(&writer.last_write).elapsed() >= WRITE_INTERVAL;
+        let due = timed_out.timed_out() || lock(&writer.last_write).elapsed() >= WRITE_INTERVAL;
         if due && guard.is_some() && lock(&writer.last_write).elapsed() >= WRITE_INTERVAL {
             if let Some(bytes) = guard.take() {
-                let _ = durable::write_atomic(&path, &bytes);
+                if let Err(e) = durable::write_atomic(&path, &bytes) {
+                    record_write_error(&path, "state checkpoint write", &e);
+                }
                 *lock(&writer.last_write) = Instant::now();
             }
         }
@@ -145,7 +179,9 @@ fn write_now(path: &Path, bytes: &[u8]) {
     let writer = writer_for(path);
     // Drop any older pending snapshot: it must not overwrite this one later.
     lock(&writer.pending).take();
-    let _ = durable::write_atomic(path, bytes);
+    if let Err(e) = durable::write_atomic(path, bytes) {
+        record_write_error(path, "state checkpoint write", &e);
+    }
     *lock(&writer.last_write) = Instant::now();
     writer.dirty.store(false, Ordering::SeqCst);
 }
@@ -247,9 +283,7 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
             }
         }
     }
-    if before.get("esc_seq") != now.get("esc_seq")
-        || before.get("msg_seq") != now.get("msg_seq")
-    {
+    if before.get("esc_seq") != now.get("esc_seq") || before.get("msg_seq") != now.get("msg_seq") {
         ops.push((
             "ORCH".to_string(),
             LedgerOp::SetSeq {
@@ -259,12 +293,14 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
         ));
     }
 
-    let state_dir = state_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let state_dir = state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
     if let Ok(mut ledger) = ledger::Ledger::open(state_dir) {
         // ONE append (one O_APPEND write + one fsync) for the entire delta.
         // Per-entity appends made a 20-session soak poll take >5 s.
         // A failed append is non-fatal: the checkpoint still holds the state.
-        let _ = ledger.append(
+        if let Err(e) = ledger.append(
             LedgerSource::System,
             None,
             None,
@@ -273,7 +309,9 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
                 ops: ops.into_iter().map(|(_, op)| op).collect(),
             },
             ts,
-        );
+        ) {
+            record_write_error(state_path, "ledger append", &e);
+        }
     }
     lock(persisted()).insert(state_path.to_path_buf(), current);
 }
@@ -282,22 +320,14 @@ fn append_ledger_diff(state_path: &Path, state: &StateFile, ts: u64) {
 // Load / recover.
 // ---------------------------------------------------------------------------
 
-/// Result of a strict load. `warnings` must be merged into `Inner.warnings` so
-/// corruption is observable in `snapshot.warnings`, not swallowed.
-#[allow(dead_code)] // contract API: wired by A2 in lifecycle.rs
+/// Result of a strict load. Recovery warnings are merged into
+/// `state.warnings`, so they reach `Inner.warnings` -> `snapshot.warnings`.
 pub(crate) struct Recovered {
     pub state: StateFile,
-    pub registry: Registry,
-    pub warnings: Vec<String>,
 }
 
 fn rank_state(s: &StateFile) -> (usize, usize, u64, u64) {
-    (
-        s.sessions.len(),
-        s.supervisors.len(),
-        s.esc_seq,
-        s.msg_seq,
-    )
+    (s.sessions.len(), s.supervisors.len(), s.esc_seq, s.msg_seq)
 }
 
 fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<StateFile> {
@@ -306,7 +336,10 @@ fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<S
         if let Ok(bytes) = std::fs::read(&candidate) {
             match serde_json::from_slice::<StateFile>(&bytes) {
                 Ok(state) => {
-                    if best.as_ref().is_none_or(|b| rank_state(&state) > rank_state(b)) {
+                    if best
+                        .as_ref()
+                        .is_none_or(|b| rank_state(&state) > rank_state(b))
+                    {
                         best = Some(state);
                     }
                 }
@@ -331,12 +364,21 @@ fn load_state_recovered(path: &Path, warnings: &mut Vec<String>) -> io::Result<S
 /// Strict entry point. HARD ERROR when no parseable state file exists; a
 /// corrupt registry alone is rebuilt from the recovered state, never reset to
 /// SV-1. Warnings from every parse failure are returned to the caller.
-#[allow(dead_code)] // contract API: wired by A2 in lifecycle.rs
 pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
     let state_path = config.state_dir.join("state.json");
     let reg_path = registry_path(&config.state_dir);
     let mut warnings: Vec<String> = Vec::new();
-    let mut state = load_state_recovered(&state_path, &mut warnings)?;
+    // A genuinely fresh state dir (no live file and no backups) is a valid
+    // empty start. Corruption — files present but none parseable — is a HARD
+    // ERROR, never a silent reset to SV-1 / an empty registry.
+    let any_candidate = durable::read_candidates(&state_path)
+        .iter()
+        .any(|p| p.exists());
+    let mut state = if any_candidate {
+        load_state_recovered(&state_path, &mut warnings)?
+    } else {
+        StateFile::empty()
+    };
     if state.version == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -355,7 +397,15 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
     let registry = match Registry::load_or_error(&reg_path) {
         Ok(reg) => reg,
         Err(e) => {
-            warnings.push(format!("{e}; rebuilding registry from state"));
+            // A registry that never existed is a normal fresh start, not
+            // corruption. Only a file (or backup) that existed but could not
+            // be read is worth a warning.
+            if durable::read_candidates(&reg_path)
+                .iter()
+                .any(|p| p.exists())
+            {
+                warnings.push(format!("{e}; rebuilding registry from state"));
+            }
             let rebuilt = Registry::rebuild_from_state(&state);
             // Persist the rebuilt registry immediately so a later crash cannot
             // lose the reconstructed high-water marks.
@@ -365,15 +415,13 @@ pub(crate) fn load_or_recover(config: &Config) -> io::Result<Recovered> {
     };
     warnings.extend(registry.warnings.iter().cloned());
     state.warnings.extend(warnings.iter().cloned());
-    Ok(Recovered {
-        state,
-        registry,
-        warnings,
-    })
+    Ok(Recovered { state })
 }
 
-/// Lenient form used by the current `open()` until A2 lands the strict call.
+/// Lenient form, kept for callers that only need a value (tests). Production
+/// boot uses the strict `load_or_recover` — corruption there is a hard error.
 /// Warnings still travel to `Inner.warnings` through `StateFile.warnings`.
+#[allow(dead_code)] // used only by the state.rs unit tests
 pub(crate) fn load_state(path: &Path) -> StateFile {
     let mut warnings = Vec::new();
     let mut state = match load_state_recovered(path, &mut warnings) {
@@ -435,6 +483,22 @@ impl Daemon {
         registry_path(&self.config.state_dir)
     }
 
+    /// C2: real ledger high-water seq, read fresh from disk (Ledger::open
+    /// refreshes). Config-backed so every caller sees the authoritative value.
+    pub fn ledger_last_seq(&self) -> u64 {
+        ledger::Ledger::open(&self.config.state_dir)
+            .map(|l| l.last_seq())
+            .unwrap_or(0)
+    }
+
+    /// C2: epoch for the system/orchestrator target ("ORCH"). Ledger epochs are
+    /// per-target (ledger.rs:317); this is the global fleet-fence value A4 uses.
+    pub fn ledger_epoch(&self) -> u64 {
+        ledger::Ledger::open(&self.config.state_dir)
+            .map(|l| l.current_epoch("ORCH"))
+            .unwrap_or(0)
+    }
+
     /// Clone of the daemon's single registry instance. Allocation itself goes
     /// through `alloc_session` / `alloc_supervisor` so it stays serialized.
     #[allow(dead_code)] // kept for callers that still build registries explicitly
@@ -451,12 +515,12 @@ impl Daemon {
 
     /// Allocate + persist under the registry mutex, BEFORE the id escapes.
     #[allow(dead_code)] // contract API: wired by A5 in daemon/spawn.rs
-    pub(crate) fn alloc_session(&self, supervisor_number: u32) -> String {
+    pub(crate) fn alloc_session(&self, supervisor_number: u32) -> io::Result<String> {
         crate::registry::allocate_session_at(&self.registry_path(), supervisor_number)
     }
 
     #[allow(dead_code)] // contract API: wired by A5 in daemon/spawn.rs
-    pub(crate) fn alloc_supervisor(&self) -> String {
+    pub(crate) fn alloc_supervisor(&self) -> io::Result<String> {
         crate::registry::allocate_supervisor_at(&self.registry_path())
     }
 
@@ -465,14 +529,16 @@ impl Daemon {
         let _ = crate::registry::persist_locked(reg, &self.registry_path());
     }
 
-    fn state_file(&self, inner: &Inner) -> StateFile {
+    pub(crate) fn state_file(&self, inner: &Inner) -> StateFile {
+        let mut warnings = inner.warnings.clone();
+        warnings.extend(write_warnings_for(&self.state_path()));
         StateFile {
             version: 1,
             supervisors: inner.supervisors.clone(),
             sessions: inner.sessions.clone(),
             attribution: inner.attribution.clone(),
             conflicts: inner.conflicts.clone(),
-            warnings: inner.warnings.clone(),
+            warnings,
             stuck_after_secs: Some(lock(&self.watchdog).stuck_after_ms() / 1000),
             paused_supervisors: inner.paused_supervisors.iter().cloned().collect(),
             decisions: inner.decisions.clone(),
@@ -487,11 +553,15 @@ impl Daemon {
     /// Serialization itself is also capped at 1 Hz so a 12,800-call burst does
     /// not rebuild the whole tree 12,800 times.
     pub(crate) fn save_state(&self, inner: &Inner) {
-        // The ledger delta is appended at the SAME cadence as the checkpoint
-        // (1 Hz), immediately before the enqueue. Appending on every mutation
-        // made a 20-session soak poll >5 s; the 1 Hz checkpoint is the floor
-        // by design (HARDENING §3.5), so replay is too.
-        let state = self.state_file(inner);
+        self.save_state_snapshot(self.state_file(inner));
+    }
+
+    /// IO half of `save_state`. Callers that hold the `inner` mutex must build
+    /// the `StateFile` under the lock, drop the guard, THEN call this — no disk
+    /// IO while a daemon lock is held. Ledger + checkpoint share the 1 Hz
+    /// cadence (HARDENING §3.5); appending on every mutation made a 20-session
+    /// soak poll >5 s.
+    pub(crate) fn save_state_snapshot(&self, state: StateFile) {
         let writer = writer_for(&self.state_path());
         writer.dirty.store(true, Ordering::SeqCst);
         let mut last = lock(&writer.last_enqueue);
@@ -539,8 +609,8 @@ mod a4_tests {
     fn test_dir(tag: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir()
-            .join(format!("notch-state-load-{tag}-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("notch-state-load-{tag}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -568,5 +638,41 @@ mod a4_tests {
             "a corrupt live file must surface a parse warning: {:?}",
             state.warnings
         );
+    }
+
+    #[test]
+    fn disk_write_failure_surfaces_in_snapshot_warnings() {
+        let dir = test_dir("writefail");
+        let state_path = dir.join("state.json");
+        std::fs::write(&state_path, r#"{"version":1}"#).unwrap();
+        let config = crate::config::Config {
+            state_dir: dir.clone(),
+            tmp_dir: dir.clone(),
+            ..crate::config::Config::default()
+        };
+        let daemon = Daemon::open(
+            config,
+            crate::herdr::Herdr::from_env(),
+            Arc::new(crate::clock::SystemClock),
+        )
+        .unwrap();
+
+        // Force a real disk error: a directory cannot be atomically renamed
+        // over by the checkpoint temp file.
+        std::fs::remove_file(&state_path).unwrap();
+        std::fs::create_dir(&state_path).unwrap();
+        {
+            let inner = lock(&daemon.inner);
+            daemon.save_now(&inner);
+        }
+        let snap = daemon.snapshot();
+        assert!(
+            snap.warnings
+                .iter()
+                .any(|w| w.contains("state checkpoint write failed")),
+            "a swallowed disk error must surface in snapshot.warnings: {:?}",
+            snap.warnings
+        );
+        let _ = std::fs::remove_dir(&state_path);
     }
 }

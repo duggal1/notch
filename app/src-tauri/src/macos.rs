@@ -182,11 +182,14 @@ pub fn activate_foreground() {
         return;
     }
     let pid = std::process::id() as i32;
-    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str("com.notch.app"));
+    let apps = NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(
+        "com.notch.app",
+    ));
     for i in 0..apps.count() {
         let app = apps.objectAtIndex(i);
         if app.processIdentifier() == pid {
-            let activated = app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+            let activated =
+                app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
             eprintln!("[notch] activate_foreground pid={pid} activated={activated}");
             return;
         }

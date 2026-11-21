@@ -1,6 +1,6 @@
 //! Daemon lifecycle: open, reconcile, poll loop, and the injected
 //! client seams (`set_opencode`).
-use super::state::load_state;
+use super::state::{load_or_recover, prime_registry};
 use super::types::{lock, push_warning, Daemon, Inner, Subscribers, EVENTS_MAX_BYTES};
 use crate::bus::OrchestratorBus;
 use crate::cleanup;
@@ -35,17 +35,22 @@ struct SpawnChannel {
 /// Per-state-dir channels, so test daemons never cross-talk.
 static SPAWN_CHANNELS: OnceLock<Mutex<HashMap<PathBuf, SpawnChannel>>> = OnceLock::new();
 
-
 impl Daemon {
-    /// Open the daemon: load registry + state (missing/corrupt -> defaults),
-    /// register bus endpoints for known supervisors. NO herdr calls here —
+    /// Open the daemon: recover state and registry, or return an error.
+    /// Register bus endpoints for known supervisors. NO herdr calls here —
     /// herdr failure must never prevent startup.
     pub fn open(config: Config, herdr: Herdr, clock: Arc<dyn Clock>) -> io::Result<Daemon> {
         std::fs::create_dir_all(&config.state_dir)?;
         std::fs::create_dir_all(&config.tmp_dir)?;
 
-        let state_path = config.state_dir.join("state.json");
-        let state = load_state(&state_path);
+        // Strict boot: unrecoverable state corruption is a HARD ERROR (never a
+        // silent reset to SV-1). This is the single boot seam used by `notchd
+        // serve` and the Tauri embedding, so both inherit the strict contract.
+        let recovered = load_or_recover(&config)?;
+        let state = recovered.state;
+        // Fail fast here too: a corrupt registry with no parseable backup must
+        // not survive boot and silently hand out reused IDs later.
+        prime_registry(&config.state_dir)?;
         let stuck_after = state.stuck_after_secs.unwrap_or(config.stuck_after_secs);
         let start_ms = clock.now_ms();
         let watchdog = Watchdog::new(stuck_after);
@@ -153,11 +158,11 @@ impl Daemon {
         out
     }
 
-    /// One /api/session fetch via the configured client. Tests inject a
-    /// fake via `set_opencode`; the default is `Opencode::from_env()`.
-    pub(crate) fn opencode_api_sessions(&self) -> Option<Vec<crate::opencode::ApiSession>> {
-        let guard = lock(&self.opencode);
-        guard.as_ref().and_then(|oc| oc.api_session_list().ok())
+    pub(crate) fn opencode_api_sessions(
+        &self,
+    ) -> Result<Option<Vec<crate::opencode::ApiSession>>, crate::herdr::HerdrError> {
+        let client = lock(&self.opencode).clone();
+        client.map(|client| client.api_session_list()).transpose()
     }
 
     /// Replace the opencode client (test seam).
@@ -194,6 +199,7 @@ impl Daemon {
         };
         let by_pane: std::collections::HashMap<&str, &crate::herdr::AgentEntry> =
             agents.iter().map(|a| (a.pane_id.as_str(), a)).collect();
+        let panes = self.herdr.pane_list();
         let now = self.now();
         let mut cleaned: Vec<String> = Vec::new();
         let mut marked_done = Vec::new();
@@ -204,7 +210,13 @@ impl Daemon {
                     continue;
                 }
                 let Some(entry) = by_pane.get(s.pane_id.as_str()) else {
-                    // Pane vanished -> done (never crash, never keep lying).
+                    if !s.pane_id.is_empty()
+                        && panes.as_ref().map_or(true, |list| {
+                            list.iter().any(|pane| pane.pane_id == s.pane_id)
+                        })
+                    {
+                        continue;
+                    }
                     s.status = Status::Done;
                     s.failure_reason = None;
                     cleaned.push(s.id.clone());

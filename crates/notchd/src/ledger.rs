@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -79,7 +79,11 @@ pub enum Op {
     Release,
     /// Full-entity assignment. `entity` names a `StateFile` vector and is
     /// validated on replay: an unknown name is dropped, never stored.
-    Upsert { entity: String, id: String, value: Value },
+    Upsert {
+        entity: String,
+        id: String,
+        value: Value,
+    },
     /// Tombstone for a full-entity assignment.
     Remove { entity: String, id: String },
     /// Scalar high-water marks kept outside the entity vectors.
@@ -121,7 +125,7 @@ pub struct ParkedWrite {
     pub epoch: Option<u64>,
     pub reason: String,
     pub op: Op,
-    /// Set when read back from disk; `None` while in flight.
+    /// Location of a successfully parked or collected payload.
     #[serde(default)]
     pub file: Option<PathBuf>,
 }
@@ -146,7 +150,10 @@ fn encode(line: &Line) -> io::Result<Vec<u8>> {
     if buf.len() > MAX_LINE_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("ledger line too large ({} bytes, max {MAX_LINE_BYTES})", buf.len()),
+            format!(
+                "ledger line too large ({} bytes, max {MAX_LINE_BYTES})",
+                buf.len()
+            ),
         ));
     }
     buf.push(b'\n');
@@ -157,32 +164,36 @@ fn encode(line: &Line) -> io::Result<Vec<u8>> {
 /// oversize/hostile line are skipped; nothing is approximated (agentbox's
 /// `readLinesFrom` / `foldRawInto` rule).
 pub fn read_lines(path: &Path) -> io::Result<Vec<Line>> {
-    let bytes = match fs::read(path) {
-        Ok(b) => b,
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let start = if bytes.len() > MAX_LEDGER_BYTES as usize {
-        bytes.len() - MAX_LEDGER_BYTES as usize
+    // AgentBox main/store/work-items.mts:116-139 seeks to the byte window.
+    // Read one boundary byte too, so a whole record at the cut survives.
+    let len = file.metadata()?.len();
+    let start = len.saturating_sub(MAX_LEDGER_BYTES);
+    let offset = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::with_capacity((len - offset) as usize);
+    file.take(len - offset).read_to_end(&mut bytes)?;
+    let slice = if start > 0 {
+        let Some(boundary) = bytes.iter().position(|&b| b == b'\n') else {
+            return Ok(Vec::new());
+        };
+        &bytes[boundary + 1..]
     } else {
-        0
+        &bytes
     };
-    let slice = &bytes[start..];
-    let end = slice
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-    if end == 0 {
-        return Ok(Vec::new());
-    }
-    let text = String::from_utf8_lossy(&slice[..end]);
     let mut out = Vec::new();
-    for raw in text.split('\n') {
+    for raw in slice.split_inclusive(|&b| b == b'\n') {
+        let Some(raw) = raw.strip_suffix(b"\n") else {
+            break; // a torn final line is uncommitted.
+        };
         if raw.is_empty() || raw.len() > MAX_LINE_BYTES {
             continue;
         }
-        if let Ok(line) = serde_json::from_str::<Line>(raw) {
+        if let Ok(line) = serde_json::from_slice::<Line>(raw) {
             out.push(line);
         }
     }
@@ -267,6 +278,7 @@ pub struct Ledger {
 
 impl Ledger {
     pub fn open(state_dir: &Path) -> io::Result<Self> {
+        let _guard = ledger_guard();
         fs::create_dir_all(state_dir)?;
         let mut ledger = Ledger {
             dir: state_dir.to_path_buf(),
@@ -280,19 +292,24 @@ impl Ledger {
         if !ledger.path.exists() {
             crate::durable::append_durable(&ledger.path, b"")?;
         }
-        // A SIGKILL mid-append can leave a partial line with no trailing
-        // newline. It is uncommitted by definition; drop it before the next
-        // append so a fresh whole line cannot be glued onto it and lost by the
-        // fold's "whole lines only" rule.
-        let bytes = fs::read(&ledger.path)?;
-        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-            let keep = bytes
-                .iter()
-                .rposition(|&b| b == b'\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
+        // Discard an uncommitted tail before it can swallow the next append.
+        let mut file = fs::File::open(&ledger.path)?;
+        let len = file.metadata()?.len();
+        let mut end = len;
+        let mut chunk = [0; 64 * 1024];
+        while end > 0 {
+            let count = end.min(chunk.len() as u64) as usize;
+            end -= count as u64;
+            file.seek(SeekFrom::Start(end))?;
+            file.read_exact(&mut chunk[..count])?;
+            if let Some(last) = chunk[..count].iter().rposition(|&b| b == b'\n') {
+                end += (last + 1) as u64;
+                break;
+            }
+        }
+        if end < len {
             let f = OpenOptions::new().write(true).open(&ledger.path)?;
-            f.set_len(keep as u64)?;
+            f.set_len(end)?;
             f.sync_data()?;
         }
         ledger.refresh();
@@ -327,14 +344,10 @@ impl Ledger {
 
     /// Called with [`ledger_guard`] held. Appends one whole buffer with a
     /// single O_APPEND write; carries epoch high-water marks across rotation.
-    fn append_locked(&mut self, line: Line) -> io::Result<u64> {
+    fn append_locked(&mut self, mut line: Line) -> io::Result<u64> {
         if crate::events::rotate_if_oversized(&self.path, MAX_LEDGER_BYTES)? {
             let anchor = Op::EpochAnchor {
-                epochs: self
-                    .epochs
-                    .iter()
-                    .map(|(k, v)| (k.clone(), *v))
-                    .collect(),
+                epochs: self.epochs.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             };
             let first = Line {
                 seq: self.last_seq + 1,
@@ -348,6 +361,7 @@ impl Ledger {
             };
             crate::durable::append_durable(&self.path, &encode(&first)?)?;
             self.last_seq = first.seq;
+            line.seq = first.seq + 1;
         }
         crate::durable::append_durable(&self.path, &encode(&line)?)?;
         self.last_seq = line.seq;
@@ -417,7 +431,6 @@ impl Ledger {
         let _guard = ledger_guard();
         self.refresh();
         let current = self.epochs.get(target).copied().unwrap_or(0);
-        let refused = epoch < current;
         let line = Line {
             seq: self.last_seq + 1,
             ts,
@@ -426,31 +439,23 @@ impl Ledger {
             epoch: Some(epoch),
             target: target.to_string(),
             op,
-            refused: if refused {
-                Some("stale_epoch".to_string())
-            } else {
-                None
-            },
+            refused: (epoch < current).then(|| "stale_epoch".to_string()),
         };
-        self.append_locked(line.clone())
-            .map_err(|e| {
-                Box::new(ParkedWrite {
-                    seq: line.seq,
-                    ts: line.ts,
-                    target: line.target.clone(),
-                    holder: line.holder.clone(),
-                    epoch: line.epoch,
-                    reason: format!("append failed: {e}"),
-                    op: line.op.clone(),
-                    file: None,
-                })
-            })?;
-        if refused {
-            let parked = parked_from_line(&line, "stale_epoch");
-            let _ = park(&self.dir, &parked);
+        let seq = self
+            .append_locked(line.clone())
+            .map_err(|e| Box::new(parked_from_line(&line, &format!("append failed: {e}"))))?;
+        if let Some(reason) = &line.refused {
+            let mut parked = parked_from_line(&line, reason);
+            parked.seq = seq;
+            // AgentBox main/store/pending-writes.mts:59-84 returns a receipt so
+            // the refused writer can find its payload after reclaiming.
+            match park(&self.dir, &parked) {
+                Ok(path) => parked.file = Some(path),
+                Err(error) => parked.reason = format!("{reason}: parking failed: {error}"),
+            }
             return Err(Box::new(parked));
         }
-        Ok(line.seq)
+        Ok(seq)
     }
 }
 
@@ -472,7 +477,13 @@ fn parked_from_line(line: &Line, reason: &str) -> ParkedWrite {
 fn safe_component(value: &str, max: usize) -> String {
     let cleaned: String = value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let trimmed = cleaned.trim_matches('.');
     if trimmed.is_empty() {
@@ -498,7 +509,11 @@ pub fn park(state_dir: &Path, parked: &ParkedWrite) -> io::Result<PathBuf> {
     }
     fs::create_dir_all(&dir)?;
     let existing = fs::read_dir(&dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false)).count())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .count()
+        })
         .unwrap_or(0);
     if existing >= MAX_PENDING_PER_TARGET {
         // Bounded parking. Oldest-first by filename (seq is zero-padded) so a
@@ -631,7 +646,9 @@ fn upsert_entity(state: &mut StateFile, entity: &str, value: &Value, warnings: &
             return;
         }
     };
-    let arr = root[key].as_array_mut().expect("StateFile serializes every vector");
+    let arr = root[key]
+        .as_array_mut()
+        .expect("StateFile serializes every vector");
     if let Some(pos) = arr
         .iter()
         .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
@@ -770,16 +787,26 @@ pub fn replay(base: StateFile, lines: &[Line]) -> ReplayResult {
 /// Replay a state dir's ledger over a checkpoint, parking any refused lines.
 pub fn replay_over_checkpoint(state_dir: &Path, base: StateFile) -> io::Result<ReplayResult> {
     let mut result = replay(base, &read_lines(&state_dir.join(LEDGER_FILE))?);
-    for parked in &result.refused {
-        let _ = park(state_dir, parked);
+    let mut failures = 0;
+    let mut first_error = None;
+    for parked in &mut result.refused {
+        match park(state_dir, parked) {
+            Ok(path) => parked.file = Some(path),
+            Err(error) => {
+                failures += 1;
+                first_error.get_or_insert((parked.seq, error));
+            }
+        }
     }
-    // Only a refused write is worth surfacing into snapshot.warnings: a clean
-    // replay must not add noise to a fresh state dir or change legacy warning
-    // assertions. The full count stays in `ReplayResult` for tests/ops.
-    if !result.refused.is_empty() {
+    let parked = result.refused.len() - failures;
+    if parked > 0 {
+        result
+            .warnings
+            .push(format!("ledger: {parked} stale writes parked or collected"));
+    }
+    if let Some((seq, error)) = first_error {
         result.warnings.push(format!(
-            "ledger: {} stale writes parked for the next holder",
-            result.refused.len()
+            "ledger: parking failed for {failures} refused writes (first seq {seq}: {error})"
         ));
     }
     Ok(result)

@@ -2,10 +2,9 @@
 # tests/e2e/acceptance.sh — LIVE six-step acceptance for notchd (bridge.md v1.3 §8).
 #
 # Real herdr + real OpenCode throughout (panes are real OpenCode sessions; the
-# decider is the real `opencode run` using the operator's harness default model
-# — no --model flag is forced). Forced proofs for steps that a real model may
-# not reach are run separately by latency-probe.sh --mode fake-loop / fake-done
-# and are labelled as scripted.
+# decider is the real `opencode run --model opencode/hy4-flash-free`). Forced
+# proofs for steps that a real model may not reach are run separately by
+# latency-probe.sh --mode fake-loop / fake-done and are labelled as scripted.
 #
 # Scratch is ALWAYS /private/var/folders/ct/.../e2e2-XXXXXX (never notch-*).
 # Every pane this run creates is closed; the daemon started here is stopped here.
@@ -66,7 +65,7 @@ FAILS=0
 t0=$EPOCHSECONDS
 ( cd "$REPO" && timeout 300 cargo build -p notchd > "$SCRATCH/build.log" 2>&1 ) || {
   emit 0 FAIL "cargo build failed; see $SCRATCH/build.log" $(( EPOCHSECONDS-t0 )); exit 3; }
-emit 0 PASS "cargo build -p notchd ok; CLI=$CLI; model=harness default (no --model forced)" $(( EPOCHSECONDS-t0 ))
+emit 0 PASS "cargo build -p notchd ok; CLI=$CLI; model=opencode/hy4-flash-free (machine default + decider)" $(( EPOCHSECONDS-t0 ))
 
 # ---- step 1: own herdr workspace + fresh daemon + baseline panes -----------
 t0=$EPOCHSECONDS

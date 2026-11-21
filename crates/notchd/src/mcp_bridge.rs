@@ -40,7 +40,8 @@ pub struct BridgeMessage {
 pub trait BridgeBackend: Send + Sync {
     fn peers(&self) -> Vec<String>;
     fn messages(&self) -> Vec<BridgeMessage>;
-    fn enqueue(&self, id: &str, from: &str, to: &str, kind: &str, body: &str) -> Result<(), String>;
+    fn enqueue(&self, id: &str, from: &str, to: &str, kind: &str, body: &str)
+        -> Result<(), String>;
 }
 
 #[derive(Default)]
@@ -132,7 +133,10 @@ impl McpBridge {
             })),
             // Content-wrapped so every result on this narrow bridge has one
             // uniform shape for the client to read.
-            "tools/list" => Ok(tool_text(json!({ "tools": Self::tool_defs() }).to_string(), false)),
+            "tools/list" => Ok(tool_text(
+                json!({ "tools": Self::tool_defs() }).to_string(),
+                false,
+            )),
             "tools/call" => self.call_tool(&v),
             _ => return rpc_error(id, -32601, "method not found"),
         };
@@ -145,7 +149,10 @@ impl McpBridge {
     fn call_tool(&self, req: &Value) -> Result<Value, String> {
         let params = req.get("params").unwrap_or(&Value::Null);
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-        let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        let args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         match name {
             "list_peers" => Ok(tool_text(
                 json!({ "peers": self.backend.peers() }).to_string(),
@@ -165,17 +172,28 @@ impl McpBridge {
         // `from` is an impersonation attempt and is refused outright.
         if args.get("from").is_some() {
             return Ok(tool_text(
-                json!({"ok": false, "error": "FROM is your run id and cannot be supplied"}).to_string(),
+                json!({"ok": false, "error": "FROM is your run id and cannot be supplied"})
+                    .to_string(),
                 true,
             ));
         }
-        let field = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let field = |k: &str| {
+            args.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
         let id = field("id");
         let to = field("to");
         let kind = field("type");
         let body = field("body");
 
-        let invalid = |msg: &str| Ok(tool_text(json!({"ok": false, "error": msg}).to_string(), true));
+        let invalid = |msg: &str| {
+            Ok(tool_text(
+                json!({"ok": false, "error": msg}).to_string(),
+                true,
+            ))
+        };
         if id.is_empty() || id.len() > 128 {
             return invalid("id must be 1..128 chars");
         }
@@ -188,11 +206,19 @@ impl McpBridge {
         if body.trim().is_empty() || body.chars().count() > MAX_BODY_CHARS {
             return invalid("body must be non-empty and <=4000 chars");
         }
-        if !self.seen.lock().unwrap_or_else(|e| e.into_inner()).insert(&id) {
+        if !self
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(&id)
+        {
             return invalid("duplicate message id");
         }
         match self.backend.enqueue(&id, &self.self_id, &to, &kind, &body) {
-            Ok(()) => Ok(tool_text(json!({"ok": true, "id": id, "from": self.self_id, "to": to}).to_string(), false)),
+            Ok(()) => Ok(tool_text(
+                json!({"ok": true, "id": id, "from": self.self_id, "to": to}).to_string(),
+                false,
+            )),
             Err(e) => invalid(&format!("delivery refused: {e}")),
         }
     }
@@ -213,7 +239,11 @@ impl OrchestratorBackend {
         peers: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
         messages: Arc<dyn Fn() -> Vec<BridgeMessage> + Send + Sync>,
     ) -> Self {
-        Self { ingress, peers, messages }
+        Self {
+            ingress,
+            peers,
+            messages,
+        }
     }
 }
 
@@ -224,7 +254,14 @@ impl BridgeBackend for OrchestratorBackend {
     fn messages(&self) -> Vec<BridgeMessage> {
         (self.messages)()
     }
-    fn enqueue(&self, id: &str, from: &str, to: &str, kind: &str, body: &str) -> Result<(), String> {
+    fn enqueue(
+        &self,
+        id: &str,
+        from: &str,
+        to: &str,
+        kind: &str,
+        body: &str,
+    ) -> Result<(), String> {
         self.ingress
             .submit(id, from, to, kind, body)
             .map_err(String::from)
@@ -236,10 +273,17 @@ impl crate::daemon::Daemon {
     /// that session id; no worker can supply or change it. Peers and message
     /// reads are projections of the live daemon tree, never a second registry.
     pub fn worker_mcp_bridge(self: &Arc<Self>, session_id: &str) -> McpBridge {
-        let ingress = Arc::new(A2aBridgeIngress::new(self.clock.clone(), self.bus.inbox_sender()));
+        let ingress = Arc::new(A2aBridgeIngress::new(
+            self.clock.clone(),
+            self.bus.inbox_sender(),
+        ));
         {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let known = inner.sessions.iter().map(|s| s.id.clone()).collect::<std::collections::HashSet<_>>();
+            let known = inner
+                .sessions
+                .iter()
+                .map(|s| s.id.clone())
+                .collect::<std::collections::HashSet<_>>();
             let routes = inner
                 .sessions
                 .iter()

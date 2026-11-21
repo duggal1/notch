@@ -36,7 +36,7 @@ export function Transcript({ session, logs, revisionChangedAt }: {
         <div className="transcript-inner">
           <div className="transcript-head">
             <span className="label">Live tail</span>
-            
+
           </div>
           <p className="transcript-empty">
             Select a session to follow its output.

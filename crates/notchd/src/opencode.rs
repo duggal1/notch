@@ -5,9 +5,8 @@
 //! Surfaces used (bridge.md v1.3 §2/§8 — nothing else):
 //! - `opencode api GET /api/session` (read-only; activity signal)
 //! - `opencode models`               (read-only; model list)
-//! - `opencode run [--model <m>] --auto --session ses_notch_<id> <prompt>`
-//!   (decider calls only; never the orchestrator control path). `--model` is
-//!   omitted when the model is `auto`, so the operator's harness default is used.
+//! - `opencode run --model <m> --auto --session ses_notch_<id> <prompt>`
+//!   (decider calls only; never the orchestrator control path)
 //!
 //! **Every subprocess goes through `crate::proc::run`.** No local spawn, no
 //! local timeout loop. Deadlines come from A2's frozen constants, with
@@ -18,7 +17,6 @@
 //! there is no empty scratch dir — the judge runs in the session's real cwd
 //! so it can read real files and command output as evidence.
 
-use crate::decider;
 use crate::herdr::HerdrError;
 use crate::proc::{self, ProcError, Spec, TIMEOUT_DECIDER, TIMEOUT_OPENCODE_API};
 use serde::Deserialize;
@@ -46,7 +44,9 @@ fn timeout_or(default_ms: u64) -> u64 {
             default_ms
         }
         Err(e) => {
-            eprintln!("opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {default_ms}ms");
+            eprintln!(
+                "opencode: invalid {TIMEOUT_ENV}={raw:?} ({e}); using default {default_ms}ms"
+            );
             default_ms
         }
     }
@@ -65,11 +65,6 @@ pub fn decider_timeout_ms() -> u64 {
 /// `true` when `e` is the typed timeout error from the subprocess seam.
 pub fn is_timeout_error(e: &HerdrError) -> bool {
     matches!(e, HerdrError::Io(msg) if msg.starts_with("opencode timeout after "))
-}
-
-/// `true` when the decider call itself was rate limited (429/quota in stderr).
-pub fn is_rate_limit_error(e: &HerdrError) -> bool {
-    decider::contains_rate_limit(&e.to_string())
 }
 
 fn timeout_error(ms: u64) -> HerdrError {
@@ -143,7 +138,12 @@ impl Opencode {
     }
 
     pub fn api_session_list(&self) -> Result<Vec<ApiSession>, HerdrError> {
-        let argv = vec![self.cmd.clone(), "api".into(), "GET".into(), "/api/session".into()];
+        let argv = vec![
+            self.cmd.clone(),
+            "api".into(),
+            "GET".into(),
+            "/api/session".into(),
+        ];
         let out = self.read_seam(&argv)?;
         parse_api_session_list(&out)
     }
@@ -151,7 +151,12 @@ impl Opencode {
     pub fn models(&self) -> Result<Vec<String>, HerdrError> {
         let argv = vec![self.cmd.clone(), "models".into()];
         let out = self.read_seam(&argv)?;
-        Ok(out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+        Ok(out
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     /// One headless decider call, no session reuse. NOT on the control path.
@@ -167,15 +172,15 @@ impl Opencode {
         prompt: &str,
         cwd: Option<&Path>,
     ) -> Result<String, HerdrError> {
-        let mut argv = vec![self.cmd.clone(), "run".into()];
-        // `auto` omits --model so OpenCode uses the operator's own default.
-        if !decider::is_default_model(model) {
-            argv.push("--model".into());
-            argv.push(model.to_string());
-        }
-        // FULL ACCESS by user decision: do not block on permission prompts.
-        argv.push("--auto".into());
-        argv.push(prompt.to_string());
+        let argv = vec![
+            self.cmd.clone(),
+            "run".into(),
+            "--model".into(),
+            model.to_string(),
+            // FULL ACCESS by user decision: do not block on permission prompts.
+            "--auto".into(),
+            prompt.to_string(),
+        ];
         self.invoke_argv(&argv, cwd, Duration::from_millis(decider_timeout_ms()))
     }
 
@@ -200,16 +205,17 @@ impl Opencode {
         prompt: &str,
         cwd: Option<&Path>,
     ) -> Result<String, HerdrError> {
-        let mut argv = vec![self.cmd.clone(), "run".into()];
-        if !decider::is_default_model(model) {
-            argv.push("--model".into());
-            argv.push(model.to_string());
-        }
-        argv.push("--auto".into());
-        argv.push("--session".into());
-        argv.push(session_id.to_string());
-        argv.push("--archived".into());
-        argv.push(prompt.to_string());
+        let argv = vec![
+            self.cmd.clone(),
+            "run".into(),
+            "--model".into(),
+            model.to_string(),
+            "--auto".into(),
+            "--session".into(),
+            session_id.to_string(),
+            "--archived".into(),
+            prompt.to_string(),
+        ];
         self.invoke_argv(&argv, cwd, Duration::from_millis(decider_timeout_ms()))
     }
 }
@@ -285,10 +291,11 @@ pub fn parse_api_session_list(out: &str) -> Result<Vec<ApiSession>, HerdrError> 
                 _ => None,
             }
         });
-        let directory = w
-            .location
-            .as_ref()
-            .and_then(|l| l.get("directory").and_then(|d| d.as_str()).map(str::to_string));
+        let directory = w.location.as_ref().and_then(|l| {
+            l.get("directory")
+                .and_then(|d| d.as_str())
+                .map(str::to_string)
+        });
         sessions.push(ApiSession {
             id: w.id,
             busy: w.time.as_ref().and_then(|t| t.busy),

@@ -4,10 +4,11 @@
 // every class and CSS variable here is already ours. No stylesheet changes.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Snapshot } from '../../lib/bridge';
-import { send } from '../../lib/bridge';
+import { isTauri, send } from '../../lib/bridge';
+import { PixelIcon } from '../PixelIcon';
 import {
-  loadFleet, registerFleetEvents, sendFleet,
-  type FleetData, type FleetUnit,
+  loadFleet, registerFleetEvents, sendFleet, EMPTY_FLEET_STATE,
+  type FleetCommand, type FleetData, type FleetUnit,
 } from '../../lib/fleet-wiring';
 import { DitherField } from '../pixel/DitherField';
 import {
@@ -16,42 +17,47 @@ import {
 
 export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; onClose: () => void }) {
   const [data, setData] = useState<FleetData>(() => ({
-    state: {
-      source: 'snapshot-projection', generatedAt: 0, topStatus: 'idle', units: [],
-      groups: { working: 0, idle: 0, stopped: 0, done: 0 },
-      storm: { holds: 0, guard: 'open', starts: 0 },
-      ledger: { seq: 0, fence: '0000000000000000', epoch: 1, decisions: 0, messages: 0 },
-    },
-    approvals: [], harnesses: [],
+    state: EMPTY_FLEET_STATE, approvals: [], harnesses: [],
   }));
+  const [actionError, setActionError] = useState('');
   const [stageIndex, setStageIndex] = useState(0);
-  const [spawnPrompt, setSpawnPrompt] = useState('');
-  const [planPath, setPlanPath] = useState('');
-  const [directNote, setDirectNote] = useState('');
   const deckRef = useRef<HTMLDivElement>(null);
 
-  // Projections from the same snapshot; real command payloads overlay in app mode.
   useEffect(() => {
     let alive = true;
-    loadFleet(snapshot).then((next) => { if (alive) setData(next); });
-    return () => { alive = false; };
-  }, [snapshot]);
-
-  useEffect(() => registerFleetEvents((state) => {
-    setData((prev) => ({ ...prev, state }));
-  }), []);
+    let receivedEvent = false;
+    const stop = registerFleetEvents((state, approvals) => {
+      if (!alive) return;
+      receivedEvent = true;
+      setData((prev) => ({ ...prev, state, approvals: approvals ?? prev.approvals }));
+    });
+    loadFleet().then((next) => {
+      if (alive) {
+        setData((prev) => receivedEvent ? { ...prev, harnesses: next.harnesses } : next);
+      }
+    });
+    return () => { alive = false; stop(); };
+  }, []);
 
   const units = data.state.units;
   const activity = useMemo(() => deriveActivity(snapshot), [snapshot]);
   const cards = useMemo(() => stageQueue(data.approvals, units), [data.approvals, units]);
   const card = cards[Math.min(stageIndex, Math.max(0, cards.length - 1))] ?? null;
-  const sup = snapshot?.supervisors?.[0]?.id ?? 'SV-1';
+  const supervisor = snapshot?.supervisors[0]?.id;
+  const warning = actionError || snapshot?.warnings.at(-1);
   const harness = data.harnesses[0];
+
+  const act = useCallback((command: FleetCommand) => {
+    setActionError('');
+    void sendFleet(command).catch((error: unknown) => {
+      setActionError(typeof error === 'string' ? error : 'Fleet command failed.');
+    });
+  }, []);
 
   const answer = useCallback((allow: boolean) => {
     if (!card) return;
-    sendFleet({ cmd: 'answer_approval', id: card.id, allow });
-  }, [card]);
+    act({ cmd: 'answer_approval', id: card.id, allow, digest: card.digest });
+  }, [act, card]);
 
   const advance = useCallback((dir: 1 | -1) => {
     setStageIndex((i) => stepStage(cards, i, dir));
@@ -138,6 +144,11 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
           </div>
           <div className="transcript fleet-activity">
             <div className="transcript-inner">
+              {warning && (
+                <p className="body esc-reason" role="alert">
+                  <PixelIcon name="alert" size={12} /> {warning}
+                </p>
+              )}
               {activity.length === 0 ? (
                 <p className="transcript-empty">Nothing has moved yet.</p>
               ) : activity.map((a) => (
@@ -184,52 +195,30 @@ export function FleetDeck({ snapshot, onClose }: { snapshot: Snapshot | null; on
                 <span className="label">{Math.min(stageIndex + 1, cards.length)} of {cards.length} · arrows step · {card.signed ? 'signed' : 'digest'} {card.digest.slice(0, 8)}</span>
               </>
             )}
-            <div className="inspector-list">
-              <span className="label">Direct commands</span>
-              <form className="inspector-message" onSubmit={(e) => {
-                e.preventDefault();
-                const prompt = spawnPrompt.trim();
-                if (!prompt) return;
-                let cwd = '/Users/harshitduggal';
-                try { cwd = localStorage.getItem('notch.cwd') ?? cwd; } catch { /* storage unavailable */ }
-                send({ cmd: 'spawn', supervisor: sup, prompt, cwd, title: prompt.slice(0, 48) });
-                setDirectNote(`Spawn sent to ${sup}`);
-                setSpawnPrompt('');
-              }}>
-                <input value={spawnPrompt} onChange={(e) => setSpawnPrompt(e.target.value)}
-                  placeholder={`Prompt for ${sup}`} aria-label={`Prompt for ${sup}`} spellCheck={false} />
-                <button type="submit" className="ctl ripple" disabled={!spawnPrompt.trim()}>Spawn</button>
-              </form>
-              <form className="inspector-message" onSubmit={(e) => {
-                e.preventDefault();
-                const path = planPath.trim();
-                if (!path) return;
-                send({ cmd: 'run_plan', path });
-                setDirectNote('Plan sent');
-                setPlanPath('');
-              }}>
-                <input value={planPath} onChange={(e) => setPlanPath(e.target.value)}
-                  placeholder="/path/to/plan.md" aria-label="Plan path" spellCheck={false} />
-                <button type="submit" className="ctl ripple" disabled={!planPath.trim()}>Run plan</button>
-              </form>
-              {directNote && <p role="status" className="inspector-send-sent">{directNote}</p>}
-            </div>
           </div>
         </aside>
       </div>
 
       {/* capability strip: declared harness, ledger fence, storm guard */}
       <div className="statusline" aria-label="Fleet capabilities">
-        <span className="sl-item"><i className="dot dot--working" aria-hidden="true" />{harness?.label ?? 'OpenCode'}</span>
+        {harness && <span className="sl-item">{harness.label}</span>}
         {(harness?.capabilities ?? []).filter((c, i) => i < 2 || !c.supported).map((c) => (
           <span className="sl-item fleet-cap" key={c.name}>{c.name} {c.supported ? 'yes' : 'no'}</span>
         ))}
-        <span className="sl-item fleet-ledger">seq {data.state.ledger.seq} · fence {data.state.ledger.fence.slice(0, 8)}</span>
-        <span className="sl-item">storm {data.state.storm.guard} · {data.state.storm.holds} held</span>
-        <button type="button" className="esc-btn" data-storm="hold" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'hold', id: sup })}>Hold</button>
-        <button type="button" className="esc-btn" data-storm="release" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'release', id: sup })}>Release</button>
-        <button type="button" className="esc-btn esc-btn--kill" data-storm="kill-all" onClick={() => sendFleet({ cmd: 'fleet_control', action: 'kill_all', id: sup })}>Kill all</button>
-        <span className="sl-dither"><DitherField mode="linear" angle={0} cell={2} floor={0.18} /></span>
+        {data.state.source !== 'empty' && (
+          <>
+            <span className="sl-item fleet-ledger tabular-nums" title={data.state.ledger.fence}>
+              seq {data.state.ledger.seq} · fence {data.state.ledger.fence.slice(-8)}
+            </span>
+            <span className="sl-item">storm {data.state.storm.guard} · {data.state.storm.holds} held</span>
+          </>
+        )}
+        {isTauri() && supervisor && (
+          <>
+            <button type="button" className="esc-btn" data-storm="hold" onClick={() => act({ cmd: 'fleet_control', action: 'hold', id: supervisor })}>Hold</button>
+            <button type="button" className="esc-btn" data-storm="release" onClick={() => act({ cmd: 'fleet_control', action: 'release', id: supervisor })}>Release</button>
+          </>
+        )}
       </div>
     </div>
   );

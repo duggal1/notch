@@ -4,7 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { Status } from './tokens';
-import { connectWs, credentialsFromQuery, buildWsUrl, FLEET_EVENT, type WsCredentials } from './ws-transport';
+import { connectWs, credentialsFromQuery, buildWsUrl, FLEET_EVENT, FLEET_STATE_EVENT, type WsCredentials } from './ws-transport';
 
 export interface Session {
   id: string;
@@ -15,8 +15,8 @@ export interface Session {
   cwd: string;
   paneId: string;
   startedAt: number; // ms epoch
-  lastAction: string; // best-effort, single line
-  lastRevision: number;
+  lastAction: string | null; // best-effort, single line; null until a poll samples it
+  lastRevision: number | null; // herdr pane revision; null until known
   latencyMs: number | null;
   failureReason: string | null;
   // v1.3 optional store
@@ -31,7 +31,6 @@ export interface Session {
 
 export interface Supervisor {
   id: string;
-  title?: string; // v1.2 additive display title; id stays the stable key
   status: Status;
   working: number;
   idle: number;
@@ -40,7 +39,7 @@ export interface Supervisor {
   paused?: boolean;
 }
 
-export type DecisionAction = 'reprompt' | 'done' | 'escalate' | 'verify' | 'assign';
+export type DecisionAction = 'reprompt' | 'done' | 'escalate' | 'verify' | 'assign' | 'backoff';
 export interface Decision {
   at: number;
   supervisor: string;
@@ -100,30 +99,26 @@ export type UiAction =
   | { cmd: 'haptic'; kind: 'alignment' | 'levelChange' }
   | { cmd: 'snapshot' }
   | { cmd: 'submit_task'; task: string; cwd?: string; title?: string; definitionOfDone?: string; model?: string; supervisorId?: string }
-  | { cmd: 'message'; from: string; to: string; type: BusMessageType; body: string }
   | { cmd: 'pause_supervisor'; id: string }
   | { cmd: 'resume_supervisor'; id: string }
   | { cmd: 'kill_switch' }
-  | { cmd: 'list_models' }
-  | { cmd: 'spawn'; supervisor: string; prompt: string; cwd: string; title: string }
-  | { cmd: 'run_plan'; path: string }
-  | { cmd: 'symbol'; name: string; pt?: number; weight?: string };
+  | { cmd: 'list_models' };
 
 /** Fire-and-forget send — errors are logged, never thrown into the render path. */
 export function send(a: UiAction): void {
+  // Headless interaction probe: records the command only when a harness installs
+  // window.__notchActions. No array → no work, no allocation in the shipped app.
+  const log = (window as unknown as { __notchActions?: unknown[] }).__notchActions;
+  if (Array.isArray(log)) log.push({ ...a, at: Date.now() });
   invokeInner(a).catch((err) => console.warn('[notch] invoke failed', a.cmd, err));
 }
 
 async function invokeInner(a: UiAction): Promise<unknown> {
-  // Headless interaction probe: records EVERY command (including invokePayload calls
-  // such as message/reprompt) when a harness installs window.__notchActions.
-  const log = (window as unknown as { __notchActions?: unknown[] }).__notchActions;
-  if (Array.isArray(log)) log.push({ ...a, at: Date.now() });
   if (isTauri()) {
     const { cmd, ...args } = a;
     return invoke(cmd, args);
   }
-  return demoInvoke?.(a);
+  return undefined; // browser with no WS credential: no fake provider, no invented data
 }
 
 /** Invoke and return the payload (v1.3: commands return payloads directly). */
@@ -141,19 +136,6 @@ export const submitTask = (a: Omit<Extract<UiAction, { cmd: 'submit_task' }>, 'c
   invokePayload<{ ok: boolean; supervisorId?: string; sessionId?: string; error?: string }>({ cmd: 'submit_task', ...a }, { ok: false, error: 'submit_task unavailable outside the app' });
 export const listModels = () =>
   invokePayload<{ models: string[]; error?: string }>({ cmd: 'list_models' }, { models: [], error: 'list_models unavailable outside the app' });
-
-/** Agent-to-agent bus ingress (commands.rs `message`). The only way a bus message reaches a supervisor. */
-export const sendMessage = (from: string, to: string, type: BusMessageType, body: string) =>
-  invokePayload<{ ok: boolean; messageId?: string; error?: string }>({ cmd: 'message', from, to, type, body },
-    { ok: false, error: 'message unavailable outside the app' });
-
-/** Re-prompt an existing session in place (commands.rs `reprompt`). */
-export const repromptSession = (id: string, text: string) =>
-  invokePayload<{ ok: boolean; error?: string }>({ cmd: 'reprompt', id, text }, { ok: false, error: 'reprompt unavailable outside the app' });
-
-// Demo provider hook — demos.ts registers itself here in browser mode.
-let demoInvoke: ((a: UiAction) => unknown) | null = null;
-export function registerDemoInvoke(fn: (a: UiAction) => unknown) { demoInvoke = fn; }
 
 type Handlers = { onSnapshot: (s: Snapshot) => void; onFleet?: (s: Snapshot) => void };
 
@@ -184,6 +166,14 @@ function emitFleet(s: Snapshot, onSnapshot: (s: Snapshot) => void, onFleet?: (s:
   } catch { /* non-DOM test host: the callbacks above still fire */ }
 }
 
+/** WS `fleet` frames carry the backend fleet view verbatim (never a Snapshot). */
+function dispatchFleetState(fleet: unknown) {
+  try {
+    (window as unknown as { dispatchEvent?: (e: Event) => void }).dispatchEvent?.(
+      new CustomEvent(FLEET_STATE_EVENT, { detail: fleet }));
+  } catch { /* non-DOM test host: the Tauri path still delivers */ }
+}
+
 /**
  * THE transport switch (one place). Tauri keeps `listen('snapshot')` primary and adds
  * WS only when the bridge supplies the state-dir token. Browser uses WS with `?token=`
@@ -200,16 +190,16 @@ export async function subscribe({ onSnapshot, onFleet }: Handlers): Promise<() =
     invoke<Snapshot>('snapshot').then((s) => { if (s) deliver(s); }).catch(() => undefined);
     disposers.push(() => un());
     const creds = bridgeCredentials();
-    if (creds) disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
+    if (creds) disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver, onFleetState: dispatchFleetState }));
     return () => { for (const d of disposers) d(); };
   }
 
   const creds = credentialsFromQuery();
   if (creds) {
-    disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver }));
+    disposers.push(connectWs({ url: buildWsUrl(creds), token: creds.token, onFleet: deliver, onFleetState: dispatchFleetState }));
     return () => { for (const d of disposers) d(); };
   }
-  const { installDemo } = await import('./demos');
-  const stopDemo = await installDemo({ onSnapshot: deliver });
-  return () => { stopDemo(); for (const d of disposers) d(); };
+  // No WS credential and no Tauri: nothing to subscribe to. The UI keeps its
+  // honest empty state; no seeded/demo snapshots are invented.
+  return () => { for (const d of disposers) d(); };
 }

@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSnapshot } from '../lib/use-snapshot';
 import { send, submitTask } from '../lib/bridge';
 import type { Supervisor } from '../lib/bridge';
@@ -9,16 +8,15 @@ import { MultiplexerTab } from './dashboard/MultiplexerTab';
 import { CommsTab } from './dashboard/CommsTab';
 import { EscalationsTab } from './dashboard/EscalationsTab';
 import { PixelIcon, type PixelIconName } from './PixelIcon';
-import { useRipple } from '../lib/use-ripple';
 import { FleetDeck } from './fleet/FleetDeck';
 
 type Tab = 'tree' | 'multiplexer' | 'comms' | 'escalations';
 
-const TABS: { id: Tab; label: string; icon: PixelIconName }[] = [
-  { id: 'tree', label: 'Tree', icon: 'tree' },
-  { id: 'multiplexer', label: 'Mux', icon: 'grid' },
-  { id: 'comms', label: 'Comms', icon: 'bubble' },
-  { id: 'escalations', label: 'Alarms', icon: 'alert' },
+const TABS: { id: Tab; label: string; title: string; icon: PixelIconName }[] = [
+  { id: 'tree', label: 'Tree', title: 'Tree', icon: 'tree' },
+  { id: 'multiplexer', label: 'Mux', title: 'Mux', icon: 'grid' },
+  { id: 'comms', label: 'Comms', title: 'Comms', icon: 'bubble' },
+  { id: 'escalations', label: 'Alarms', title: 'Alarms', icon: 'alert' },
 ];
 
 function readStorage<T>(key: string): T | null {
@@ -36,18 +34,13 @@ export function Dashboard() {
   const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   const [flashId, setFlashId] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
-  const [killNotice, setKillNotice] = useState<string | null>(null);
+  // W2-5: opt-in fleet surface. Default is absent from the DOM, so every
+  // existing tab renders the exact same pixels as before this change.
   const [fleetOpen, setFleetOpen] = useState(() =>
     new URLSearchParams(window.location.search).get('fleet') === '1');
   const armTimer = useRef(0);
-  const noticeTimer = useRef(0);
-  useEffect(() => () => {
-    window.clearTimeout(armTimer.current);
-    window.clearTimeout(noticeTimer.current);
-  }, []);
+  useEffect(() => () => window.clearTimeout(armTimer.current), []);
   const initialPicked = useRef(false);
-  const dashRef = useRef<HTMLDivElement>(null);
-  useRipple(dashRef);
 
   const sessions = snapshot?.sessions ?? [];
   const supervisors = snapshot?.supervisors ?? [];
@@ -55,6 +48,8 @@ export function Dashboard() {
   const top = topStatus(sessions);
   const active = workingCount(sessions);
 
+
+  // target handoff from the popover: consume once
   useEffect(() => {
     if (!snapshot || initialPicked.current) return;
     initialPicked.current = true;
@@ -71,10 +66,31 @@ export function Dashboard() {
   }, []);
 
   const switchTab = useCallback((t: Tab) => {
-    if (t !== tab) send({ cmd: 'haptic', kind: 'levelChange' });
     setTab(t);
     try { localStorage.setItem('notch.dashboardTab', JSON.stringify(t)); } catch { /* storage may be unavailable */ }
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const recoverTarget = () => {
+      const handoff = readStorage<Selection>('notch.handoff');
+      if (!handoff) return;
+      try { localStorage.removeItem('notch.handoff'); } catch { /* storage may be unavailable */ }
+      if ((handoff.kind === 'session' && snapshot.sessions.some(({ id }) => id === handoff.id))
+        || (handoff.kind === 'supervisor' && snapshot.supervisors.some(({ id }) => id === handoff.id))) {
+        select(handoff);
+        switchTab('tree');
+      }
+    };
+    recoverTarget();
+    const onStorage = (event: StorageEvent) => { if (event.key === 'notch.handoff') recoverTarget(); };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', recoverTarget);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', recoverTarget);
+    };
+  }, [snapshot, select, switchTab]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -97,12 +113,6 @@ export function Dashboard() {
     return () => window.removeEventListener('keydown', onKey);
   }, [switchTab]);
 
-  // Re-prompt changes the running session in place; it is not a new assignment.
-  const repromptSession = useCallback((id: string, overrideText?: string) => {
-    const s = sessions.find((x) => x.id === id);
-    send({ cmd: 'reprompt', id, text: overrideText ?? s?.goal ?? s?.task ?? s?.title ?? 'continue' });
-  }, [sessions]);
-
   const togglePause = useCallback((sup: Supervisor) =>
     send({ cmd: sup.paused ? 'resume_supervisor' : 'pause_supervisor', id: sup.id }), []);
   const killSession = useCallback((id: string) => send({ cmd: 'kill', id }), []);
@@ -111,6 +121,7 @@ export function Dashboard() {
   }, [sessions]);
   const openHerdr = useCallback((id: string) => send({ cmd: 'focus', id }), []);
 
+  // kill switch: first click arms (2.6 s), second click fires the one-shot wave
   const killSwitch = useCallback(() => {
     if (active === 0) return;
     if (!armed) {
@@ -121,9 +132,6 @@ export function Dashboard() {
     window.clearTimeout(armTimer.current);
     setArmed(false);
     send({ cmd: 'kill_switch' });
-    setKillNotice('Kill switch sent — stopping all sessions');
-    window.clearTimeout(noticeTimer.current);
-    noticeTimer.current = window.setTimeout(() => setKillNotice(null), 3200);
   }, [active, armed]);
 
   const jumpToSession = useCallback((sessionId: string, flash?: string) => {
@@ -140,82 +148,63 @@ export function Dashboard() {
   const view = TABS.find((t) => t.id === tab) ?? TABS[0]!;
   const rate = snapshot?.eps ?? 0;
   const readouts = [
-    { value: active, unit: 'in flight', key: 'inflight' },
-    { value: rate, unit: 'ev/s', precision: 1, key: 'evs' },
-    { value: supervisors.length, unit: supervisors.length === 1 ? 'supervisor' : 'supervisors', key: 'sup' },
+    { value: active, unit: 'in flight' },
+    { value: rate, unit: 'ev/s', precision: 1 },
+    { value: supervisors.length, unit: supervisors.length === 1 ? 'supervisor' : 'supervisors' },
   ].filter(({ value }) => value > 0);
-  const railIndex = TABS.findIndex((item) => item.id === tab);
+
 
   return (
-    <MotionConfig reducedMotion="user">
-      <div className="dash" ref={dashRef}>
-        <nav className="rail" aria-label="Dashboard">
-          <div className="rail-mark" title="notch">
-            <span className="brand-logo" aria-hidden="true" />
-          </div>
-          <div className="rail-nav" role="tablist" aria-label="Dashboard tabs" aria-orientation="vertical">
-            <span className="rail-indicator" style={{ "--i": railIndex } as CSSProperties} aria-hidden="true" />
-            {TABS.map((t, index) => {
-              const isActive = tab === t.id;
-              const isEsc = t.id === 'escalations' && escalations.length > 0;
-              return (
-                <button
-                  key={t.id}
-                  role="tab"
-                  aria-selected={isActive}
-                  tabIndex={isActive ? 0 : -1}
-                  className={`rail-item ripple${isActive ? ' is-active' : ''}`}
-                  onClick={() => switchTab(t.id)}
-                  title={`${t.label} · ⌘${index + 1} · ⌘K compose`}
-                  data-ripple
-                  onKeyDown={(e) => {
-                    const order = TABS.map((x) => x.id);
-                    const i = order.indexOf(tab);
-                    if (e.key === 'ArrowDown') { e.preventDefault(); switchTab(order[(i + 1) % order.length]!); }
-                    if (e.key === 'ArrowUp') { e.preventDefault(); switchTab(order[(i - 1 + order.length) % order.length]!); }
-                  }}
-                >
-                  <PixelIcon name={t.icon} size={24} />
-                  <span className="rail-label">{t.label}</span>
-                  {isEsc && <span className="rail-badge" aria-label={`${escalations.length} unresolved escalations`}>{escalations.length}</span>}
-                </button>
-              );
-            })}
-          </div>
-          <div className="rail-foot" data-tauri-drag-region>
-            <span className="rail-live" aria-label="Status">
-              <i className={`dot dot--${top}`} aria-hidden="true" />
-              {top === 'idle' ? 'Idle' : top[0]?.toUpperCase() + top.slice(1)}
-            </span>
-          </div>
+    <div className="dash">
+      <header className="dashboard-masthead" data-tauri-drag-region>
+        <div className="dashboard-brand" aria-label="Notch">
+          <span className="brand-logo" aria-hidden="true" />
+          <span>Notch</span>
+        </div>
+        <nav className="dashboard-tabs" role="tablist" aria-label="Dashboard tabs">
+          {TABS.map((item, index) => (
+            <button key={item.id} role="tab" aria-selected={tab === item.id}
+              tabIndex={tab === item.id ? 0 : -1} className="dashboard-tab"
+              onClick={() => { switchTab(item.id); setFleetOpen(false); }}
+              title={`${item.label} · ⌘${index + 1}`}
+              onKeyDown={(event) => {
+                const delta = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+                if (!delta) return;
+                const next = (index + delta + TABS.length) % TABS.length;
+                const target = TABS[next];
+                if (!target) return;
+                event.preventDefault();
+                switchTab(target.id);
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role=tab]')[next]?.focus();
+              }}>
+              <PixelIcon name={item.icon} size={24} />
+              <span>{item.label}</span>
+              {item.id === 'escalations' && escalations.length > 0 && <span className="dashboard-tab-count" aria-label={`${escalations.length} unresolved alarms`}>{escalations.length}</span>}
+            </button>
+          ))}
         </nav>
-
-        <div className="stage">
+        <div className="dashboard-controls">
+          <span className="dashboard-status"><i className={`dot dot--${top}`} />{top[0]?.toUpperCase()}{top.slice(1)}</span>
+          <button className="dashboard-fleet" aria-pressed={fleetOpen} onClick={() => setFleetOpen((current) => !current)} title={snapshot?.warnings.length ? "Fleet has warnings · ⌘5" : "Fleet · ⌘5"}>
+            <PixelIcon name={snapshot?.warnings.length ? "alert" : "orchestrator"} size={12} />Fleet
+          </button>
+        </div>
+      </header>
+      <div className="stage">
           <header className="topbar" data-tauri-drag-region>
-            <h1>{view.label}</h1>
-            {(snapshot?.warnings?.length ?? 0) > 0 && (
-              <span className="topbar-warn" role="status" title={snapshot!.warnings.join(' · ')}
-                aria-label={`${snapshot!.warnings.length} warnings`}>
-                <PixelIcon name="alert" size={12} />{snapshot!.warnings.length}
-              </span>
-            )}
+            <h1>{view.title}</h1>
             <div className="topbar-spacer" data-tauri-drag-region />
-            {sessions.length === 0 ? (
-              <span className="topbar-idle" aria-label="Idle">
-                <i className="live-dot live-dot--idle" aria-hidden="true" />
-                Idle
-              </span>
-            ) : readouts.length > 0 ? (
+            {sessions.length > 0 && readouts.length > 0 && (
               <div className="stats" aria-label="Live counters">
-                {readouts.map(({ value, unit, precision, key }) => (
-                  <span className="stat" key={key}>
-                    <span className="stat-num tabular-nums" key={value}>{value.toFixed(precision ?? 0)}</span>
-                    <span className="stat-unit">{unit}</span>
+                {readouts.map(({ value, unit, precision }) => (
+                  <span className="stat" key={unit}>
+                    <span className="stat-v" key={value}>{value.toFixed(precision ?? 0)}</span>
+                    <span className="label">{unit}</span>
                   </span>
                 ))}
               </div>
-            ) : null}
-            <button className="killswitch ripple" disabled={active === 0}
+            )}
+            <button className="killswitch" disabled={active === 0}
               onClick={killSwitch} aria-pressed={armed && active > 0}
               title="Close all managed panes and stop running sessions">
               <PixelIcon name="power" size={12} />
@@ -223,17 +212,7 @@ export function Dashboard() {
             </button>
           </header>
 
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.main
-              key={tab}
-              className="view"
-              role="tabpanel"
-              aria-label={`${view.label} view`}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -3 }}
-              transition={{ duration: 0.14, ease: [0.16, 1, 0.3, 1] }}
-            >
+          <main key={tab} className={`view view--${tab}`} role="tabpanel" aria-label={`${view.label} view`}>
               {tab === 'tree' && (
                 <TreeTab
                   snapshot={snapshot}
@@ -243,7 +222,6 @@ export function Dashboard() {
                   onKillSupervisor={killSupervisor}
                   onKillSession={killSession}
                   onOpenHerdr={openHerdr}
-                  onReprompt={repromptSession}
                   onFocusComposerRequest={() => setComposerFocusSignal((n) => n + 1)}
                   onPrefill={(text) => {
                     setComposerPrefill({ text, at: Date.now() });
@@ -257,29 +235,36 @@ export function Dashboard() {
               {tab === 'multiplexer' && <MultiplexerTab snapshot={snapshot} onJumpToTree={(id) => jumpToSession(id)} onAssign={() => { switchTab('tree'); setComposerFocusSignal((n) => n + 1); }} />}
               {tab === 'comms' && (
                 <CommsTab snapshot={snapshot} onJumpToTree={(id) => {
-                  const toFlash = sessions.find((s) => s.id === id)?.sup;
-                  jumpToSession(id, toFlash ? id : undefined);
+                  if (sessions.some((session) => session.id === id)) {
+                    jumpToSession(id, id);
+                  } else if (supervisors.some((supervisor) => supervisor.id === id)) {
+                    switchTab('tree');
+                    select({ kind: 'supervisor', id });
+                  }
                 }} />
               )}
               {tab === 'escalations' && (
                 <EscalationsTab
                   snapshot={snapshot}
                   onRepromptFresh={(sessionId, goal) => {
-                    repromptSession(sessionId, `Fresh take on the goal: ${goal}`);
+                    switchTab('tree');
+                    select({ kind: 'session', id: sessionId });
                     setComposerPrefill({ text: `Fresh take on the goal: ${goal}`, at: Date.now() });
+                    setComposerFocusSignal((n) => n + 1);
                   }}
                   onReassign={onReassign}
                   onKill={killSession}
                   onOpenSession={jumpToSession}
                 />
               )}
-            </motion.main>
-          </AnimatePresence>
+          </main>
+
+
         </div>
 
+        {/* W2-5: fleet management surface, composed around the four owned tabs. */}
         {fleetOpen && <FleetDeck snapshot={snapshot} onClose={() => setFleetOpen(false)} />}
-        {killNotice && <div className="dash-notice" role="status">{killNotice}</div>}
       </div>
-    </MotionConfig>
+
   );
 }

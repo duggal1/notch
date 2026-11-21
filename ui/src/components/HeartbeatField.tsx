@@ -11,17 +11,19 @@ export function HeartbeatField({ epsRef, active }: { epsRef: React.MutableRefObj
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
-    const beat = new Heartbeat(cv, 11, 5);
+    const beat = new Heartbeat(cv, 11, 9);
     beatRef.current = beat;
     beat.drawOnce(); // paint the empty field immediately (dots at 22%)
   }, []);
 
   useEffect(() => {
-    if (!active || reduced) return; // rest/peek: no loop runs
+    if (!active) return;
+    beatRef.current?.push(normalizeEps(epsRef.current));
+    if (reduced) return;
     const id = window.setInterval(() => beatRef.current?.push(normalizeEps(epsRef.current)), 240);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
-  return <canvas ref={canvasRef} className="block w-full" aria-hidden="true" />;
+  return <canvas ref={canvasRef} className="heartbeat block w-full" aria-hidden="true" />;
 }

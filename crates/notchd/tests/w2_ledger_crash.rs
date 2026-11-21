@@ -88,7 +88,10 @@ fn sigkill_during_append_never_applies_a_torn_line() {
                 break;
             }
         }
-        assert!(ready, "child failed to append its first line (round {round})");
+        assert!(
+            ready,
+            "child failed to append its first line (round {round})"
+        );
         drop(reader);
         child.kill().expect("SIGKILL ledger writer");
         let status = child.wait().expect("reap child");
@@ -97,11 +100,19 @@ fn sigkill_during_append_never_applies_a_torn_line() {
         let lines = read_lines(&dir.join("ledger.jsonl")).unwrap();
         assert!(!lines.is_empty(), "at least the first line must survive");
         for (i, line) in lines.iter().enumerate() {
-            assert_eq!(line.seq, (i + 1) as u64, "seq must stay contiguous after a crash: {i}");
+            assert_eq!(
+                line.seq,
+                (i + 1) as u64,
+                "seq must stay contiguous after a crash: {i}"
+            );
             assert!(line.refused.is_none());
         }
         let rr = replay(StateFile::empty(), &lines);
-        assert!(rr.warnings.is_empty(), "no torn line may reach replay: {:?}", rr.warnings);
+        assert!(
+            rr.warnings.is_empty(),
+            "no torn line may reach replay: {:?}",
+            rr.warnings
+        );
         assert_eq!(rr.applied, lines.len());
         // A title is either the fully-written value-N or an earlier one; a
         // torn JSON line is skipped, so a half-written title never becomes state.
@@ -121,8 +132,14 @@ fn sigkill_during_append_never_applies_a_torn_line() {
         let next = ledger
             .append(Source::System, None, None, "ORCH", Op::Release, 9_999_999)
             .unwrap();
-        assert!(next > last, "crash must not rewind the seq: {next} <= {last}");
+        assert!(
+            next > last,
+            "crash must not rewind the seq: {next} <= {last}"
+        );
     }
-    assert!(total_lines >= ROUNDS, "every round must commit at least one line");
+    assert!(
+        total_lines >= ROUNDS,
+        "every round must commit at least one line"
+    );
     println!("W2 ledger crash: {ROUNDS} SIGKILL rounds, {total_lines} whole lines replayed");
 }
