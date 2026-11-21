@@ -22,9 +22,78 @@ use crate::model::single_line;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-/// Decider model for supervision passes. The user's explicit testing rule:
-/// hy4-flash-free. Per-session `model` overrides it.
-pub const DECIDER_MODEL: &str = "opencode/hy4-flash-free";
+/// Default decider model selection: `auto` means **use the harness default**.
+/// The decider then omits `--model` entirely, so OpenCode uses whatever model
+/// the operator configured in their own harness — no house model is forced on
+/// anyone. A per-session `model` (UI or `--model`) still overrides this.
+pub const DECIDER_MODEL: &str = "auto";
+
+/// `true` for sentinel values that mean "let the harness choose its default".
+pub fn is_default_model(model: &str) -> bool {
+    matches!(model.trim().to_ascii_lowercase().as_str(), "" | "auto" | "default")
+}
+
+/// Free models have a `free` label in their OpenCode model id (`-free` for the
+/// built-in provider, `:free` for OpenRouter-style ids).
+pub fn is_free_model(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    lower.contains("-free") || lower.contains(":free")
+}
+
+/// Ordered shortlist of good-quality free models. This is a preference order,
+/// not a forced default: a fallback is only ever picked from models the
+/// operator's OpenCode actually reports via `opencode models`.
+const PREFERRED_FREE_MODELS: &[&str] = &[
+    "opencode/deepseek-v4.1-flash-free",
+    "opencode/mimo-v2.6-flash-free",
+    "opencode/nemotron-3.5-super-vl-free",
+    "opencode/hy4-flash-free",
+    "opencode/flint-40b-free",
+    "opencode/longcat-2.5-free",
+    "opencode/inkling-2-small-free",
+    "opencode/iceman-free",
+    "opencode/beam-free",
+    "opencode/tidepool-alpha-free",
+];
+
+/// Tiny/toy models are not good enough to supervise an overnight run, even
+/// when they carry a free label.
+fn is_toy_model(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    ["0.5b", "0.6b", "1.7b", "nano", "micro", "tiny"]
+        .iter()
+        .any(|needle| lower.contains(needle))
+}
+
+/// Pick one good-quality free model from `available`, deterministically.
+/// Never returns the current model (so a repeat rate limit can move on), never
+/// returns a toy model, and returns `None` when nothing suitable is installed.
+pub fn pick_free_fallback(available: &[String], current: &str) -> Option<String> {
+    let current = current.trim();
+    let suitable = |id: &String| -> bool {
+        is_free_model(id) && !is_toy_model(id) && !(current == id && !is_default_model(current))
+    };
+    for wanted in PREFERRED_FREE_MODELS {
+        if let Some(found) = available.iter().find(|id| id.as_str() == *wanted && suitable(id)) {
+            return Some(found.clone());
+        }
+    }
+    let mut any: Vec<&String> = available.iter().filter(|id| suitable(id)).collect();
+    any.sort();
+    any.dedup();
+    any.first().map(|id| (*id).clone())
+}
+
+/// Shared rate-limit classifier. Used for pane tails, decider error output and
+/// subprocess stderr so the marker list lives in exactly one place.
+pub fn contains_rate_limit(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("quota")
+        || lower.contains("resource_exhausted")
+        || lower.contains("too many requests")
+}
 
 /// Long-lived decider session id. `opencode run --session` requires ids that
 /// start with `ses` (verified against opencode v2.3.2). Override with

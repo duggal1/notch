@@ -51,7 +51,6 @@ enum JobKind {
 struct JobCtx {
     seed: Seed,
     tail: String,
-    model: String,
     remaining: u64,
 }
 
@@ -66,10 +65,24 @@ struct Job {
 struct Finished {
     session: String,
     kind: JobKind,
+    /// Model originally requested for this job.
+    model: String,
+    /// Model actually used after any rate-limit swap.
+    model_used: String,
+    swapped: bool,
     ctx: JobCtx,
     raw: Result<String, String>,
     path: DecisionPath,
     ms: u64,
+}
+
+/// What one judge attempt produced, including which model actually answered.
+struct JudgeOutcome {
+    raw: Result<String, String>,
+    path: DecisionPath,
+    ms: u64,
+    model_used: String,
+    swapped: bool,
 }
 
 /// A DONE verdict awaiting its verifier. Held on the pool so the poll thread
@@ -124,15 +137,17 @@ impl JudgePool {
                 } else {
                     Some(Path::new(&session_cwd))
                 };
-                let (raw, path, ms) =
-                    judge(oc.as_ref(), &job.model, &job.prompt, &session_id, cwd);
+                let outcome = judge(oc.as_ref(), &job.model, &job.prompt, &session_id, cwd);
                 let finished = Finished {
                     session: job.session,
                     kind: job.kind,
+                    model: job.model,
+                    model_used: outcome.model_used,
+                    swapped: outcome.swapped,
                     ctx: job.ctx,
-                    raw,
-                    path,
-                    ms,
+                    raw: outcome.raw,
+                    path: outcome.path,
+                    ms: outcome.ms,
                 };
                 if done_tx.send(finished).is_err() {
                     break; // poll side gone
@@ -231,44 +246,102 @@ impl Seed {
 /// One model call. Tries the persistent session first; on any failure falls
 /// back to the original cold invocation and reports which path fired. The
 /// `run --model` argv prefix is preserved so injected test runners keep working.
+/// One bounded rate-limit response: pick a good free model this harness
+/// actually has (read-only `opencode models`) and retry ONCE on the cold path.
+/// No second retry, no hammering, no forced house model.
+fn retry_with_free_model(
+    oc: &Opencode,
+    current: &str,
+    prompt: &str,
+    cwd: Option<&Path>,
+    start: Instant,
+) -> Option<JudgeOutcome> {
+    let available = oc.models().unwrap_or_default();
+    let fallback = decider::pick_free_fallback(&available, current)?;
+    let raw = oc
+        .run_decider_in(&fallback, prompt, cwd)
+        .map_err(|e| format!("free-model retry ({fallback}) failed: {e}"));
+    let ms = start.elapsed().as_millis() as u64;
+    decider::record_decision(DecisionPath::Cold, ms);
+    Some(JudgeOutcome {
+        raw,
+        path: DecisionPath::Cold,
+        ms,
+        model_used: fallback,
+        swapped: true,
+    })
+}
+
 fn judge(
     client: Option<&Opencode>,
     model: &str,
     prompt: &str,
     session_id: &str,
     cwd: Option<&Path>,
-) -> (Result<String, String>, DecisionPath, u64) {
+) -> JudgeOutcome {
     let start = Instant::now();
     let Some(oc) = client else {
         let ms = start.elapsed().as_millis() as u64;
         let path = DecisionPath::Cold;
         decider::record_decision(path, ms);
-        return (Err("decider client not configured".to_string()), path, ms);
+        return JudgeOutcome {
+            raw: Err("decider client not configured".to_string()),
+            path,
+            ms,
+            model_used: model.to_string(),
+            swapped: false,
+        };
     };
 
     // A1's per-notch-session id + real cwd: the judge must read this
     // session's worktree, not a shared context in the daemon's cwd.
     let sid = decider::decider_session_id_for(session_id);
-    let (result, path) = match oc.run_decider_session_in(model, &sid, prompt, cwd) {
-        Ok(raw) => (Ok(raw), DecisionPath::Persistent),
+    let outcome = match oc.run_decider_session_in(model, &sid, prompt, cwd) {
+        Ok(raw) => JudgeOutcome {
+            raw: Ok(raw),
+            path: DecisionPath::Persistent,
+            ms: start.elapsed().as_millis() as u64,
+            model_used: model.to_string(),
+            swapped: false,
+        },
         Err(persist_err) => {
+            if crate::opencode::is_rate_limit_error(&persist_err) {
+                if let Some(swapped) = retry_with_free_model(oc, model, prompt, cwd, start) {
+                    return swapped;
+                }
+            }
             // Session reuse failed (bad id, corrupt context, quota on that
             // session, …). Fall back to the original cold path — never lose a
             // judgment because the optimization broke.
             match oc.run_decider_in(model, prompt, cwd) {
-                Ok(raw) => (Ok(raw), DecisionPath::Cold),
-                Err(cold_err) => (
-                    Err(format!(
-                        "persistent decider failed ({persist_err}); cold fallback failed ({cold_err})"
-                    )),
-                    DecisionPath::Cold,
-                ),
+                Ok(raw) => JudgeOutcome {
+                    raw: Ok(raw),
+                    path: DecisionPath::Cold,
+                    ms: start.elapsed().as_millis() as u64,
+                    model_used: model.to_string(),
+                    swapped: false,
+                },
+                Err(cold_err) => {
+                    if crate::opencode::is_rate_limit_error(&cold_err) {
+                        if let Some(swapped) = retry_with_free_model(oc, model, prompt, cwd, start) {
+                            return swapped;
+                        }
+                    }
+                    JudgeOutcome {
+                        raw: Err(format!(
+                            "persistent decider failed ({persist_err}); cold fallback failed ({cold_err})"
+                        )),
+                        path: DecisionPath::Cold,
+                        ms: start.elapsed().as_millis() as u64,
+                        model_used: model.to_string(),
+                        swapped: false,
+                    }
+                }
             }
         }
     };
-    let ms = start.elapsed().as_millis() as u64;
-    decider::record_decision(path, ms);
-    (result, path, ms)
+    decider::record_decision(outcome.path, outcome.ms);
+    outcome
 }
 
 impl Daemon {
@@ -453,22 +526,33 @@ impl Daemon {
                 .agent_read(&agent_target(&seed.id), 200)
                 .unwrap_or_default();
 
-            // 429 / quota: back off with jitter; never hammer.
+            // 429 / quota: back off with jitter AND move the judge to a good
+            // free model this harness actually has, so the next judgment does
+            // not hammer the limited model. No model is forced on the operator.
             if contains_rate_limit(&tail) {
                 let backoff_ms = 30_000 + (now % 61_000);
                 let failures = seed.consecutive_decider_failures.saturating_add(1);
+                let current = seed
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| decider::DECIDER_MODEL.to_string());
+                let fallback = decider::pick_free_fallback(&self.list_models().models, &current);
                 {
                     let mut inner = lock(&self.inner);
                     if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
                         s.backoff_until_ms = now.saturating_add(backoff_ms);
                         s.consecutive_decider_failures = failures;
+                        if let Some(model) = &fallback {
+                            s.model = Some(model.clone());
+                        }
                     }
                     push_warning(
                         &mut inner,
                         format!(
-                            "{}: rate limit in pane output; backing off {}s",
+                            "{}: rate limit in pane output; backing off {}s{}",
                             seed.id,
-                            backoff_ms / 1000
+                            backoff_ms / 1000,
+                            fallback.as_ref().map(|m| format!("; judge model -> {m}")).unwrap_or_default()
                         ),
                     );
                     self.log_decision(
@@ -478,6 +562,15 @@ impl Daemon {
                         "backoff",
                         &format!("rate limit (429/quota); backing off {}s", backoff_ms / 1000),
                     );
+                    if let Some(model) = &fallback {
+                        self.log_decision(
+                            &mut inner,
+                            &seed.sup,
+                            &seed.id,
+                            "model_swap",
+                            &format!("rate limit on {current}; using available free model {model}"),
+                        );
+                    }
                 }
                 self.save_state(&lock(&self.inner));
                 if failures >= 3 {
@@ -567,7 +660,6 @@ impl Daemon {
                 ctx: JobCtx {
                     seed: p.seed,
                     tail: p.tail,
-                    model: p.model,
                     remaining: p.remaining,
                 },
             };
@@ -614,9 +706,32 @@ impl Daemon {
     /// semantics: loop detection, stuck strikes, budget accounting, verifier
     /// evidence checks, and "never re-prompt a working session".
     fn apply_judgment(&self, f: Finished, now: u64, pool: &Arc<JudgePool>) {
-        let Finished { ctx, raw, path, ms, .. } = f;
-        let JobCtx { seed, tail, model, remaining } = ctx;
+        let Finished { ctx, raw, path, ms, kind, model, model_used, swapped, .. } = f;
+        let JobCtx { seed, tail, remaining, .. } = ctx;
         self.log_path(&seed.id, path, ms, "judgment");
+
+        // A rate-limited judge moved to a free model: persist the choice so
+        // later judgments stop hitting the limited model, and report it.
+        if swapped && kind == JobKind::Judge {
+            {
+                let mut inner = lock(&self.inner);
+                if let Some(s) = inner.sessions.iter_mut().find(|s| s.id == seed.id) {
+                    s.model = Some(model_used.clone());
+                }
+                push_warning(
+                    &mut inner,
+                    format!("{}: rate limited on {model}; judge model -> {model_used}", seed.id),
+                );
+                self.log_decision(
+                    &mut inner,
+                    &seed.sup,
+                    &seed.id,
+                    "model_swap",
+                    &format!("rate limit on {model}; using available free model {model_used}"),
+                );
+            }
+            self.save_state(&lock(&self.inner));
+        }
 
         // Persist the new tail for loop detection across calls.
         let tkey = tail_key(&tail);
@@ -683,12 +798,11 @@ impl Daemon {
                         let job = Job {
                             session: seed.id.clone(),
                             kind: JobKind::Verify,
-                            model: model.clone(),
+                            model: model_used.clone(),
                             prompt: vprompt,
                             ctx: JobCtx {
                                 seed: seed.clone(),
                                 tail: tail.clone(),
-                                model: model.clone(),
                                 remaining,
                             },
                         };
@@ -1054,7 +1168,6 @@ impl Daemon {
                         revision_changed_at_ms: now,
                     },
                     tail,
-                    model,
                     remaining,
                 },
             };

@@ -268,7 +268,7 @@ impl FakeOpencode {
             match rest.join(" ").as_str() {
                 "api GET /api/session" => Ok(fake.api_session_raw.lock().unwrap().clone()),
                 "models" => Ok(fake.models.lock().unwrap().join("\n")),
-                s if s.starts_with("run --model") => {
+                s if s.starts_with("run") => {
                     let mut q = fake.decisions.lock().unwrap();
                     q.pop_front().ok_or(HerdrError::Failed {
                         args: args.to_vec(),

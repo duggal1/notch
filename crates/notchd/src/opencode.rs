@@ -5,8 +5,9 @@
 //! Surfaces used (bridge.md v1.3 §2/§8 — nothing else):
 //! - `opencode api GET /api/session` (read-only; activity signal)
 //! - `opencode models`               (read-only; model list)
-//! - `opencode run --model <m> --auto --session ses_notch_<id> <prompt>`
-//!   (decider calls only; never the orchestrator control path)
+//! - `opencode run [--model <m>] --auto --session ses_notch_<id> <prompt>`
+//!   (decider calls only; never the orchestrator control path). `--model` is
+//!   omitted when the model is `auto`, so the operator's harness default is used.
 //!
 //! **Every subprocess goes through `crate::proc::run`.** No local spawn, no
 //! local timeout loop. Deadlines come from A2's frozen constants, with
@@ -17,6 +18,7 @@
 //! there is no empty scratch dir — the judge runs in the session's real cwd
 //! so it can read real files and command output as evidence.
 
+use crate::decider;
 use crate::herdr::HerdrError;
 use crate::proc::{self, ProcError, Spec, TIMEOUT_DECIDER, TIMEOUT_OPENCODE_API};
 use serde::Deserialize;
@@ -63,6 +65,11 @@ pub fn decider_timeout_ms() -> u64 {
 /// `true` when `e` is the typed timeout error from the subprocess seam.
 pub fn is_timeout_error(e: &HerdrError) -> bool {
     matches!(e, HerdrError::Io(msg) if msg.starts_with("opencode timeout after "))
+}
+
+/// `true` when the decider call itself was rate limited (429/quota in stderr).
+pub fn is_rate_limit_error(e: &HerdrError) -> bool {
+    decider::contains_rate_limit(&e.to_string())
 }
 
 fn timeout_error(ms: u64) -> HerdrError {
@@ -160,15 +167,15 @@ impl Opencode {
         prompt: &str,
         cwd: Option<&Path>,
     ) -> Result<String, HerdrError> {
-        let argv = vec![
-            self.cmd.clone(),
-            "run".into(),
-            "--model".into(),
-            model.to_string(),
-            // FULL ACCESS by user decision: do not block on permission prompts.
-            "--auto".into(),
-            prompt.to_string(),
-        ];
+        let mut argv = vec![self.cmd.clone(), "run".into()];
+        // `auto` omits --model so OpenCode uses the operator's own default.
+        if !decider::is_default_model(model) {
+            argv.push("--model".into());
+            argv.push(model.to_string());
+        }
+        // FULL ACCESS by user decision: do not block on permission prompts.
+        argv.push("--auto".into());
+        argv.push(prompt.to_string());
         self.invoke_argv(&argv, cwd, Duration::from_millis(decider_timeout_ms()))
     }
 
@@ -193,17 +200,16 @@ impl Opencode {
         prompt: &str,
         cwd: Option<&Path>,
     ) -> Result<String, HerdrError> {
-        let argv = vec![
-            self.cmd.clone(),
-            "run".into(),
-            "--model".into(),
-            model.to_string(),
-            "--auto".into(),
-            "--session".into(),
-            session_id.to_string(),
-            "--archived".into(),
-            prompt.to_string(),
-        ];
+        let mut argv = vec![self.cmd.clone(), "run".into()];
+        if !decider::is_default_model(model) {
+            argv.push("--model".into());
+            argv.push(model.to_string());
+        }
+        argv.push("--auto".into());
+        argv.push("--session".into());
+        argv.push(session_id.to_string());
+        argv.push("--archived".into());
+        argv.push(prompt.to_string());
         self.invoke_argv(&argv, cwd, Duration::from_millis(decider_timeout_ms()))
     }
 }

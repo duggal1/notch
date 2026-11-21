@@ -301,20 +301,16 @@ impl Daemon {
         }
     }
 
-    /// Best-effort, non-fatal pre-spawn hook. Resolves, in order:
-    /// NOTCH_PRE_SPAWN_HOOK (a shell snippet), then the repo's
-    /// tools/opencode-default-model.sh (via CARGO_MANIFEST_DIR). The old
-    /// relative-path fallback was deleted: it executed a script relative to
-    /// the daemon's unknown cwd (HARDENING §3.1). Missing or failing -> logged,
-    /// never fails the spawn. A 3 s timeout kills a hung hook.
+    /// Best-effort, non-fatal pre-spawn hook. The ONLY candidate is an explicit
+    /// NOTCH_PRE_SPAWN_HOOK (a shell snippet) supplied by the operator. notch
+    /// never forces a house model into OpenCode: the harness default is the
+    /// default, and there is no implicit script candidate (HARDENING §3.1).
+    /// Missing or failing -> logged, never fails the spawn. A 3 s timeout kills
+    /// a hung hook.
     pub(crate) fn pre_spawn_hook(&self) {
         let candidates: Vec<String> = match std::env::var("NOTCH_PRE_SPAWN_HOOK") {
             Ok(h) if !h.trim().is_empty() => vec![h],
-            _ => vec![concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../tools/opencode-default-model.sh"
-            )
-            .to_string()],
+            _ => Vec::new(),
         };
         for candidate in candidates {
             if !candidate.contains(char::is_whitespace) && !Path::new(&candidate).exists() {

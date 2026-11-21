@@ -222,7 +222,7 @@ impl FakeOpencode {
             if joined == "models" {
                 return Ok("opencode/hy4-flash-free".to_string());
             }
-            if joined.starts_with("run --model") {
+            if joined.starts_with("run") {
                 let live = fake.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
                 fake.max_concurrent.fetch_max(live, Ordering::SeqCst);
                 let mode = *fake.mode.lock().unwrap();

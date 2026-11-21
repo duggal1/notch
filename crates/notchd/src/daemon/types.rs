@@ -124,13 +124,9 @@ pub(crate) fn tail_key(tail: &str) -> String {
 }
 
 /// Does this pane tail mention a rate limit (429 / quota / …)?
+/// The marker list lives in `decider` so tails and decider errors agree.
 pub(crate) fn contains_rate_limit(tail: &str) -> bool {
-    let lower = tail.to_lowercase();
-    lower.contains("429")
-        || lower.contains("rate limit")
-        || lower.contains("quota")
-        || lower.contains("resource_exhausted")
-        || lower.contains("too many requests")
+    crate::decider::contains_rate_limit(tail)
 }
 
 /// Append a warning, deduping consecutive duplicates, capping at
