@@ -1,0 +1,331 @@
+/* THE TEAM VERSION'S PIECES, in the theme's own tokens, so they wear every
+   skin. Drawn and approved in Ember Grid on 2026-09-30 (w-e731ca9376,
+   designs/w-e731ca9376/team.html); these are the measured values from that
+   round, where every alignment was checked to under a pixel.
+
+   AVATARS ARE INLINE BLOCKS, NOT FLEX ITEMS, wherever they sit in a line of
+   text, so the words beside them keep the baseline the app aligns on. */
+.tm-av { box-sizing: border-box; display: inline-block; width: 18px; height: 18px; vertical-align: middle;
+  border: 1px solid var(--line-strong); background: var(--film-strong); color: var(--text-dim);
+  font: 500 9px/16px var(--mono); letter-spacing: .02em; text-transform: uppercase; text-align: center;
+  border-radius: 50%; object-fit: cover; flex: 0 0 auto; }
+img.tm-av { background: var(--bg-selected); }
+.tm-av.lg { width: 28px; height: 28px; line-height: 26px; font-size: 10.5px; }
+.tm-av.you { color: var(--on-solid); background: var(--text-dim); border-color: var(--text-dim); }
+.tm-av.bot { border-style: dashed; background: transparent; border-radius: var(--mate-corner); }
+
+/* the row end: who sent it, then the due day, then the app's own time */
+.row-end .tm-who { white-space: nowrap; font: 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); }
+.row-end .tm-who .tm-av { width: 16px; height: 16px; line-height: 14px; font-size: 8px; margin-right: 8px; position: relative; top: -1px; }
+.row-end .tm-due { white-space: nowrap; font: 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.row-end .tm-lock svg { display: inline-block; vertical-align: middle; position: relative; top: -1.5px; margin-right: 6px; color: var(--text-faint); }
+
+/* The line under an opened task's name (project, who it came from, due day)
+   wears the inbox row end's type. Her pick, 2026-09-30. ALL OF IT, from the
+   first word (2026-10-01): the state that leads it, and on a row with no thread
+   state the live word and its clock, were left in sentence case and she asked
+   for them to match. */
+.workspace-task-header .focus-meta .fm-said,
+.workspace-task-header .focus-meta .ts-lead,
+.workspace-task-header .focus-meta .live-word,
+.workspace-task-header .focus-meta .live-span { font: 12px/18px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-dim); }
+/* The accent is a dot beside the due day, not the words. */
+.fm-said .tm-due-word::before { content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 6px 1px 0; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+
+/* who is on a thread, in the topbar beside the app's own icons */
+.tm-people { display: flex; align-items: center; gap: 4px; height: 34px; margin-right: 4px; }
+.tm-people .tm-av { width: 22px; height: 22px; line-height: 20px; }
+
+/* Add people, beside those faces on a conversation. Quiet text on the byline;
+   in the header it wears Done's box, which sits beside it.
+   `margin-left: auto` is here as well as on `.tm-people`: the faces are not
+   drawn on every conversation, and the control still belongs at the end. */
+.tm-add-people { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto;
+  height: 24px; padding: 0 7px; border: 0; border-radius: var(--radius); background: none; cursor: pointer;
+  white-space: nowrap; font: inherit; font-size: 12.5px; color: var(--text-faint); }
+.tm-people + .tm-add-people { margin-left: 2px; }
+.crumb-aside .tm-add-people { width: 30px; height: 30px; padding: 0; justify-content: center; border: 1px solid var(--line); border-radius: var(--tag-radius); font-size: 13px; color: var(--text-dim); }
+.crumb-aside .tm-add-wrap { display: inline-flex; align-items: center; }
+.crumb-aside .tm-add-people:hover { color: var(--text); border-color: var(--line-strong); background: var(--wash-strong); }
+.tm-add-wrap { position: relative; display: inline-flex; flex: none; margin-left: auto; }
+.tm-people + .tm-add-wrap { margin-left: 2px; }
+.tm-add-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 220px; padding: 6px; background: var(--surface); border: 1px solid var(--line-strong); box-shadow: var(--shadow-lg); -webkit-app-region: no-drag; }
+.tm-add-menu button { display: flex; align-items: center; gap: 8px; width: 100%; height: 30px; padding: 0 6px; border: 0; background: none; font-size: 13px; color: var(--text); text-align: left; cursor: pointer; }
+.tm-add-menu button:hover, .tm-add-menu button:focus-visible { background: var(--wash); outline: none; }
+.tm-add-people svg { width: 15px; height: 15px; flex: 0 0 auto; }
+.tm-add-people:hover { background: var(--wash); color: var(--text-dim); }
+
+/* a teammate's message: their face before their name */
+.msg-who .tm-av { margin-right: 9px; position: relative; top: -1px; }
+
+/* who does it: the engine menu, grown to hold people */
+.prio-menu .tm-sep { display: block; height: 1px; background: var(--line); margin: 4px 0; }
+/* 9px across, the menu row's own padding (styles.css .prio-menu-row), so a
+   heading starts where the marks under it start. */
+.prio-menu .tm-menu-head { display: block; padding: 8px 9px 4px; font: 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); }
+.tm-who-menu .prio-menu-row { display: flex; align-items: center; }
+.tm-who-menu .prio-menu-row .tm-av { margin-right: 10px; }
+.tm-who-menu .prio-menu-row .tm-av.bot { font-size: 8.5px; text-transform: none; color: var(--text-faint); }
+
+/* routing a task a teammate gave you */
+.tm-route { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* THE TEAM PAGE: every open task in the company, one line each, never
+   grouped. The tabs filter by state, the faces by person. */
+/* The Team page takes the body's place, as Settings does. */
+.workspace-team > .body[hidden] { display: none; }
+
+/* The list's own insets, declared here as well: the setup screens sit outside
+   any .list, where the app defines them, and drew flush against the card. */
+.tm-team-pane, .tm-setup { --gutter: 8px; --text-x: 32px; --row-r: 24px; }
+.tm-team-pane { height: 100%; overflow: auto; }
+.tm-bar { display: flex; align-items: center; gap: 24px; padding: 14px var(--row-r) 8px var(--text-x); }
+.tm-tabs { display: flex; align-items: center; gap: 22px; }
+.tm-tab { display: inline-flex; align-items: baseline; gap: 8px; height: 30px; line-height: 30px; padding: 0; background: none; border: 0;
+  border-bottom: 1px solid transparent; font: 11px/30px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); cursor: pointer; }
+/* Every count keeps the tint's room, so Needs You lighting moves nothing
+   (w-22da913d00). No letter spacing, or the digit sits left of the tint's middle. */
+.tm-tab b { font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; display: inline-block; padding: 0 5px; line-height: 16px; border-radius: 2px; letter-spacing: 0; }
+/* NEWS ON A TAB YOU ARE NOT ON IS A DOT, NEVER A LIT COUNT (power test 3).
+   The tinted count was the brightest thing in the strip, so a tester read
+   NEEDS YOU 8 against the In progress list under it and said eight threads had
+   gone. The count now reads like every other tab's and the orange is a square
+   in the gutter, out of the text's way and taking no room of its own. */
+.tm-tab.fresh { position: relative; }
+.tm-tab.fresh::before { content: ''; position: absolute; left: -11px; top: 50%; margin-top: -2px; width: 5px; height: 5px; background: var(--accent); }
+.tm-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.tm-tab.on b { color: var(--text); }
+.tm-faces { margin-left: auto; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+.tm-every { height: 26px; padding: 0 10px; margin-right: 6px; background: none; border: 1px solid var(--line-strong);
+  font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); cursor: pointer; }
+.tm-every.on { color: var(--text); border-color: var(--text-dim); background: var(--wash-strong); }
+.tm-face-btn { padding: 0; border: 0; background: none; cursor: pointer; line-height: 0; }
+.tm-faces .tm-av { width: 24px; height: 24px; line-height: 22px; }
+.tm-faces.picked .tm-face-btn .tm-av { opacity: .38; }
+.tm-faces.picked .tm-face-btn.on .tm-av { opacity: 1; outline: 1px solid var(--accent); outline-offset: 2px; }
+
+.tm-grid { display: grid; grid-template-columns: 8px minmax(0, 1fr) 128px 132px 168px 44px; column-gap: 20px; align-items: baseline; }
+.tm-grid > .tm-mark { align-self: center; position: relative; top: -1px; }
+.row.tm-head { padding-top: 10px; padding-bottom: 8px; font: 10.5px/16px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); }
+.row.tm-head .row-main, .tm-row .row-main { width: 100%; }
+.tm-head .num, .tm-row .num { text-align: right; }
+.tm-row.row { padding-top: 9px; padding-bottom: 9px; align-items: center; cursor: default; }
+.tm-mark { box-sizing: border-box; width: 8px; height: 8px; }
+/* tm-is-* and never .run: the app already styles a .run (its run history) */
+.tm-mark.tm-is-run { background: var(--accent); }
+.tm-mark.tm-is-wait { border: 1px solid var(--text-dim); }
+.tm-mark.tm-is-sched { border: 1px dashed var(--text-faint); }
+.tm-title { font-size: 14px; line-height: 20px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-title.private { color: var(--text-faint); }
+.tm-title svg { display: inline-block; vertical-align: middle; position: relative; top: -1.5px; margin-right: 7px; color: var(--text-faint); }
+.tm-title small { margin-left: 10px; font-size: 12.5px; color: var(--text-faint); }
+.tm-proj { font: 11.5px/20px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-owner { font-size: 13px; line-height: 20px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-owner .tm-av { margin-right: 9px; position: relative; top: -1px; }
+.tm-state { font-size: 13px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-state.tm-is-run { color: var(--text); }
+.tm-state.tm-is-sched { color: var(--text-faint); }
+.tm-row .num { font: 12px/20px var(--mono); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.tm-empty-note { padding: 32px var(--row-r) 32px var(--text-x); color: var(--text-faint); font-size: 14px; }
+
+/* signing in, starting a team, inviting, and sharing projects */
+.tm-setup { padding: 28px var(--row-r) 40px var(--text-x); max-width: 640px; }
+/* INSIDE SETTINGS (w-8415594d19) the pane is already a column with a width and
+   a margin of its own, so the page's own padding only pushed every field 32px
+   right of the title above it. One indent, not two. */
+.set-pane .tm-setup { padding: 0; max-width: none; }
+/* The lede above it is the pane's, so the first row needs the air the page's
+   own top padding used to give it. */
+.set-pane .tm-setup > :first-child { margin-top: 10px; }
+.tm-setup h2 { margin: 0 0 6px; font-size: 18px; line-height: 24px; font-weight: 400; letter-spacing: -.02em; color: var(--text); }
+.tm-setup p { margin: 0 0 18px; color: var(--text-faint); font-size: 13.5px; line-height: 20px; }
+.tm-setup .tm-error { color: var(--accent); }
+.tm-field-row { display: flex; gap: 8px; margin-bottom: 22px; }
+.tm-input { flex: 1; box-sizing: border-box; height: 34px; padding: 0 10px; border: 1px solid var(--line-strong); background: transparent;
+  color: var(--text); font: inherit; font-size: 13.5px; border-radius: var(--radius); }
+.tm-input:focus { outline: none; border-color: var(--text-dim); }
+.tm-btn { height: 34px; padding: 0 14px; border: 1px solid var(--line-strong); background: var(--wash); color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; border-radius: var(--radius); white-space: nowrap; }
+.tm-btn:hover { border-color: var(--text-dim); }
+.tm-btn:disabled { opacity: .5; cursor: default; }
+.tm-section { font: 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); margin: 24px 0 10px; }
+.tm-person-line { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 14px; color: var(--text); }
+.tm-person-line small { margin-left: auto; color: var(--text-faint); font-size: 12.5px; }
+.tm-project-line { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 14px; color: var(--text); }
+.tm-project-line:last-child { border-bottom: 0; }
+.tm-project-line .tm-seg { margin-left: auto; }
+.tm-seg { display: flex; height: 28px; border: 1px solid var(--line-strong); }
+.tm-seg button { font: 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint);
+  background: none; border: 0; padding: 0 10px; cursor: pointer; }
+.tm-seg button + button { border-left: 1px solid var(--line-strong); }
+.tm-seg button.on { color: var(--text); background: var(--wash-strong); }
+.tm-signed { display: flex; align-items: center; gap: 10px; color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+.tm-signed button { margin-left: auto; }
+.tm-invited { color: var(--text-dim); }
+/* Team settings (2026-10-01): a quiet action at the end of a person's line. */
+.tm-line-act { margin-left: 14px; flex: none; height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: none; color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; }
+.tm-line-act:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); background: var(--wash); }
+.tm-handover { margin: 2px 0 12px 38px; padding: 12px 14px 0; border-left: 2px solid var(--line-strong); }
+.tm-handover-q { font-size: 14px; color: var(--text); margin-bottom: 8px; }
+.tm-handover-note { font-size: 12.5px; color: var(--text-faint); margin: 8px 0 12px; }
+.tm-handover-mate { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text-dim); margin-bottom: 8px; }
+.tm-handover-mate > span { min-width: 120px; }
+.tm-choices { display: flex; gap: 6px; flex-wrap: wrap; }
+.tm-choice { height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius); background: none; color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; }
+.tm-choice:hover { border-color: var(--line-strong); color: var(--text); }
+.tm-choice[aria-pressed="true"] { border-color: var(--text-dim); color: var(--text); background: var(--wash); }
+.tm-leave-ask { font-size: 13.5px; color: var(--text-dim); margin-right: 6px; align-self: center; }
+
+/* A STATUS LINE YOU WRITE YOURSELF (w-0b54ee983f). Two homes, because the
+   other two went while this was being built: the Team board was deleted
+   (w-05ff3d1438) and the face chips went with it (w-57034cf3c0). What is
+   left is the row at the foot of the sidebar, where you write it, and the
+   card on hovering a face, which the inbox rows still draw. */
+
+.tm-status-held { flex: 0 0 auto; margin-left: 16px; font: 11.5px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+
+/* hovering a face: who they are, and what they said. --bg and not --card:
+   --card is see-through in some skins and the page read through it. */
+.tm-face-card { position: fixed; z-index: 60; display: block; width: max-content; max-width: 280px;
+  padding: 9px 12px 10px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); text-align: left; cursor: default; font-weight: 400; }
+/* both are spans so the card can live in a portal; they still stack. */
+.tm-face-card-who { display: block; font-size: 13px; line-height: 18px; color: var(--text); white-space: nowrap; }
+.tm-face-card-said { display: block; margin-top: 3px; font-size: 13px; line-height: 18px; color: var(--text-dim); white-space: normal; }
+.tm-face-card-said.nothing { color: var(--text-faint); }
+.tm-face-card-said .tm-status-held { display: block; margin: 3px 0 0; }
+.tm-face-hover { position: relative; display: inline-flex; align-items: center; gap: inherit; }
+
+/* WRITING ONE IS ONE SENTENCE (w-a09476712f): "I'm in meetings until the end
+   of today." The composer's two inks: the prose is faint, what you change is
+   dim and underlined with dots, and what you typed is full ink. What you type
+   is an editable run of the sentence itself, so it wraps with the words
+   around it, and the underline is text-decoration, so it follows every line
+   and never makes the line taller. 80 characters is two lines at most. */
+.tm-status-sentence { font-size: 15px; line-height: 1.6; color: var(--text-faint); overflow-wrap: anywhere; }
+.tm-status-what { color: var(--text); outline: none; caret-color: var(--text); white-space: pre-wrap;
+  text-decoration: underline dotted var(--line-strong); text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.tm-status-what:empty::before { content: attr(data-placeholder); color: var(--text-dim); }
+.workspace-navigation .th-me-pop .compose-word.open, .workspace-navigation .th-me-pop .compose-word:hover { color: var(--text); text-decoration-color: var(--text-dim); }
+/* The time menu opens UP from here: the box sits at the foot of the window. */
+.tm-status-until .when-menu { top: auto; bottom: calc(100% + 8px); }
+.tm-status-keys { display: flex; align-items: center; gap: 14px; margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--line); font-size: 12px; color: var(--text-faint); }
+.tm-status-keys kbd { font: 11px var(--mono); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 4px;
+  margin-right: 5px; color: var(--text-dim); }
+.tm-status-clear { margin-left: auto; font: inherit; font-size: 12px; color: var(--text-faint); background: none; border: 0; cursor: pointer; }
+.tm-status-clear:hover { color: var(--text); }
+.tm-status-error { margin-top: 8px; color: var(--accent); font-size: 12.5px; }
+
+/* YOUR OWN ROW IS YOUR NAME AND YOUR EMAIL, one button that opens your
+   account menu (w-a09476712f). The status line that took the email's place
+   on 2026-10-02 is a row in that menu now.
+
+   EVERY RULE HERE IS SCOPED TO .workspace-navigation BECAUSE IT HAS TO
+   OUT-RANK `.workspace-navigation button`, which sizes every button in the
+   sidebar (13px, 36px tall, flex, padding) and reaches into the menu too. */
+.th-me { position: relative; }
+.th-me-wrap { flex: 1 1 auto; min-width: 0; }
+
+/* YOUR ROW KEEPS THE SIDEBAR'S COLUMN. Your name starts where "Settings"
+   and "Invite people" start (10 + 18 + 11 = 39px in, from the menu's
+   padding, icon and gap in workspace-navigation.css), and your face is
+   centred on their icons. At 32px the face stuck out past the icons and the
+   name sat 10px right of the labels, which is what still felt "a little bit
+   weird" after the size was settled (2026-10-02). Shown seven versions at
+   full screen she picked this one: 28px, light border kept, 4 + 28 + 7 = 39.
+   Change the menu's spacing and this has to move with it; the test does
+   the sum. The collapsed rail keeps the 22px square and its own 8px: there
+   the face is an icon among icons. */
+.workspace-navigation .th-me { padding-left: 4px; gap: 7px; }
+.workspace-navigation .th-me .tm-av { width: 28px; height: 28px; line-height: 26px; font-size: 10px; }
+.workspace-collapsed .workspace-navigation .th-me { padding-left: 8px; gap: 9px; }
+.workspace-collapsed .workspace-navigation .th-me .tm-av { width: 22px; height: 22px; line-height: 20px; font-size: 9px; }
+
+/* THE BUTTON IS THE WHOLE ROW, and its hover wash reaches the row's left
+   edge, so it starts where the row's padding starts and puts it back inside:
+   the face lands where the row's padding put it and the name keeps the
+   column above. Its gap is the row's gap for the same reason. Open, it keeps
+   the wash, which is how the row says the menu above it is its own. */
+.workspace-navigation .th-me .th-me-btn { width: calc(100% + 4px); height: 38px; margin-left: -4px; padding: 0 8px 0 4px; gap: 7px; }
+.workspace-navigation .th-me .th-me-btn[aria-expanded='true'] { background: var(--wash); }
+.workspace-navigation .th-me .th-me-btn small { font-size: 11.5px; line-height: 16px; }
+.workspace-collapsed .workspace-navigation .th-me .th-me-btn { width: 38px; margin-left: -8px; padding: 0 0 0 8px; }
+
+/* YOUR ACCOUNT MENU, opening upward from the row, as wide as the row. It is
+   on the grey every other dropdown floats on (--pop), and it is drawn the way
+   the thread bar's menu is: a header, rows with a faint icon, hairlines.
+   In the collapsed rail the row is a 38px square, so the menu takes a width
+   of its own. Every button in here gets the sidebar's button rules first,
+   so these hand them back their own size, and keep their words showing
+   where the collapsed rail hides every `button > span`. */
+.th-acct-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 60; padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--pop); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  animation: prio-in 0.13s cubic-bezier(0.2, 0.8, 0.3, 1); }
+:root[data-theme="light"] .th-acct-menu { background: var(--surface); }
+.workspace-collapsed .th-acct-menu { right: auto; width: 240px; }
+.workspace-navigation .th-acct-menu button { height: auto; width: 100%; gap: 10px; padding: 7px 9px; font-size: 13px;
+  color: var(--text-dim); text-align: left; }
+.workspace-navigation .th-acct-menu button:hover, .workspace-navigation .th-acct-menu button:focus-visible { background: var(--wash-strong); color: var(--text); outline: none; }
+.workspace-collapsed .workspace-navigation .th-acct-menu button > span { display: block; }
+.th-acct-menu svg { width: 16px; height: 16px; flex: none; color: var(--text-faint); }
+.th-acct-menu button:hover svg { color: var(--text-dim); }
+.th-acct-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What you said wraps rather than losing its "until", but to two lines and
+   no more: "it should be a maximum of two rows of space" (2026-10-04). */
+.th-acct-row.said > span { color: var(--text); white-space: normal; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.workspace-navigation .th-acct-menu .th-acct-row.said { align-items: flex-start; }
+.th-acct-row.said svg { margin-top: 1px; }
+.workspace-navigation .th-acct-menu .th-acct-who { gap: 9px; padding: 8px 9px 9px; }
+.workspace-navigation .th-acct-menu .th-acct-who .tm-av { width: 28px; height: 28px; line-height: 26px; font-size: 10px; display: inline-block; }
+.th-acct-who > span { min-width: 0; }
+.th-acct-who b { display: block; font-weight: 500; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-acct-who small { display: block; font-size: 11.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-acct-rule { height: 1px; background: var(--line); margin: 3px 5px; flex: none; }
+
+/* The box you write a status in. It takes the account menu's place when you
+   pick that row, from the same corner and on the same grey. */
+.th-me-pop { position: absolute; left: 0; bottom: calc(100% + 6px); width: 360px; padding: 14px 16px 12px; box-sizing: border-box;
+  background: var(--pop); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: var(--shadow-lg); z-index: 40; }
+/* THE BOX IS DRAWN INSIDE THE SIDEBAR, so `.workspace-navigation button`
+   reaches into it and makes every control there 36px tall with the sidebar's
+   own padding and gap, and in the collapsed rail hides every `button > span`.
+   These hand the sentence's word, the time menu's rows and Clear status back
+   their own shapes; without them the sidebar wins on specificity. */
+.workspace-navigation .th-me-pop button { height: auto; gap: 0; padding: 0; border-radius: var(--radius); }
+.workspace-navigation .th-me-pop .compose-word { display: inline; font: inherit; color: var(--text-dim); background: none; }
+.workspace-navigation .th-me-pop .when-row { display: flex; gap: 9px; width: 100%; padding: 6px 9px; font-size: 13px;
+  color: var(--text-dim); border-radius: var(--radius); }
+.workspace-navigation .th-me-pop .when-row:hover { background: var(--bg-selected); color: var(--text); }
+.workspace-collapsed .workspace-navigation .th-me-pop button > span { display: inline; }
+
+/* WHO SEES A PROJECT'S THREADS (ProjectShare.tsx, w-b989839656). The button
+   beside a project's name is drawn as the answer: its mark and its words. */
+.ps-anchor { position: relative; margin-left: auto; flex: none; }
+.ps-btn { display: inline-flex; align-items: center; gap: 9px; white-space: nowrap; }
+.ps-btn svg { color: var(--text-dim); flex: none; }
+.ps-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 80; width: 360px; box-sizing: border-box; padding: 5px;
+  background: var(--pop, var(--bg-selected)); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  display: flex; flex-direction: column; gap: 1px; text-align: left;
+  font-size: 13.5px; line-height: 20px; color: var(--text-dim);
+}
+.ps-menu .tc-row.on { background: var(--wash-strong, rgba(255, 255, 255, 0.07)); }
+/* The lock is drawn narrower than the people mark; centred in the same slot,
+   the three labels start on one line. */
+.ps-menu .tc-row > svg[aria-label="Private"], .pp-who > svg[aria-label="Private"] { margin: 2px 2px 0; }
+.ps-menu .tc-row:hover { color: var(--text); }
+.ps-tick { width: 14px; height: 14px; flex: none; display: inline-grid; place-items: center; border: 1px solid var(--line-strong); color: var(--text); }
+.ps-tick svg { width: 11px; height: 11px; }
+.ps-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 5px 3px; }
+
+/* The Projects list's Who sees it column (ProjectsPage.tsx). */
+.pp-who { flex: none; width: 150px; display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 13.5px; white-space: nowrap; overflow: hidden; }
+.pp-who svg { color: var(--text-faint); flex: none; }
+.pp-head-who { flex: none; width: 150px; }
+
+/* The thread the task's agent works in, beside "With Bug fixer". */
+.tm-with-thread { margin-left: auto; padding-left: 16px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); font-size: 13px; }

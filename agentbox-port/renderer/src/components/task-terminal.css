@@ -1,0 +1,58 @@
+.task-terminal {flex-shrink:0;display:flex;flex-direction:column;min-height:0;background:var(--bg);color:var(--text);border-top:1px solid var(--line);}
+/* `--task-terminal-h` and `--task-terminal-w` are the size she dragged it to,
+   set on the page it sits in (TaskTerminal.tsx). Until she drags, the old fixed
+   sizes; once she has, the cap is the page less a strip to read. */
+.task-terminal-bottom {position:relative;height:var(--task-terminal-h,280px);max-height:45vh;}
+.task-terminal-bottom.task-terminal-sized {max-height:calc(100% - 120px);}
+/* THE EDGE TO DRAG: an invisible strip over the border that faces the page.
+   No handle drawn on it (her call, 2026-10-08: "like vscode doesn't make it
+   THAT obvious its draggable. we want it clean"). The cursor says it drags, and
+   the border goes a shade brighter once the pointer rests on it, the way
+   VS Code's sash does, and stays so for the whole drag. */
+.task-terminal-grip {position:absolute;z-index:6;}
+.task-terminal-grip::before {content:'';position:absolute;background:transparent;transition:background-color 120ms ease;}
+.task-terminal-grip:hover::before {background:var(--line-strong);transition-delay:300ms;}
+.task-terminal-grip.dragging::before {background:var(--line-strong);transition-delay:0ms;}
+.task-terminal-bottom > .task-terminal-grip {left:0;right:0;top:-4px;height:7px;cursor:row-resize;}
+.task-terminal-bottom > .task-terminal-grip::before {left:0;right:0;top:3px;height:1px;}
+.task-terminal-side > .task-terminal-grip {top:0;bottom:0;left:-4px;width:7px;cursor:col-resize;}
+.task-terminal-side > .task-terminal-grip::before {top:0;bottom:0;left:3px;width:1px;}
+.task-terminal-toolbar {display:flex;align-items:center;gap:14px;min-height:42px;flex-shrink:0;flex-wrap:wrap;padding:0 22px;border-bottom:1px solid var(--line);font-size:12px;}
+.task-terminal-toolbar strong {font-weight:500;}
+.task-terminal-folder {color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
+.task-terminal-process {color:var(--text-dim);font:11px var(--mono);white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;}
+/* THE CORNER IS ONE GROUP, so it can never break across two lines while the
+   folder name beside it wraps. The toolbar still wraps as a whole rather than
+   overflowing; what it may no longer do is put the cross on a line of its own
+   under the button it is supposed to sit beside. */
+.task-terminal-controls {margin-left:auto;display:flex;align-items:center;gap:inherit;flex-shrink:0;}
+/* ONE BOX SIZE FOR EVERY CONTROL IN THE CORNER, and the mark centred in it.
+   The reasoning and what she photographed are on `TerminalToolbar` in
+   TaskTerminal.tsx. The height is shared by the word buttons and the icon
+   buttons so their centres cannot drift; only the width differs, because a
+   word is as wide as its word and an icon is a square. */
+.task-terminal-toolbar button {
+  border:0;background:transparent;color:var(--text-dim);cursor:pointer;font:inherit;
+  flex-shrink:0;height:24px;display:grid;place-items:center;border-radius:4px;line-height:1;
+}
+.task-terminal-toolbar button:hover {color:var(--text);background:var(--line);}
+.task-terminal-word {padding:0 7px;}
+.task-terminal-icon {width:24px;padding:0;}
+/* `display:block` is what takes the baseline's descender gap out from under the
+   mark; without it the svg sits on the text baseline inside its own button and
+   rides high of everything beside it. */
+.task-terminal-icon svg {display:block;width:16px;height:16px;}
+.task-terminal-screen {flex:1;min-height:0;overflow:hidden;margin:12px 16px;background:var(--bg);color:var(--text);}
+/* xterm toggles .focus on keyboard focus. That class also names the app's
+   centered conversation. Keep its reading-width and padding out of the terminal,
+   including higher-specificity reading-width preferences and artifact layouts. */
+.task-terminal-screen .xterm {height:100%;max-width:none!important;margin:0!important;padding:0!important;}
+.task-terminal-message {padding:8px 22px;font-size:12px;color:var(--text-dim);}
+.task-terminal-message button {font:inherit;color:var(--text);background:transparent;border:1px solid var(--line);border-radius:4px;padding:3px 7px;cursor:pointer;}
+.focus-pane:has(> .task-terminal-side) {padding-right:min(var(--task-terminal-w,min(44%,540px)),calc(100% - 320px));}
+.task-terminal-side {position:absolute;right:0;top:0;bottom:0;width:min(var(--task-terminal-w,min(44%,540px)),calc(100% - 320px));border-top:0;border-left:1px solid var(--line);}
+.task-terminal-side .task-terminal-toolbar {gap:7px;padding:0 12px;flex-wrap:wrap;}
+/* Where the side terminal is laid under the page instead, it has no left edge to drag. */
+@media(max-width:850px){.focus-pane:has(> .task-terminal-side){padding-right:0;}.task-terminal-side{position:static;width:auto;height:280px;border-left:0;border-top:1px solid var(--line);}.task-terminal-side > .task-terminal-grip{display:none;}}
+.agent-update-panel .task-terminal-side > .task-terminal-grip {display:none;}
+.task-terminal-screen .xterm-viewport {background-color:transparent!important;}

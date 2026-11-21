@@ -1,0 +1,539 @@
+import {ArtifactControlGlyph} from './ArtifactControlGlyph';
+import {FocusControl} from './FocusControl';
+import type {FocusControlStyle} from '../focus-control';
+import {usePreviewReveal} from '../preview-reveal';
+import {PreviewLoading} from './PreviewLoading';
+import {OpeningWait} from './OpeningWait';
+import {didNotOpen} from '../opening-wait';
+import { isLocalPreview, type ArtifactMode } from '../artifact-layout';
+import { LOCAL_APP_SANDBOX, previewShows, previewStatus, useLocalPreview } from '../local-preview';
+import { LocalPreviewStatus } from './LocalPreviewStatus';
+import { WebsitePane, type Browsing, type PageControl } from './WebsitePane';
+import { BrowserChrome, type WebChromeKind } from './BrowserChrome';
+import { addressYouTyped, canFrameAWebsite, isWebsiteAddress } from '../../../shared/websites.mts';
+// THE DOCUMENT PANE. The right half of the window is the file itself.
+//
+// The look is settled and is not a question any more.
+//
+// THE SPEC, measured off the drawn screen (decisions.md, 08-21):
+//
+//   ground under the file          the window's own card, --doc-page
+//   air, card to window            14 / 16 / 16 / 14   top, right, foot, left
+//   corner                         10px
+//   card's edge to the icon's ink  20px
+//   how the card is held           a 1px hairline, no shadow
+//   the two marks                  open, close, hairline icons, top right
+//   the path                       a breadcrumb, in the reading face
+//
+// The air is UNEVEN BY 2px on purpose. Card two was the correction and she read
+// that sentence and picked card one anyway. Do not even it up.
+//
+// A MARKDOWN FILE FOLLOWS THE WINDOW'S THEME. AN HTML FILE DOES NOT. Both
+// halves are hers, on this row, a day apart.
+//
+// Markdown we draw ourselves, so there is nothing to guess.
+//
+// That is why the kind rides on the element: styles.css keys the split off
+// doc-md / doc-html rather than off the theme.
+//
+// THE PANE HAS NO ZOOM OF ITS OWN, and it is not missing.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { api } from '../api';
+import { CodeFile } from './CodeFile';
+import { TableView, useTableSave } from './TableView';
+import { useLiveSession, useLiveTicket } from '../live/live-session';
+import { familyOfName } from '../../../shared/artifact-marks.mts';
+import { isTablePath } from '../table-file';
+import { FilmPlayer } from './FilmPlayer';
+import { PdfPages } from './PdfPages';
+import { crumbParts, docKind, docName, FOLLOW_FILE_MS, isPlainText, newerOnDisk, paneCanSave, splitFromPointer, OPENING_SPLIT, type PaneKind } from '../doc-pane';
+import { askAtMostEvery } from '../ask-at-most-every';
+import { opening, pictureUrl, seenAt } from '../picture';
+import { fetchableFileUrl } from '../phone-files';
+import { DocText } from './DocText';
+import { CodeArtifact } from './CodeArtifact';
+import type { Change } from '../code-artifact';
+import type { TableCell } from '../types';
+import { NAME } from '../../../shared/product-name.mjs';
+import { shownName } from '../../../shared/artifact-marks.mts';
+import { onPhone } from '../phone-screen';
+import { scrollKey, useKeptScroll } from '../kept-scroll';
+import { pageForNotes, pageTextForNotes } from '../notes-sidebar';
+
+const COMING_LOOKS_MS = 3000;
+
+// The app's own icon recipe (SearchIcon.tsx): a 24 grid, a hairline, round
+// caps, no fill. 1.3 here rather than 1.1 because these two sit at 15px.
+function Glyph({ children }: { children: React.ReactNode }) {
+  return (
+    <svg
+      width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+    >{children}</svg>
+  );
+}
+const OpenGlyph = () => (
+  <Glyph>
+    <path d="M14 4.8h5.2V10" />
+    <path d="M19.2 4.8 11.6 12.4" />
+    <path d="M18.4 14.2v3.6a1.6 1.6 0 0 1-1.6 1.6H6.2a1.6 1.6 0 0 1-1.6-1.6V7.2a1.6 1.6 0 0 1 1.6-1.6h3.6" />
+  </Glyph>
+);
+const CloseGlyph = () => (
+  <Glyph>
+    <path d="M6.6 6.6 17.4 17.4" />
+    <path d="M17.4 6.6 6.6 17.4" />
+  </Glyph>
+);
+
+// `auto` marks a document the card opened by itself rather than one she
+// clicked. Nothing about the pane is drawn differently for it; it only decides
+// what esc does (escapeClosesDoc in doc-pane.ts). `at` is the ONE file inside
+// a change she is being taken to, when something opened the artifact by
+// pointing at a file rather than at the change as a whole: a chip on a work
+// line in the conversation. It is not remembered anywhere. Reopening the
+// change from its own chip puts her back at the top of it, which is what a
+// change with no file named is.
+//
+// `atFrom` IS WHY THE SECOND PRESS WORKS. Pressing a chip, walking away with J
+// and K and pressing the SAME chip again leaves `at` on the value it already
+// had, so nothing downstream would notice and the press would do nothing. This
+// changes on every press and is the whole reason it exists.
+export type OpenDoc = { product: string; src: string; auto?: boolean; at?: string; atFrom?: number; readOnly?: boolean; /** A teammate's copy: how many notes it has, for the mark beside the chat. */ notes?: number };
+
+// The same element with or without notes: a different one would rebuild the
+// editor inside it, from the text the pane first read, whenever Focus opens or closes.
+const Beside = ({ aside, children }: { aside?: ReactNode; children: ReactNode }) =>
+  <div className={aside ? 'doc-notes-split' : undefined} style={aside ? undefined : { display: 'contents' }}>{children}{aside}</div>;
+
+// A website carries doc-html for what that class means: a card holding a
+// page whose colour the app cannot see into, so the header keeps its own dark
+// in every theme. It carries doc-website for the one thing only true here. A
+// `<webview>` is a separate compositing layer and paints over everything the
+// card draws, so the hover-reveal toolbar doc-html normally gets would be
+// painted under the page and could never be pressed.
+// Pins go on a page only once it is drawn whole; until then it scrolls inside its frame and a pin would drift.
+const PinSheet = ({ on, height, children }: { on: boolean; height: number | null; children: ReactNode }) =>
+  on ? <div className="doc-pin-sheet" data-whole={height ? '' : undefined} style={height ? { height } : undefined}>{children}</div> : <>{children}</>;
+
+function paneKindClass(kind: PaneKind): string {
+  if (kind === 'html') return 'doc-html';
+  if (kind === 'website') return 'doc-html doc-website';
+  if (kind === 'code') return 'doc-code';
+  if (kind === 'image') return 'doc-image';
+  if (kind === 'table') return 'doc-table';
+  return 'doc-md';
+}
+
+export function DocPane({ doc, thread, roots, split, onSplit, onClose, onNotice, mode, onMode, headerTarget, focusControlStyle, aside, onComment, firstMark }: {
+  /** The thread it was opened from: its own copy of a file comes before the project's. */
+  thread?: string;
+  focusControlStyle?: FocusControlStyle;
+  /** Drawn beside a document's words, inside the card: the notes sidebar. */
+  aside?: ReactNode;
+  /** A table cell's Comment, for the notes sidebar. */
+  onComment?: (quote: string, cell: TableCell) => void;
+  /** A mark before the pane's own ones in the corner. */
+  firstMark?: ReactNode;
+  headerTarget?: HTMLElement | null;
+  mode?: ArtifactMode;
+  onMode?: (mode: ArtifactMode) => void;
+  doc: OpenDoc;
+  // The product's own folders, so the breadcrumb says "astral › designs › …"
+  // rather than printing the account plumbing above it.
+  roots: string[];
+  // How much of the window the document takes, 0..1.
+  split: number;
+  onSplit: (fraction: number) => void;
+  onClose: () => void;
+  onNotice: (text: string) => void;
+}) {
+  // An address typed into the bar, kept against the thread's own so opening
+  // another link puts it away.
+  const [typed, setTyped] = useState<{ from: string; to: string } | null>(null);
+  const src = typed?.from === doc.src ? typed.to : doc.src;
+  const kind: PaneKind = docKind(src) ?? (isTablePath(src) ? 'table' : isPlainText(src) ? 'text' : 'html');
+  // Where the pane is standing. A webview keeps its own history, so after one
+  // click the thread's address is no longer the page being read, and the bar
+  // and the way out follow this rather than `doc.src`.
+  const [here, setHere] = useState<Browsing>({ url: src, canBack: false, canForward: false, loading: true });
+  const [webFailed, setWebFailed] = useState<string | null>(null);
+  const [webReady, setWebReady] = useState(false);
+  const [codeBox, setCodeBox] = useState<HTMLDivElement | null>(null);
+  useKeptScroll(codeBox, scrollKey(doc.product, src));
+  // What the bar presses. Filled in by the webview while it is mounted.
+  const browsing = useRef<PageControl | null>(null);
+  // Asked once: can this page draw a browser of its own.
+  const [ownBrowser] = useState(() => canFrameAWebsite(typeof document === 'undefined' ? null : document));
+  // The file this really is, found by the app's own finder in the main process,
+  // so the pane opens exactly what a click on the same path would have opened.
+  const [resolved, setResolved] = useState<string | null>(null);
+  // Each look-up is a new opening (../picture.ts seenAt).
+  const pictureAt = useMemo(() => opening(), [resolved]);
+  const [text, setText] = useState<string | null>(null);
+  const [mtime, setMtime] = useState<number>(0);
+  const saveTable = useTableSave({ product: doc.product, src: doc.src, mtime });
+  // A thread's own file is the team's when the thread is: teammates with it open type into one live copy.
+  // A project's other documents are each person's own and stay out of it.
+  const threadsFile = /^(?:\.\/)?designs\/[\w-]+\/[^/]+$/.test(src) && (kind === 'markdown' || kind === 'table') && !doc.readOnly;
+  const liveTicket = useLiveTicket(threadsFile ? { product: doc.product, name: src.split('/').pop() ?? src } : null);
+  const liveSession = useLiveSession(liveTicket);
+  const liveRef = useRef(liveSession);
+  liveRef.current = liveSession;
+  const family = familyOfName(src.split('/').pop() ?? src);
+  const shownFamily = useRef<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  // The address the frame points at, minted by main when it resolved the file.
+  // An html page is served from its own origin so its pictures load; see
+  // main/doc-scheme.mts for why file:// could not.
+  const [url, setUrl] = useState<string | null>(null);
+  // A local address is asked whether anything is there before the frame is
+  // believed (../local-preview.ts). `attempt` gives the frame a fresh start.
+  const app = useLocalPreview(url);
+  // The key, not the address: a marker on the address would reach the app.
+  const frameKey = url && app.local ? `${url} ${app.attempt}` : url;
+  const [loaded, revealFrame] = usePreviewReveal(frameKey);
+  const pageFrame = useRef<HTMLIFrameElement | null>(null);
+  const [pageHeight, setPageHeight] = useState<number | null>(null);
+  const besideNotes = !!aside;
+  const fromText = !url && text !== null;
+  useEffect(() => {
+    setPageHeight(null);
+    if (!(url || fromText) || !besideNotes) return undefined;
+    const hear = (e: MessageEvent) => {
+      if (e.source !== pageFrame.current?.contentWindow || e.data?.type !== 'agentbox-document-height') return;
+      const h = e.data.height;
+      if (typeof h === 'number' && Number.isFinite(h) && h > 0 && h <= 1_000_000) setPageHeight(Math.ceil(h));
+    };
+    window.addEventListener('message', hear);
+    return () => window.removeEventListener('message', hear);
+  }, [url, fromText, besideNotes]);
+  const frameReady = app.local ? previewShows(loaded, app.phase) : loaded;
+  const liveStatus = app.local && url ? previewStatus(app.phase, url, app.waited) : null;
+  // The change a run made, when the artifact is one.
+  const [change, setChange] = useState<Change | null>(null);
+  // Which file inside a change she is standing on, so the mark in this header
+  // opens THAT file rather than the change as a whole.
+  const [fileAt, setFileAt] = useState<string | null>(null);
+  // A file still on its way from a teammate looks again until it lands.
+  const [looks, setLooks] = useState(0);
+  const lookLater = (r: { coming?: boolean; waits?: boolean }) => { if (r.coming || r.waits) later.current = setTimeout(() => setLooks((n) => n + 1), COMING_LOOKS_MS); };
+  const later = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (later.current) clearTimeout(later.current); }, [doc.src]);
+  const pdfBytes = useCallback(async () => {
+    const res = await fetch(fetchableFileUrl(pictureUrl(resolved as string)));
+    if (!res.ok) throw new Error(`${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }, [resolved]);
+
+  useEffect(() => {
+    let live = true;
+    // A newer version of a live file is the same room: the words stay up and the editor keeps its place.
+    const sameLiveFile = !!liveRef.current && shownFamily.current === family;
+    shownFamily.current = family;
+    if (!sameLiveFile) {
+      setResolved(null); setText(null); setMtime(0); setUrl(null); setChange(null);
+      setHere({ url: src, canBack: false, canForward: false, loading: true });
+      setWebFailed(null); setWebReady(false);
+    }
+    // A website is not looked for on disk: the address is the document.
+    if (kind === 'website') { setFailed(null); setResolved(src); setUrl(src); return () => { live = false; }; }
+    if (isLocalPreview(src)) { setFailed(null); setResolved(src); setUrl(src); return () => { live = false; }; }
+    const unanswered = () => { if (live) setFailed(didNotOpen(docName(src))); };
+    api.resolveDoc({ product: doc.product, src: doc.src, thread }).then((r) => {
+      if (!live) return;
+      if (!r.ok || !r.opened) { setFailed(r.error ?? 'That file could not be found.'); lookLater(r); return; }
+      setFailed(null);
+      setResolved(r.opened);
+      setUrl(r.url ?? null);
+      // No page scheme on this copy (a browser tab): the page is drawn from its text.
+      if (kind === 'html' && !r.url) void api.readDoc({ product: doc.product, src: doc.src, thread }).then((t) => { if (live && t.ok) setText(t.text ?? ''); }).catch(unanswered);
+    }).catch(unanswered);
+    if (kind === 'code') {
+      api.codeChange({ product: doc.product, src: doc.src }).then((r) => {
+        if (!live) return;
+        if (!r.ok || !r.change) { setFailed(r.error ?? 'That change could not be read.'); return; }
+        setChange(r.change as Change);
+      });
+    }
+    if (kind === 'markdown' || kind === 'text' || kind === 'table') {
+      api.readDoc({ product: doc.product, src: doc.src, thread }).then((r) => {
+        if (!live) return;
+        if (!r.ok) { setFailed(r.error ?? 'That file could not be read.'); return; }
+        setText(r.text ?? '');
+        setMtime(r.mtime ?? 0);
+      }).catch(unanswered);
+    }
+    return () => { live = false; };
+  }, [doc.product, doc.src, src, kind, looks, thread]);
+
+  // An agent can rewrite the open file in place, and a cloud run's copy lands
+  // after its answer, so the pane reads it again while the app changes.
+  const shownMtime = useRef(0);
+  shownMtime.current = mtime;
+  useEffect(() => {
+    if (kind !== 'markdown' && kind !== 'text' && kind !== 'table') return;
+    let live = true;
+    const follow = askAtMostEvery(FOLLOW_FILE_MS, () => {
+      void api.readDoc({ product: doc.product, src: doc.src, thread }).then((r) => {
+        if (!live || !shownMtime.current || !newerOnDisk(shownMtime.current, r)) return;
+        setText(r.text ?? '');
+        setMtime(r.mtime ?? 0);
+      }).catch(() => {});
+    });
+    const off = api.onChanged(follow.changed);
+    return () => { live = false; follow.stop(); off?.(); };
+  }, [doc.product, doc.src, kind, thread]);
+
+  // FULLY RESIZABLE, hers. The pointer is captured on the divider, so a fast
+  // drag over the document's own iframe does not lose the grip — an iframe eats
+  // pointer events, which is what makes a naive mousemove listener let go
+  // halfway across the screen.
+  const grip = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+  // The card's inset differs by layout and file kind (12, 14 or 0), so the
+  // divider reads it rather than repeating every margin rule in CSS.
+  const card = useRef<HTMLDivElement | null>(null);
+  const [edge, setEdge] = useState({ x: 0, y: 0, h: 0, r: '0px' });
+  const cardX = edge.x;
+  useLayoutEffect(() => {
+    const el = card.current;
+    if (!el) return;
+    const read = () => setEdge({ x: el.offsetLeft, y: el.offsetTop, h: el.offsetHeight, r: getComputedStyle(el).borderTopLeftRadius || '0px' });
+    read();
+    const watch = new ResizeObserver(read);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
+  const onGripDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    grip.current?.setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+  const onGripMove = (e: React.PointerEvent) => {
+    if (!dragging) return;
+    const body = grip.current?.closest('.body')?.getBoundingClientRect();
+    onSplit(body ? splitFromPointer(e.clientX - body.left - cardX, body.width) : splitFromPointer(e.clientX, window.innerWidth));
+  };
+  const endDrag = (e: React.PointerEvent) => {
+    if (!dragging) return;
+    try { grip.current?.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+    setDragging(false);
+  };
+
+  // A page being browsed has an address rather than a breadcrumb; the bar
+  // above it draws that (BrowserChrome).
+  const browsingKind: WebChromeKind | null = kind === 'website' ? 'website' : app.local ? 'local' : null;
+  const crumb = crumbParts(resolved ?? doc.src, roots);
+  const canSave = paneCanSave(resolved, roots);
+  // WHAT THE FIRST MARK DOES, AND FOR A CHANGE IT IS HER EDITOR.On a markdown
+  // file or a page it is unchanged and still hands the file to the operating
+  // system, which is what she approved on 08-20. ON A WEBSITE IT IS THE
+  // BROWSER YOU ACTUALLY USE, and it hands over the page you have walked to
+  // rather than the one the thread named.
+  const openOutside = () => {
+    const src = browsingKind ? here.url : kind === 'code' ? (fileAt ?? doc.src) : doc.src;
+    api.openArtifactExternally({ product: doc.product, src, thread }).then((r) => {
+      if (!r.ok) onNotice(r.error ?? 'That file could not be opened.');
+    });
+  };
+
+  // A website steps inside its own browser so Back comes home; anything else,
+  // a local app or a site in a tab with no webview, reopens the pane there.
+  const goTo = (text: string) => {
+    const to = addressYouTyped(text);
+    if (!to) return false;
+    if (kind === 'website' && isWebsiteAddress(to) && browsing.current) browsing.current.go(to);
+    else if (to === src) (browsing.current ? browsing.current.reload() : app.retry());
+    else setTyped({ from: doc.src, to });
+    return true;
+  };
+
+  // Focus and close belong to the pane whatever is in it.
+  const paneMarks = (
+    <>
+      {onMode && focusControlStyle && <FocusControl style={focusControlStyle} focused={!!headerTarget} onClick={() => onMode(headerTarget ? 'beside' : 'focus')} />}
+      <button type="button" className="web-bar-step" title={headerTarget ? 'Exit Focus' : 'Close this page (esc)'} aria-label="Close" onClick={onClose}>
+        {focusControlStyle ? <ArtifactControlGlyph kind="close" /> : <CloseGlyph />}
+      </button>
+    </>
+  );
+
+  const documentHeader = browsingKind ? (
+    <BrowserChrome
+      kind={browsingKind}
+      url={here.url}
+      canBack={here.canBack}
+      canForward={here.canForward}
+      loading={browsingKind === 'website' ? !webReady : !frameReady}
+      onBack={() => browsing.current?.back()}
+      onForward={() => browsing.current?.forward()}
+      onReload={() => (browsing.current ? browsing.current.reload() : app.retry())}
+      onOpenOutside={openOutside}
+      onGo={goTo}
+      marks={paneMarks}
+    />
+  ) : (
+<div className="doc-head">
+          <div className="doc-crumb" title={resolved ?? doc.src}>
+            {crumb.map((part, i) => (
+              <span key={`${part}-${i}`} className="doc-crumb-part">
+                {i > 0 && <span className="doc-crumb-sep">›</span>}
+                <span className={i === crumb.length - 1 ? 'doc-crumb-leaf' : undefined}>{i === crumb.length - 1 ? shownName(resolved ?? doc.src) || part : part}</span>
+              </span>
+            ))}
+          </div>
+          <span className="doc-marks">
+            {firstMark}
+            {onMode && (focusControlStyle ? <FocusControl style={focusControlStyle} focused={!!headerTarget} onClick={() => onMode(headerTarget ? 'beside' : 'focus')}/> : !headerTarget && <button type="button" className="artifact-expand" aria-label="Expand preview" title="Expand preview to Focus" onClick={() => onMode('focus')}><Glyph><path d="M14 5h5v5M19 5l-6 6M10 19H5v-5M5 19l6-6" /></Glyph><span>Focus</span></button>)}
+            {/* The two marks she approved, and nothing beside them. */}
+            <button
+              type="button"
+              className="doc-mark"
+              title={kind === 'code' ? 'Open this file in your editor' : `Open outside ${NAME}`}
+              onClick={openOutside}
+            >
+              {focusControlStyle ? <ArtifactControlGlyph kind="open"/> : <OpenGlyph />}
+            </button>
+            <button type="button" className="doc-mark" title={headerTarget ? 'Exit Focus' : 'Close this document (esc)'} onClick={onClose}>
+              {focusControlStyle ? <ArtifactControlGlyph kind="close"/> : <CloseGlyph />}
+            </button>
+          </span>
+        </div>
+  );
+
+  return (
+    <aside
+      // A local app carries `doc-browsing` too: it has no kind of its own
+      // (docKind answers null) and is just as much a page being browsed.
+      className={`doc-pane ${paneKindClass(kind)}${browsingKind ? ' doc-browsing' : ''}${dragging ? ' dragging' : ''}`}
+      style={{ flexBasis: `${split * 100}%`, '--doc-card-x': `${cardX}px`, '--doc-card-y': `${edge.y}px`, '--doc-card-h': `${edge.h}px`, '--doc-card-r': edge.r } as React.CSSProperties}
+    >
+      {/* The divider. It is a 9px reach around a 1px line: a hairline is the
+          right thing to see and the wrong thing to have to hit. */}
+      <div
+        ref={grip}
+        className="doc-grip"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the document"
+        onPointerDown={onGripDown}
+        onPointerMove={onGripMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        // DOUBLE CLICK PUTS IT BACK WHERE IT OPENS, which is three quarters
+        // since her pick on (2026-08-22) and was an even split before it. A
+        // reset that goes somewhere the pane never opens is not a reset, it is
+        // a fifth position she has to know about.
+        onDoubleClick={() => onSplit(OPENING_SPLIT)}
+      />
+      <div ref={card} className="doc-card">
+        {headerTarget ? createPortal(documentHeader, headerTarget) : documentHeader}
+        {failed ? (
+          <div className="doc-missing">{failed}</div>
+        ) : kind === 'website' ? (
+          // The cover comes off when the page says it is drawn, so a slow
+          // site does not flash a white frame first.
+          <div className="preview-frame" aria-busy={!webReady}>
+            {webFailed
+              ? <div className="doc-missing">{webFailed} Open it in your browser with the mark above.</div>
+              : <>
+                  {!webReady && <PreviewLoading />}
+                  <WebsitePane
+                    url={src}
+                    webview={ownBrowser}
+                    ready={webReady}
+                    control={browsing}
+                    onNavigate={setHere}
+                    onReady={() => setWebReady(true)}
+                    onFailed={setWebFailed}
+                  />
+                </>}
+          </div>
+        ) : kind === 'image' ? (
+          // THE PICTURE ITSELF. Nothing to sandbox and nothing to parse: it
+          // goes on the app's own picture scheme, the same one every picture in
+          // a message already uses (../picture.ts), because her window is
+          // served over http and an http page may not load file://. Held inside
+          // the card rather than flush, because it is a thing to look at like a
+          // page is, not a diff.
+          resolved
+            ? <img className="doc-view doc-picture" src={seenAt(pictureUrl(resolved), pictureAt)} alt={docName(resolved)} crossOrigin="anonymous" onError={() => setFailed('That picture could not be drawn.')} />
+            : <PreviewLoading />
+        ) : kind === 'pdf' ? (
+          resolved ? <PdfPages load={pdfBytes} name={docName(resolved)} /> : <PreviewLoading />
+        ) : kind === 'film' ? (
+          resolved ? <FilmPlayer url={pictureUrl(resolved)} name={docName(resolved)} wide={!onMode} /> : <PreviewLoading />
+        ) : kind === 'code' ? (
+          change
+            ? <CodeArtifact
+                product={doc.product}
+                src={doc.src}
+                change={change}
+                startAt={doc.at ?? null}
+                startAtFrom={doc.atFrom ?? 0}
+                onFileAt={setFileAt}
+                onNotice={onNotice}
+              />
+            : <PreviewLoading />
+        ) : kind === 'html' ? (
+          // A page of ours brings its own colour and the card cannot reach
+          // inside it. That join is a cost of a card WITH a header and it was
+          // measured before it shipped: 33.5 points of step where a file brings
+          // its own black, 0 on a markdown file (decisions.md, 08-21).
+          // allow-same-origin is safe HERE and was not safe on file://: under
+          // astral-doc:// the page's origin is its own, so its pictures are
+          // same-origin with it while the app stays out of reach. Without it
+          // the frame is opaque and Chromium refuses every local picture in the
+          // page, which is exactly what she was looking at.
+          // A local address nothing answers draws no frame at all, only the
+          // words saying so: behind a refusal the frame holds an error page.
+          resolved ? <Beside aside={aside}>{url
+            ? <div className={`preview-frame${aside ? ' doc-pin-scroll' : ''}`} aria-busy={!frameReady}>
+              {app.local
+                ? !frameReady && <LocalPreviewStatus status={liveStatus} onRetry={app.retry} />
+                : <PreviewLoading ready={frameReady} />}
+              {(!app.local || app.phase !== 'down') && <PinSheet on={!!aside} height={pageHeight}><iframe
+                key={frameKey} ref={pageFrame} onLoad={revealFrame} onError={() => setFailed("This preview could not be loaded.")}
+                style={{opacity:frameReady ? 1 : 0}}
+                className="doc-view" src={aside ? pageForNotes(url) : url}
+                scrolling={aside && pageHeight ? 'no' : undefined}
+                // ON A PHONE THE PAGE IS SERVED FROM THE APP'S OWN ADDRESS
+                // (main/serve.mts answerFile), so same-origin would hand a page
+                // an agent wrote the app's storage and its key. Opaque, it still
+                // draws its pictures: they are plain http there, not a scheme.
+                sandbox={app.local ? LOCAL_APP_SANDBOX : onPhone() ? 'allow-scripts' : 'allow-scripts allow-same-origin'} title={crumb.join('/')}
+              /></PinSheet>}</div>
+            : text !== null
+              ? <div className={`preview-frame${aside ? ' doc-pin-scroll' : ''}`}><PinSheet on={!!aside} height={pageHeight}><iframe ref={pageFrame} className="doc-view"
+                srcDoc={aside ? pageTextForNotes(text) : text} scrolling={aside && pageHeight ? 'no' : undefined} sandbox="allow-scripts" title={crumb.join('/')} /></PinSheet></div>
+              : <PreviewLoading />}</Beside> : <PreviewLoading />
+        ) : text === null || (threadsFile && liveTicket === undefined) ? (
+          <OpeningWait key={looks} name={docName(src)} kind={kind === 'markdown' ? kind : null} onAgain={() => setLooks((n) => n + 1)} />
+        ) : kind === 'table' ? (
+          <Beside aside={aside}>
+            <TableView text={text} path={src} mode="pane" live={liveSession} onComment={onComment} onSave={doc.readOnly || !canSave ? undefined : saveTable} onReload={() => setLooks((n) => n + 1)} onNotice={onNotice} storeKey={`${doc.product}/${src}`} />
+          </Beside>
+        ) : kind === 'text' ? (
+          <Beside aside={aside}><div className="code-scroll" ref={setCodeBox}><CodeFile text={text} /></div></Beside>
+        ) : (
+          <Beside aside={aside}>
+            <DocText
+              key={liveSession ? `live:${family}` : (resolved ?? doc.src)}
+              product={doc.product}
+              src={doc.src}
+              folder={resolved ? resolved.replace(/\/[^/]*$/, '') : null}
+              text={text}
+              mtime={mtime}
+              onSaved={(at) => setMtime(at)}
+              onNotice={onNotice}
+              readOnly={doc.readOnly || !canSave}
+              live={liveSession}
+            />
+          </Beside>
+        )}
+      </div>
+    </aside>
+  );
+}

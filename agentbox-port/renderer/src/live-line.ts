@@ -1,0 +1,494 @@
+// WHETHER ANYTHING IS ACTUALLY HAPPENING ON THIS TASK.
+//
+// WHAT WAS THERE. The In progress LIST already said it at the right end of a
+// row: "working · 4m", "queued", "stopped · 2h". The task itself said nothing.
+// Opening one drew "the app · directive · last moved 3m ago" under the title and
+// that was the whole of it, so the one screen she goes to when she wants to
+// know what an agent is doing was the one screen that would not tell her.
+//
+// The app has known the answer the entire time. `supervisor.status` in
+// main/supervisor.mts returns the live sessions, the ids waiting for a slot,
+// the ids whose worker died, the capacity and whether spawning is paused. Every
+// one of those was already on the snapshot the pane is drawn from.
+//
+// So this decides WHICH of four things is true, and `Live.tsx` draws it. Pure,
+// so the wording is pinned by tests rather than by a screenshot, and so that
+// the two surfaces that say it cannot drift into two vocabularies.
+//
+// The nine looks she did not pick, and the block of prose she turned down
+// before them, are gone; their copy is in decisions.md under 2026-08-24.
+//
+// THE FOURTH STATE IS THE ONE THAT COSTS SOMETHING TO ADMIT. A row sitting in
+// In progress with no session, no place in the queue and no schedule is a row
+// nothing is going to touch until something changes, and the honest word for it
+// is that nothing is running. It happens: a worker took the row twice and gave
+// nothing back, so the tick is resting it (`restingUntil`). A live claim this
+// window did not take is not that: an agent is on it, just not one of ours
+// (`elsewhere`). Saying "queued" there would be the lie this whole vocabulary
+// was invented to stop telling (`queued` in supervisor.mts, and the founder's
+// own report on of a row reading "queued" under a sentence saying it was
+// reading).
+
+import { spanLabel } from './notes';
+import { Name } from '../../shared/product-name.mjs';
+import { resetDay } from '../../shared/usage.mts';
+import { openSignIn } from '../../shared/sign-in-ask.mts';
+import { MAC } from './this-keyboard';
+import { whyWords, type WhyCard } from './where-why';
+import { FIRST_RUN_LABEL } from './onboarding';
+import type { RunningSession, WhyNotCloud, WorkItem } from './types';
+
+// THE FIFTH STATE, AND IT IS THE ONE SOMEBODY OUTSIDE THIS BUILDING ASKED FOR.
+//
+// Her pick of the three ways to fix it, 2026-08-31: "Say it on the row. When a
+// run ends having written nothing, the row says so in the same voice the four
+// live words use... She sees it in the inbox without opening anything. Small,
+// honest, and it does not pretend to know what happened."
+//
+// So `silent` is a run that ENDED, cleanly, and wrote nothing down. It is not
+// `idle`, which means nothing has happened here at all; the whole complaint is
+// that those two looked identical while only one of them means somebody should
+// go and check something. It is not `stalled` either, which is a worker that
+// DIED and is already said in red by the bar above the conversation.
+//
+// AND IT DOES NOT PRETEND TO KNOW WHAT HAPPENED, which is her sentence and the
+// hardest part to keep. The run may have opened a pull request or may have done
+// nothing whatsoever; nothing on this side can tell, and a word that guessed
+// would be worse than the silence it replaces.
+// `next` is a queued task she pushed with Run now (w-87ff499077): still
+// waiting, but first in line, and the word changing is how the press shows.
+// `asking` is a worker stopped on a permission request: a live session, and
+// not working, because nothing moves until you answer it.
+export type LiveState = 'asking' | 'working' | 'elsewhere' | 'shipping' | 'next' | 'queued' | 'cannot' | 'signin' | 'limit' | 'paused' | 'silent' | 'idle';
+
+/** How long a thread just sent reads Queued before the fleet has listed it. */
+const JUST_SENT_MS = 30_000;
+
+/** Sent or replied to moments ago, and no agent has claimed it or written on it since. */
+function justSent(item: WorkItem, now: number): boolean {
+  const sentAt = Math.max(item.createdAt ?? 0, item.wrote?.answer?.ts ?? 0);
+  if (now - sentAt >= JUST_SENT_MS) return false;
+  if (sentAt === item.createdAt && (item.epoch ?? 0) > 0) return false;
+  return !Object.values(item.wrote ?? {}).some((w) => w?.source === 'agent' && w.ts >= sentAt);
+}
+
+export interface CannotStart {
+  why: 'setup' | 'asleep' | 'cloud-carried' | 'engine' | 'login' | 'memory' | 'slow-folder' | 'error' | 'brake' | string;
+  /** "Claude Code" or "Codex". */
+  tool: string;
+}
+
+/** The sentence for a queued row nothing will start yet, or null for a reason it does not carry. */
+export function cannotStartLine({ why, tool }: CannotStart): string | null {
+  if (why === 'setup') return 'Agents wait while setup is open. This starts as soon as you finish or skip it.';
+  if (why === 'asleep') return 'This computer looks asleep to the app, so nothing starts until it wakes.';
+  if (why === 'cloud-carried') return 'This computer is asleep, so the cloud is starting this. It runs here instead if the cloud cannot.';
+  if (why === 'engine') return `${tool} was not found on this computer, so nothing can start. Install it and this starts on its own.`;
+  if (why === 'login') {
+    return tool === 'Codex'
+      ? 'Codex has no account that can run right now. Open a terminal and run codex login, and this starts on its own.'
+      : `${tool} has no account that can run right now. Open a terminal, run claude, and type /login, and this starts on its own.`;
+  }
+  if (why === 'memory') return 'This computer is short of memory, so this waits for heavier work to finish.';
+  if (why === 'slow-folder') return 'Making this thread\'s own copy of the project is taking much longer than it should, so the agent has not started.';
+  if (why === 'error') return 'Starting an agent on this failed. The app tries again on its own.';
+  if (why === 'brake') return `${tool}'s last runs stopped before they began, so the app is waiting before it tries again.`;
+  return null;
+}
+
+export interface LiveLine {
+  state: LiveState;
+  /** The whole sentence. Never drawn; it is what the line is announced as. */
+  line: string;
+}
+
+export interface LiveFacts {
+  /** Non-null while a worker is on this row in this window. */
+  session?: RunningSession | null;
+  /** `supervisor.queued`: the ids a tick will spawn as soon as a slot frees. */
+  queued?: string[];
+  /** The walkthrough's practice thread, with the app's answer to it on its way. */
+  answering?: boolean;
+  /** On `supervisor.remoteHeld`: our own session, open between Remote Control turns. */
+  remoteHeld?: boolean;
+  /**
+   * `supervisor.signInNeeded`: rows nothing can start because the tool they run
+   *  on is signed out, each with that tool's name ("Claude Code", "Codex"). */
+  signInNeeded?: Record<string, string>;
+  /** The inbox's sign-in bar is up, so a signed-out row points at it. */
+  signInBar?: boolean;
+  /**
+   * `supervisor.atLimit`: rows nothing can start because every login of their
+   *  tool is out of usage, each with the tool's name and when it resets (0 when
+   *  no login said). */
+  atLimit?: Record<string, { tool: string; until: number }>;
+  /** `supervisor.cannotStart`: queued rows the last pass could not start, and why. */
+  cannotStart?: Record<string, CannotStart>;
+  /** The id is on `supervisor.shipping`: the app's ship queue still owes it a ship. */
+  shipping?: boolean;
+  /** An approval in the spool names this thread, so its agent has stopped on a
+   *  question only you can answer (`snapshot.approvals`). */
+  asking?: boolean;
+  /** `supervisor.runNow`: the queued ids she pushed with Run now. */
+  runNow?: string[];
+  /** `supervisor.stalled`: a worker died on it. The stalled bar owns this. */
+  stalled?: boolean;
+  /**
+   * `supervisor.silent[id]`: the last run ENDED here and wrote nothing down.
+   *  `endedAt` is when, so the line can say how long the row has been quiet.
+   *  Absent on the overwhelming majority of rows, which is why this reads as
+   *  news when it does appear. */
+  silent?: { runs: number; endedAt: number } | null;
+  /** Spawning is off, globally or for this product. */
+  paused?: boolean;
+  /** `supervisor.whyNotCloud[id]`: why it runs locally or waits, with the cloud on Everything. */
+  whyNotCloud?: WhyNotCloud | null;
+  /** How many workers are up, and how many may be. Both measured, both real. */
+  running?: number;
+  capacity?: number;
+  /** The row is in In progress. Off her inbox this line has nothing to add. */
+  inProgress?: boolean;
+  /** A moment in the future this row is parked until. The schedule bar owns it. */
+  scheduledUntil?: number;
+  now?: number;
+}
+
+/* ------------------------------ the vocabulary ---------------------------- */
+// ONE WORD, because one word is what she picked and one word is all the mark
+// has room beside it. The sentence in `line` says the same thing at length for
+// anything that reads the pane aloud.
+
+/** The one word each state gets. */
+export function shortWord(state: LiveState, helpers = 0): string {
+  // THIS IS NOT A SECOND THING ON THE LINE. They were right that a count
+  // belongs here and wrong that it needed its own words. So the count goes
+  // INSIDE the word that is already there. Nothing is added to the line,
+  // nothing is added to its height, and a run with no helpers reads exactly as
+  // before.
+  //
+  // SUBAGENTS AND NOT AGENTS, and NOT HELPERS. Helper is our word and she has
+  // never used it.
+  //
+  // NO HYPHEN, AND THAT WAS HER CALL WITH A CONDITION ON IT, 2026-08-27:
+  // "4 Subagents Working -> remove the heiphen (unless that's super unusual.
+  // If not then Sub-Agent is better." So the condition was measured rather than
+  // guessed, in the Claude Code build on her own machine (2.1.246, the binary at
+  // ~/.local/share/claude/versions): `subagent` 1033, `Subagent` 393,
+  // `sub-agent` 25, and `Sub-agent` / `Sub-Agent` ZERO. Unhyphenated is the
+  // house spelling by 57 to 1 and her fallback spelling does not occur at all,
+  // so the condition is not met and the hyphen comes out.
+  //
+  // SHE IS RIGHT, AND THE OLD COMMENT HERE WAS THE MISTAKE. It claimed the lead
+  // is "waiting on them, so four agents are what is working". Measured instead
+  // of assumed this time, on Claude Code 2.1.246: a real run spawning three
+  // sub-agents shows the lead issuing its OWN tool call (`Bash`, a top-level
+  // assistant event with `parent_tool_use_id: null`) while one sub-agent was
+  // still open. The lead is not idle. So at "1 Agent Working" two agents were
+  // working, and the word counted one of them.
+  //
+  // `countHelpers` in main/supervisor.mts only ever adds a `task_started` id,
+  // so this number is subagents and can never be anything else. Naming what it
+  // counts is the fix. Counting the lead as well was the alternative and it
+  // costs more than it is worth: it would put "1 Agent Working" on every run in
+  // Agentbox, including the overwhelming majority that spawn nothing, and she
+  // asked for the opposite. She was offered that second way on 2026-08-27 and
+  // did not take it, so it is settled.
+  if (state === 'working' && helpers > 0) {
+    return helpers === 1 ? '1 Subagent Working' : `${helpers} Subagents Working`;
+  }
+  // NOT THE TAB'S OWN WORDS: this read "Needs you" under a tab called Needs
+  // you, and said nothing the tab had not. Not "Blocked" either, which already
+  // means a thread waiting on another thread (`byline.ts`, "Blocked by" in the
+  // summary). "Asking" is what the agent is doing, in the present tense the
+  // rest of these words are in; the hover carries the whole sentence.
+  if (state === 'asking') return 'Asking';
+  if (state === 'working') return 'Working';
+  // The same word as a run of ours; the mark beside it says where.
+  if (state === 'elsewhere') return 'Working';
+  if (state === 'shipping') return 'Shipping';
+  if (state === 'next') return 'Up next';
+  if (state === 'queued') return 'Queued';
+  if (state === 'cannot') return 'Not started';
+  if (state === 'signin') return 'Signed out';
+  if (state === 'limit') return 'At its limit';
+  if (state === 'paused') return 'Paused';
+  // "NOTHING CAME BACK", AND THE PLAINNESS IS THE POINT.
+  //
+  // So not "silent", which is the state's name in the code and says nothing to
+  // anybody reading a list. Not "empty run" or "no output", which are ours. The
+  // words say the two things a person needs in the order they need them:
+  // something ran, and it told you nothing. What to do about it is the sentence
+  // below, where there is room for it.
+  if (state === 'silent') return 'Nothing came back';
+  return 'Nothing running';
+}
+
+// NEVER A SECONDS COUNTER.A run under a minute old has said nothing worth
+// counting yet, so it reads "just now" and carries no number at all. FLOORED,
+// NOT ROUNDED, and the suite caught this rather than a screenshot: at 59.6
+// seconds a rounding reading said "1m" while `line`, which cuts at a whole
+// minute, still said the run had just started. Two readings of one clock on one
+// screen. Flooring also means the timing can never say more time has passed
+// than has.
+export function shortSpan(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+/** When the work on screen began: the reply a cloud run took between turns, else the run's start. */
+export function runningSince(session: Pick<RunningSession, 'startedAt' | 'turnStartedAt'>): number {
+  return session.turnStartedAt || session.startedAt;
+}
+
+export interface LivePlace {
+  /** Said after the time: "on this Mac", "in the cloud". */
+  word: string;
+  /** Why it is not in the cloud, on hover; null on a cloud run. */
+  why: WhyCard | null;
+}
+
+// A phone or a browser tab (browser-bridge.ts, cloud-bridge.ts) is not the
+// machine the run is on, so "this Mac" there would name the wrong one.
+const inATab = () => typeof document !== 'undefined' && document.documentElement.dataset.shell === 'tab';
+
+/**
+ * Where a run is, for the working line of an open thread. Said only where it
+ * is news: a cloud run, or a local one while the cloud takes Everything, the
+ * only time the supervisor gives a reason.
+ */
+export function livePlace(facts: LiveFacts, { mac = MAC, tab = inATab() }: { mac?: boolean; tab?: boolean } = {}): LivePlace | null {
+  const session = facts.session;
+  if (!session) return null;
+  if (session.where === 'cloud') return { word: 'in the cloud', why: null };
+  const away = facts.whyNotCloud;
+  if (away?.at !== 'mac') return null;
+  const machine = tab ? 'your computer' : mac ? 'this Mac' : 'this computer';
+  return { word: `on ${machine}`, why: { head: `Running on ${machine}`, body: whyWords(away).body } };
+}
+
+/**
+ * Has an agent actually written something here. `(withdrawn)` is the app's own
+ *  word for a field that has been taken back, so it is not something to read. */
+function said(text: string | null | undefined): boolean {
+  const value = typeof text === 'string' ? text.trim() : '';
+  return !!value && value !== '(withdrawn)';
+}
+
+/**
+ * MAY THIS ROW SAY THAT NOTHING CAME BACK. One predicate, exported, because
+ * THREE surfaces answer this question and they were not all answering it the
+ * same way.
+ *
+ * Caught by a screenshot script rather than by a test, which is why it is worth
+ * the export: `liveLine` below had her rule and the inbox row in List.tsx did
+ * not, so the pane went quiet on a row carrying a result while the row beside it
+ * still read "nothing came back". Two surfaces of one fact disagreeing on one
+ * screen is the failure this whole vocabulary exists to prevent, and the row is
+ * the one she reads first.
+ *
+ * a row with something on it to read has NOT come back empty, whatever the last
+ * run did. `main/supervisor.mts` refuses these too; this is the same rule kept
+ * where the window can enforce it, because a renderer that trusts the main
+ * process to be the only careful one is a renderer that draws whatever it is
+ * sent.
+ */
+export function cameBackEmpty(
+  item: { result?: string | null; note?: string | null },
+  silent: { endedAt: number } | null | undefined,
+): boolean {
+  return !!silent && !said(item.result) && !said(item.note);
+}
+
+export function liveLine(item: WorkItem, facts: LiveFacts = {}): LiveLine | null {
+  const {
+    session = null, queued = [], runNow = [], stalled = false, paused = false, silent = null, signInNeeded = {}, atLimit = {}, cannotStart = {},
+    inProgress = false, scheduledUntil = 0, now = Date.now(), shipping = false,
+  } = facts;
+
+  // An imported Claude Code session is not one of ours and has no place in any
+  // of these lists; AgentThread draws its own liveness off the process.
+  if (item.agent) return null;
+  // The walkthrough's practice rows are answered by the app and never started.
+  // While that answer is on its way the thread reads as one at work, or it looks stuck.
+  if ((item.labels ?? []).includes(FIRST_RUN_LABEL)) return facts.answering ? { state: 'working', line: 'The agent just started on this.' } : null;
+  // Finished is finished. The result at the foot of the conversation is the
+  // news, and a mark under it about agents would be an appendix to an ending.
+  if (item.status === 'done') return null;
+
+  // ABOVE THE SESSION, which is what made the row read wrong: a worker waiting
+  // on an approval is a live session in every list the supervisor keeps, so
+  // "Working" won. Above `stalled` and `scheduled` too — a card with Allow and
+  // Deny on it outranks any news about the run behind it.
+  if (facts.asking) {
+    const signIn = openSignIn(item);
+    return {
+      state: 'asking',
+      line: signIn ? `The agent is waiting for you to sign in to ${signIn.service}.` : 'The agent stopped to ask your permission. Nothing happens on this thread until you answer.',
+    };
+  }
+
+  if (session) {
+    const elapsed = Math.max(0, now - runningSince(session));
+    const helpers = session.helpers ?? 0;
+    // The spoken sentence says the same fact at length. It has to move with
+    // the word or the pane shows one number and says another. And it is the
+    // one place with room to say the whole truth the word can only imply: the
+    // lead is working AND the subagents are, which is what she asked about.
+    if (helpers > 0) {
+      const many = helpers === 1 ? 'one subagent' : `${helpers} subagents`;
+      return {
+        state: 'working',
+        line: elapsed < 60_000
+          ? `The agent just started on this, with ${many} out.`
+          : `The agent is working with ${many}, ${spanLabel(elapsed)} in.`,
+      };
+    }
+    return {
+      state: 'working',
+      line: elapsed < 60_000
+        ? 'The agent just started on this.'
+        : `The agent is working, ${spanLabel(elapsed)} in.`,
+    };
+  }
+
+  // SIGNED OUT IS NOT QUEUED (2026-10-04), and it is said in or out of In
+  // progress: a run that died on the sign-out sits in Needs you beside one that
+  // never started, and both need the same one fix (F-210). With the inbox's
+  // sign-in bar up, that fix is its button, not a terminal.
+  const tool = signInNeeded[item.id];
+  if (tool && !shipping) {
+    const plan = tool === 'Codex' ? 'ChatGPT' : 'Claude';
+    return {
+      state: 'signin',
+      line: facts.signInBar
+        ? `${tool} is signed out. Sign in to ${plan} at the top of your inbox, and this starts on its own.`
+        : tool === 'Codex'
+          ? 'Codex is signed out. Open a terminal and run codex login, and this starts on its own.'
+          : `${tool} is signed out. Open a terminal, run claude, and type /login, and this starts on its own.`,
+    };
+  }
+
+  // The two bars above the conversation already say these, in more words and
+  // with the button that fixes them. Saying it twice on one screen is the
+  // duplication this pane keeps having to be rescued from.
+  if (stalled) return null;
+  if (scheduledUntil > now) return null;
+
+  // A RUN ENDED HERE AND WROTE NOTHING DOWN, so the row says so rather than
+  // reading exactly like a row nothing has ever touched.
+  //
+  // ABOVE THE In-progress GATE, DELIBERATELY, AND THAT IS THE WHOLE POINT OF IT.
+  // A row a run gave nothing back on is not in In progress; it is sitting in her
+  // inbox looking untouched, which is precisely what the engineer described. A
+  // check below the gate would be a sentence that only ever appeared on rows
+  // that did not need it.
+  //
+  // It is below the session, stalled and scheduled tests because each of those
+  // is something happening NOW, and news about a run that has already ended is
+  // never the better answer than news about one that has not. AND NEVER UNDER
+  // SOMETHING SHE CAN READ.
+  //
+  // She was looking at a finished result with three options on it, waiting on
+  // her, and "Nothing came back" printed underneath. Both facts were true and
+  // the pair was a lie: an agent had come back, at length.
+  //
+  // `_silentRows` in main/supervisor.mts now refuses these too, and this is the
+  // same rule kept where a test can hold it, because the pane must not depend on
+  // the main process being the only careful one. A row with a result or a
+  // checkpoint on it has news already; this state is only ever about a row with
+  // NOTHING on it to read.
+  if (cameBackEmpty(item, silent)) {
+    const quiet = Math.max(0, now - (silent!.endedAt || now));
+    return {
+      state: 'silent',
+      // WHAT TO DO ABOUT IT IS HERE AND NOT IN THE WORD, because the word is
+      // read in a list of twenty and this is read by somebody who has stopped on
+      // this one. Sending a message is genuinely the fix: it is what the
+      // engineer did, and it is what got him his answer.
+      line: quiet < 60_000
+        ? 'The last agent finished without saying anything. Send it a message to find out what happened.'
+        : `The last agent finished without saying anything, ${spanLabel(quiet)} ago. Send it a message to find out what happened.`,
+    };
+  }
+
+  if (!inProgress) return null;
+
+  // THE APP IS SHIPPING IT (w-0c1ba766eb). No agent is on it and none is
+  // coming, so "Nothing running" would read as forgotten. The sentence says
+  // when it is the person's again.
+  if (shipping) {
+    return {
+      state: 'shipping',
+      line: `${Name} is shipping this. It comes back to you once it is live, or goes back to its agent if it fails.`,
+    };
+  }
+
+  // A LIVE CLAIM THAT NO SESSION OF OURS HOLDS. Below shipping, where any claim
+  // left is a leftover; above everything about this app's own agents (signed
+  // out, at a limit, paused), none of which stops an agent somewhere else. A run
+  // killed outright leaves its claim for up to a lease (LEASE_MS), so the
+  // sentence does not promise the agent is busy this second.
+  if (item.status === 'claimed' && item.claim && !item.claimExpired && !facts.remoteHeld) {
+    return {
+      state: 'elsewhere',
+      line: 'An agent is working on this outside this window, in a terminal or on another computer, so its steps do not show here.',
+    };
+  }
+
+  // The same for a tool whose every login is out of usage: no agent is coming
+  // until the reset, so "as soon as one is free" would be the same lie.
+  const limit = atLimit[item.id];
+  if (limit) {
+    const at = limit.until > now
+      ? new Date(limit.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(/\s/g, '').toLowerCase()
+      : null;
+    const day = at ? resetDay(limit.until, now) : null;
+    return {
+      state: 'limit',
+      line: `${limit.tool} is at its usage limit, so this starts on its own when it resets${day ? ` on ${day}` : ''}${at ? ` at ${at}` : ''}.`,
+    };
+  }
+
+  // QUEUED IS A PROMISE THAT AN AGENT IS COMING, and for these it is not.
+  const notYet = queued.includes(item.id) && cannotStart[item.id] ? cannotStartLine(cannotStart[item.id]) : null;
+  if (notYet) return { state: 'cannot', line: notYet };
+
+  if (queued.includes(item.id) && runNow.includes(item.id)) {
+    return {
+      state: 'next',
+      line: 'Up next. It starts as soon as an agent is free, and if every agent is busy the least important one is paused to make room.',
+    };
+  }
+
+  if (queued.includes(item.id)) {
+    return {
+      state: 'queued',
+      line: 'Queued. An agent starts on it as soon as one is free.',
+    };
+  }
+
+  if (paused) {
+    return {
+      state: 'paused',
+      line: 'Agents are paused, so nothing will start on this.',
+    };
+  }
+
+  // The window draws a thread she has just sent before the fleet's next
+  // snapshot lists it, and idle there offered Try again on it.
+  if (justSent(item, now)) {
+    return {
+      state: 'queued',
+      line: 'Queued. An agent starts on it as soon as one is free.',
+    };
+  }
+
+  return {
+    state: 'idle',
+    line: 'No agent is on this, and none is waiting to start.',
+  };
+}

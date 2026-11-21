@@ -1,0 +1,172 @@
+// THE TEAM'S PURE RULES ON THE WINDOW SIDE: the company list the Team page
+// draws, due-day words, and who a row is from. No React and no styles, so
+// tests read them directly (tests/team-the-company-list.test.mts).
+import type { Person, Product, TeamState, ThreadCard, WorkItem } from '../types';
+import { blockedWords, clockWords, dayDeadline } from '../../../shared/team-tasks.mts';
+import { inMyInbox, isGivenTask, isShared, heldByAPerson, lastSpeaker, runnerOf, taskGiver } from '../../../shared/team-rules.mts';
+import { dayAndTime } from '../format';
+import { shownTitle } from '../../../shared/thread-title.mts';
+
+export const firstName = (person: Person | undefined | null) => (person?.name || person?.email || 'Someone').split(/\s+/)[0];
+
+/** What a task's block is looked up against: the rows on this Mac and the team's cards. */
+export interface TaskLookup { items?: readonly WorkItem[]; cards?: readonly ThreadCard[] }
+export interface TaskWords { word: string; unread: boolean; other: string | null; at: number; held?: boolean; title?: string }
+
+/**
+ * WHAT A ROW SAYS ABOUT A TASK GIVEN TO A PERSON, from where you sit: the one
+ * state every list, the board and Today draw. Null on anything else. In order:
+ * done, new words from the other person, what blocks it, then whose it is.
+ */
+export function taskWords(item: WorkItem, product: Product | undefined | null, me: string | null, nameOf: (id: string) => string, inNeedsYou = false, lookup: TaskLookup = {}): TaskWords | null {
+  if (!isGivenTask(item, product)) return null;
+  const holding = item.assignee === me;
+  const other = (holding ? taskGiver(item) : item.assignee) ?? null;
+  const name = nameOf(other ?? '');
+  if (item.status === 'done') {
+    const at = item.wrote?.status?.ts ?? item.updatedAt;
+    return inNeedsYou ? { word: `${nameOf(item.wrote?.status?.by ?? other ?? '')} marked it done`, unread: true, other, at } : { word: 'Done', unread: false, other, at };
+  }
+  // The chat, not the newest write: a task rewritten with the same words shows nothing new.
+  const said = item.talk?.chat?.[item.talk.chat.length - 1];
+  const at = said?.ts ?? item.createdAt ?? item.updatedAt;
+  const wroteBack = !!item.answer && (said ? said.by : lastSpeaker(item)) === other && (holding || inMyInbox(item, product, me));
+  if (wroteBack) return { word: `${name} wrote back`, unread: true, other, at };
+  const blocked = blockedWords(item, { items: lookup.items ?? [], cards: lookup.cards ?? [], me, nameOf });
+  if (blocked) return { word: blocked.word, unread: false, other, at, held: true, title: blocked.title };
+  if (holding) return { word: inMyInbox(item, product, me) ? `From ${name}` : 'You have this', unread: false, other, at };
+  return { word: `With ${name}`, unread: false, other, at };
+}
+
+/** A task's card carries no words. If it is between you and them this Mac has its
+ *  name; to anyone else on the team it is just a task. */
+export function namedCards<C extends { threadId: string; title: string | null; project: string | null }>(cards: readonly C[], items: readonly Pick<WorkItem, 'id' | 'label' | 'title'>[]): C[] {
+  return cards.map((c) => {
+    if (c.title != null || c.project != null) return c;
+    const mine = items.find((i) => i.id === c.threadId);
+    return { ...c, title: mine ? shownTitle(mine) : 'A task', project: 'Task' };
+  });
+}
+
+/** A person to draw: off the team, or else one of my room-mates, who are never the team's people to pick. */
+export function personOf(team: { byId: Map<string, Person>; alsoById?: Map<string, Person> } | null | undefined, id: string | null | undefined): Person | null {
+  if (!team || !id) return null;
+  return team.byId.get(id) ?? team.alsoById?.get(id) ?? null;
+}
+
+export type LineState = 'run' | 'wait' | 'sched';
+export type CompanyLine = {
+  key: string;
+  item: WorkItem | null;
+  // Null is a teammate's private task: nothing about it is shown but who and how.
+  title: string | null;
+  // Yours, in a private project: shown with a lock and "Hidden from the team".
+  mine: boolean;
+  project: string;
+  owner: string | null;
+  state: LineState;
+  stateText: string;
+  movedAt: number;
+};
+
+function stateOf(item: WorkItem, now: number): LineState {
+  if (item.status === 'claimed' && item.claim && !item.claimExpired) return 'run';
+  if (item.runAt && item.runAt > now) return 'sched';
+  return 'wait';
+}
+
+/** Every open task in the company, newest movement first, never grouped, and
+ *  what finished today. Shared rows are owned by whoever has to act; your own
+ *  private rows are yours; teammates' private work is a title-free line. */
+export function companyLines(items: WorkItem[], products: Product[], team: TeamState, now: number): { open: CompanyLine[]; doneToday: CompanyLine[] } {
+  const me = team.me?.id ?? null;
+  const bySlug = new Map(products.map((p) => [p.slug, p]));
+  const name = (id: string | null | undefined) => (id === me ? 'you' : firstName(team.people.find((p) => p.id === id)));
+  const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
+  const open: CompanyLine[] = [];
+  const doneToday: CompanyLine[] = [];
+  for (const item of items) {
+    if (item.agent) continue;
+    const product = bySlug.get(item.product);
+    if (!product) continue;
+    const shared = isShared(product);
+    const owner = shared ? (heldByAPerson(item) ? item.assignee! : runnerOf(item, product)) : me;
+    const state = stateOf(item, now);
+    const task = taskWords(item, product, me, (id) => firstName(team.people.find((p) => p.id === id)), false, { items, cards: team.cards ?? [] });
+    const line: CompanyLine = {
+      key: `${item.product}/${item.id}`, item, title: shownTitle(item), mine: !shared,
+      project: product.name, owner, state,
+      stateText: task ? task.word
+        : state === 'run' ? 'Running'
+        : state === 'sched' ? `Starts ${dayAndTime(item.runAt!, now)}`
+          : `Waiting on ${name(owner)}`,
+      movedAt: item.updatedAt,
+    };
+    if (item.status === 'done') { if (item.updatedAt >= startOfDay.getTime()) doneToday.push(line); continue; }
+    open.push(line);
+  }
+  for (const c of team.cards ?? []) {
+    if (c.personId === me || c.visible || c.state === 'done') continue;
+    open.push({
+      key: `private/${c.personId}/${c.threadId}`, item: null, title: null, mine: false, project: '', owner: c.personId,
+      state: c.state === 'running' ? 'run' : c.state === 'scheduled' ? 'sched' : 'wait',
+      stateText: c.state === 'running' ? 'Running' : c.state === 'scheduled' ? 'Scheduled' : `Waiting on ${name(c.personId)}`,
+      movedAt: c.updatedAt,
+    });
+  }
+  const newest = (a: CompanyLine, b: CompanyLine) => b.movedAt - a.movedAt;
+  return { open: open.sort(newest), doneToday: doneToday.sort(newest) };
+}
+
+/** "Due today", "Due tomorrow at 10am", "Due Thu", "Due Oct 14", "Overdue Oct 2". */
+export function dueWords(due: string | undefined, now = new Date()): string | null {
+  if (!due || due === 'none') return null;
+  const time = due.includes('T') ? dayDeadline(due) : null;
+  const day = dueDayWords(due.slice(0, 10), now);
+  return time && day && !day.startsWith('Overdue') ? `${day} at ${clockWords(time.at)}` : day;
+}
+
+function dueDayWords(due: string, now: Date): string | null {
+  const [y, m, d] = due.split('-').map(Number);
+  const day = new Date(y, m - 1, d);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const days = Math.round((day.getTime() - today.getTime()) / 86_400_000);
+  if (days === 0) return 'Due today';
+  if (days === 1) return 'Due tomorrow';
+  if (days > 1 && days < 7) return `Due ${day.toLocaleDateString(undefined, { weekday: 'short' })}`;
+  if (days < 0) return `Overdue ${day.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+  return `Due ${day.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
+/** Who a shared row is FROM, for the row end: the teammate who sent it to me,
+ *  or the teammate whose agent is asking. Null on anything of my own. */
+export function sentFrom(item: WorkItem, product: Product | undefined, me: string | null): { from: string; agent: boolean } | null {
+  if (!me || !isShared(product)) return null;
+  const from = heldByAPerson(item) ? (item.people ?? []).find((p) => p !== me) ?? item.createdBy : runnerOf(item, product);
+  if (!from || from === me) return null;
+  return { from, agent: !heldByAPerson(item) };
+}
+
+/** A thread a teammate handed you in a shared project: who, when it reached
+ *  you, and their newest note. Conversations and given tasks already lead with
+ *  the person, so they are not this. */
+export function handedBy(item: WorkItem, product: Product | undefined | null, me: string | null): { from: string; at: number; note: string | null } | null {
+  if (!me || !isShared(product) || (product as { team?: { direct?: boolean } } | null)?.team?.direct) return null;
+  if (item.assignee !== me) return null;
+  const from = (item.people ?? []).find((p) => p !== me) ?? item.createdBy;
+  if (!from || from === me) return null;
+  const wrote = item.wrote?.assignee;
+  const at = wrote?.by === from ? wrote.ts : item.createdAt;
+  const note = [...(item.waitingComments ?? [])].reverse().find((c) => c.by === from)?.text?.trim() || null;
+  return { from, at, note };
+}
+
+/**
+ * How long since a task last moved, in the Team page's last column. Under a
+ * minute is "now": the real copies read "0m" on a task given a moment earlier.
+ */
+export function movedAgo(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  if (m < 1) return 'now';
+  return m < 60 ? `${m}m` : m < 1440 ? `${Math.round(m / 60)}h` : `${Math.round(m / 1440)}d`;
+}

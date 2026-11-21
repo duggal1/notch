@@ -1,0 +1,180 @@
+// THE SUMMARY'S PURE RULES ON THE WINDOW SIDE: how long ago in words, which
+// line says who wrote the summary last, the names of linked threads, which
+// threads may be linked, and whose thread it is. No React and no styles, so the
+// tests read them directly (tests/threads-the-summary-*.test.mjs).
+//
+// The summary itself (the three lines and their stand-ins) and the four states
+// are shared with the Mac that publishes cards, so they live in
+// shared/thread-cards.mts and are only read here.
+import type { Person, ThreadStateWord, WorkItem } from '../types';
+import { shownToPeople, shownToTeam } from '../../../shared/thread-cards.mts';
+import { waitParts } from '../../../shared/thread-waits.mts';
+import { shownTitle } from '../../../shared/thread-title.mts';
+
+export const SUMMARY_FIELDS = ['problem', 'progress', 'solution'] as const;
+export type SummaryField = (typeof SUMMARY_FIELDS)[number];
+
+/** The four approved words, and only these. "In progress"
+ *  (2026-10-01) covers a thread an agent is on AND one waiting its turn: the
+ *  board had called queued work Running while the tab did not. The ones an
+ *  agent is on right now carry a turning mark instead of a second word. */
+export const STATE_WORD: Record<ThreadStateWord, string> = {
+  waiting: 'Waiting', running: 'In progress', scheduled: 'Scheduled', done: 'Done',
+};
+
+/**
+ * THE WORD A THREAD SHOWS, which is the state's word unless the thread has no
+ * moment at all (w-afb66e6661). A thread added to Later is in the scheduled
+ * family, because nothing is running and nobody has to act, but "Scheduled"
+ * promises a time it does not have. It reads "Not started", the same words as
+ * the tag on its row and as the line that starts it.
+ */
+export function stateWordOf(item: Pick<WorkItem, 'start'>, state: ThreadStateWord): string {
+  return item?.start === 'later' ? 'Not started' : STATE_WORD[state];
+}
+
+export type StateGlyph = 'need' | 'wait' | 'run' | 'sched' | 'done';
+
+/**
+ * The mark beside the state word. Waiting is two different facts depending on
+ * who it waits on: on you it is the filled accent dot the approved top bar
+ * draws, on a teammate it is the hollow ring the teammate's card draws. The
+ * word stays "Waiting" either way, because the four words are fixed.
+ */
+export function stateGlyph(state: ThreadStateWord, waitingOnYou: boolean): StateGlyph {
+  if (state === 'waiting') return waitingOnYou ? 'need' : 'wait';
+  if (state === 'running') return 'run';
+  if (state === 'scheduled') return 'sched';
+  return 'done';
+}
+
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
+/** "just now", "19 min ago", "1 hour ago", "Yesterday", "3 days ago". */
+export function agoWords(ts: number, now: number = Date.now()): string {
+  const gap = Math.max(0, now - ts);
+  if (gap < MIN) return 'just now';
+  if (gap < HOUR) return `${Math.floor(gap / MIN)} min ago`;
+  if (gap < DAY) { const h = Math.floor(gap / HOUR); return `${h} hour${h === 1 ? '' : 's'} ago`; }
+  if (gap < 2 * DAY) return 'Yesterday';
+  return `${Math.floor(gap / DAY)} days ago`;
+}
+
+const firstOf = (name: string | undefined | null) => (name || 'Someone').split(/\s+/)[0];
+
+/**
+ * THE SUMMARY'S UPDATED ROW: when its three lines were last written, and only
+ * when, with a capital (w-922f66bb06). It used to be a faint line under the
+ * words, "Kept up to date by the agent · 6 min ago"; it moved to the foot of
+ * the panel as a property, and she found "By the agent · 6 min ago" ugly and
+ * the lowercase "just now" weird. So: "Just now", "6 min ago", "Yesterday".
+ *
+ * Only the summary's own fields count. The title and body are her ask, written
+ * at the start, and counting them would say "Just now" over words the agent
+ * wrote an hour ago.
+ *
+ * `pending` is an edit of hers already sent and not yet folded back into the
+ * row the window holds (the snapshot is polled), stamped with when she typed
+ * it. Without it the row would lag her own edit by up to ten seconds.
+ *
+ * Null when the three lines have never been written, and then no row is drawn.
+ */
+export function updatedWord(
+  item: Pick<WorkItem, 'wrote'>,
+  { me, now = Date.now(), pending = {} }: {
+    me: string | null;
+    now?: number;
+    pending?: Partial<Record<SummaryField, number>>;
+  },
+): string | null {
+  let latest: number | null = null;
+  for (const field of SUMMARY_FIELDS) {
+    const w = item.wrote?.[field];
+    if (w && (w.source === 'agent' || w.source === 'founder') && (latest === null || w.ts > latest)) latest = w.ts;
+    const mine = pending[field];
+    if (Number.isFinite(mine) && (latest === null || mine! > latest)) latest = mine!;
+  }
+  if (latest === null) return null;
+  const when = agoWords(latest, now);
+  return when.charAt(0).toUpperCase() + when.slice(1);
+}
+
+/** What an id this Mac does not hold reads as: a teammate's private thread, or one since deleted. */
+export const UNSEEN_THREAD = 'A thread you cannot see';
+
+/** A link on a card that names a person or their thread (shared/thread-waits.mts), by first name. */
+export function linkPerson(id: string, byId?: ReadonlyMap<string, Person>): string | null {
+  const w = waitParts(id);
+  if (w.kind === 'thread') return null;
+  if (w.kind === 'name') return w.name;
+  return (byId?.get(w.person)?.name ?? 'Someone').trim().split(/\s+/)[0];
+}
+
+/** Who a card waits on, where a person set it on a person or their thread. An agent's link to a thread stays under Blocked by. */
+export const linkWords = (links: readonly { id: string }[] | undefined, byId?: ReadonlyMap<string, Person>) => (links?.length ? linkPerson(links[0].id, byId) : null);
+
+/** Linked ids as the titles the list shows for them. */
+export function linkedThreads(
+  ids: unknown,
+  items: Pick<WorkItem, 'id' | 'product' | 'title' | 'label'>[],
+  product: string,
+): { id: string; title: string; known: boolean }[] {
+  if (!Array.isArray(ids)) return [];
+  return ids.filter((id): id is string => typeof id === 'string').map((id) => {
+    const found = items.find((i) => i.id === id && i.product === product) ?? items.find((i) => i.id === id);
+    return found
+      ? { id, title: shownTitle(found), known: true }
+      : { id, title: UNSEEN_THREAD, known: false };
+  });
+}
+
+/**
+ * The threads the link menu offers: her other open threads, newest first.
+ * Never this one, one already in the list, a finished one, a running agent's
+ * row (it has no ledger to link), a message between two people (it is not
+ * work), or a teammate's thread, which is theirs to link.
+ */
+export function linkCandidates(
+  item: Pick<WorkItem, 'id' | 'product'>,
+  items: WorkItem[],
+  have: string[],
+  { me, direct, limit = 12 }: { me: string | null; direct: Set<string>; limit?: number },
+): WorkItem[] {
+  return items
+    .filter((i) => !(i.id === item.id && i.product === item.product))
+    .filter((i) => !have.includes(i.id) && i.status !== 'done' && !i.agent && !direct.has(i.product))
+    .filter((i) => !me || !i.createdBy || i.createdBy === me)
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    .slice(0, limit);
+}
+
+/** "You", or the full name of the teammate who started it. Never a raw id. */
+export function ownerName(item: Pick<WorkItem, 'createdBy'>, me: string | null, byId: Map<string, Pick<Person, 'name'>>): string {
+  if (!item.createdBy || !me || item.createdBy === me) return 'You';
+  return byId.get(item.createdBy)?.name || 'Someone';
+}
+
+/**
+ * WHO SEES A THREAD, BY THE RULE AND NOT BY THE WORD ON DISK (2026-10-01).
+ * Her threads from before she joined carry no visibility at all, and the panel
+ * read that as Team on every one of them while the Team page showed none. So
+ * it asks the same rule the Team page does (shared/thread-cards.mts
+ * shownToTeam), and an old thread nobody shared reads "Only you".
+ */
+// And a thread with no word of its own reads as its project does
+// (shared/thread-cards.mts projectSeenBy, w-b989839656).
+export function whoSees(item: Pick<WorkItem, 'visibility' | 'visibleTo' | 'createdAt'>, since: number | null, product?: { personal?: boolean; seenBy?: string; seenByPeople?: string[] } | null): Seen {
+  if (!shownToTeam(item, since, product)) return 'private';
+  return shownToPeople(item, product).length ? 'people' : 'team';
+}
+
+export type Seen = 'team' | 'people' | 'private';
+
+/** The line under "Chosen people" in the panel: "Theo", "Theo and Ana", "3 people". */
+export function chosenNames(ids: readonly string[], byId: Map<string, Pick<Person, 'name'>>): string {
+  if (!ids.length) return 'Nobody yet';
+  if (ids.length > 2) return `${ids.length} people`;
+  return ids.map((id) => firstOf(byId.get(id)?.name)).join(' and ');
+}

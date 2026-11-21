@@ -1,0 +1,195 @@
+// PURE. WHAT A Z MEANS, AND IT DEPENDS ENTIRELY ON HOW OLD THE THING IS.
+//
+// A ROW CLOSED AT 1:18PM CAME BACK AT 1:21PM, written to the ledger as the
+// user (w-da37b95d1a): a task marked done stayed in the inbox and showed as
+// moved a minute ago. That was a bug. Nothing else touched the row between
+// those two times, and the whole app has exactly one path that writes a bare
+// `status: open` as the user minutes after a close: the undo entry the close
+// itself had pushed, popped by a later Z.
+//
+// WHAT WAS ACTUALLY WRONG, and it is not the key and it was never the clock.
+// `undoStack` grew and never aged, and Z acted on its top SILENTLY. The close is
+// announced for two and a half seconds and then nothing on the screen says
+// anything about Z again, so a single letter typed minutes later, into a window
+// where the caret had left the reply box, quietly reopened the last row she
+// closed. The same stale pop can withdraw her last approval or cancel her last
+// schedule.
+//
+// THE FIRST FIX WAS A DEADLINE AND IT WAS THE WRONG SHAPE. A minute, then thirty
+// seconds, and thirty seconds turned out to be too short in use. The answer
+// is not another number, and it is better than any number, because the danger was
+// never that the undo was old. It was that it was invisible.
+//
+// SO THERE ARE TWO TIERS AND ONLY THE FIRST ONE IS SILENT.
+//
+//   Inside thirty seconds   Z acts at once, exactly as it always has. This is
+//                           the reflex press, and it is nearly all of them:
+//                           measured on a real store, over nine in ten undos
+//                           inside a minute landed inside sixteen seconds.
+//   After that, for ever    Z ASKS. It names what it would undo and how long ago
+//                           it was, and a second Z inside a few seconds does it.
+//                           Any other key answers no.
+//
+// So a row closed this morning is still undoable this afternoon, and a letter
+// that misses the reply box costs a toast instead of a decision. There is deliberately no outer limit now: an undo that
+// has to be confirmed by name cannot happen by accident, so an expiry would only
+// take something away from her for nothing.
+import { DONE } from './done-word';
+
+export const UNDO_STRAIGHT_AWAY_MS = 30_000;
+
+/**
+ * HOW LONG THE QUESTION STANDS. Long enough to read a toast and answer it,
+ * short enough that a Z now and a Z in ten minutes are two separate questions
+ * rather than one accidental yes.
+ */
+export const UNDO_ASK_STANDS_MS = 8_000;
+
+/** Just enough of an entry to age it. */
+export type Aged = { at: number };
+
+export type NextUndo<T> = {
+  /** The entry Z is about, or null when there is nothing to undo. */
+  take: T | null;
+  /** The stack to keep if it runs. */
+  rest: T[];
+  /** True when it is recent enough to just do, false when it has to ask first. */
+  instant: boolean;
+};
+
+/**
+ * What Z is pointed at, and whether it may act without asking.
+ *
+ * Only ever the top of the stack. Entries are pushed in the order they happened,
+ * so the newest is the only one she could mean, and the ones under it are
+ * reached by pressing Z again once this one is gone.
+ */
+export function nextUndo<T extends Aged>(stack: readonly T[], now: number): NextUndo<T> {
+  const top = stack[stack.length - 1];
+  if (!top) return { take: null, rest: [], instant: false };
+  return { take: top, rest: stack.slice(0, -1), instant: now - top.at <= UNDO_STRAIGHT_AWAY_MS };
+}
+
+/** Is the question she was just asked still the one on the screen? */
+export function askStillStands(askedAt: number, now: number): boolean {
+  return now - askedAt <= UNDO_ASK_STANDS_MS;
+}
+
+/**
+ * THE QUESTION. ONE SENTENCE, ONE VERB, NO COLONS.
+ *
+ * It took three goes to get here. The second one was hard to understand: the
+ * toast had multiple sentences and even multiple levels of colons.
+ *
+ * It read like this:
+ *
+ *     Press Z again and this happens: Reopened: The reply box says which mode
+ *     it is in. That was 41s ago.
+ *
+ * TWO COLONS AND THREE CLAUSES, and the cause was reuse. Every entry on the
+ * pile carries a `label`, which is the line said AFTERWARDS, once the undo has
+ * happened ("Reopened: the reply box row"). Dropping a finished announcement
+ * into the middle of a question gives you a sentence with two subjects and the
+ * app's own punctuation inside it.
+ *
+ * So an entry now carries `undoes` as well: the plain verb phrase that finishes
+ * "press Z again to ___", written where the entry is made, by the code that
+ * knows what it did. The age came out with the colons. It was true and it was
+ * the third clause of a sentence nobody reads that far into.
+ */
+export function undoAsk(undoes: string): string {
+  return `Press Z again to ${undoes}.`;
+}
+
+/**
+ * What Z inside the grace window says. Nothing was written, so the true answer
+ * depends on what was held: a reply's words are back in the box, a close
+ * leaves the thread open, and anything else changed nothing. `said` is the
+ * action's own toast ("Done: <title>", off ./done-word).
+ */
+export function graceUndoneLine(p: { said?: string; restored: boolean }): string {
+  if (p.restored) return 'Undone. Your message is back in the reply box.';
+  const closed = new RegExp(`^${DONE.verb}: (.+)$`).exec(p.said ?? '');
+  if (closed) return `Undone. Still open: ${closed[1]}`;
+  return 'Undone. Nothing changed.';
+}
+
+/**
+ * WHAT A Z PUTS IN FRONT OF HER ONCE IT HAS RUN (w-7eb39d3c97).
+ *
+ * Inside the grace window the row was never written away, and Z has always
+ * opened it again. Past it, Z reopened the row in the store and opened nothing,
+ * so she stayed on the task the close had moved her to and had to go looking.
+ * A reflex Z often lands a few seconds after the close, past that window.
+ *
+ * `restored` is what the entry handed back (a withdrawn reply's thread, or the
+ * new task card), and it wins, because her words are in it. Otherwise `brings`
+ * is the row the entry put back, and that is opened. An entry that names no row
+ * (a schedule, the update row) opens nothing and leaves her where she is.
+ *
+ * AND ONLY WHILE A TASK IS OPEN (F-50). Both cases above were met from inside
+ * one, where the row she wanted back was behind the task. Reading a list it is
+ * already in front of her, and a Z in the Later tab landed her in the thread
+ * with the breadcrumb still saying LATER. `restored` moves her either way:
+ * there is nowhere else her own words are on screen.
+ */
+export function shownAfterUndo<I>(
+  restored: { item: I } | { compose: true } | null | undefined,
+  brings: I | undefined,
+  where: { onATask: boolean },
+): { open: I | null; compose: boolean } {
+  if (restored && 'item' in restored) return { open: restored.item, compose: false };
+  if (restored) return { open: null, compose: true };
+  return { open: (where.onATask && brings) || null, compose: false };
+}
+
+/**
+ * WHICH ROW AN UNDO HANDS BACK, for the entries that act on a list of rows
+ * (w-874411cc63). Undoing a snooze put the task back in the inbox and opened
+ * nothing, so the Z looked like it had done nothing and the next Z reached the
+ * reply under it. One row is the task she was reading, so it is opened. Several
+ * came from a ticked selection in the list, where they all reappear, and there
+ * is no one of them she meant.
+ */
+export function bringsBack<I>(rows: readonly I[]): I | undefined {
+  return rows.length === 1 ? rows[0] : undefined;
+}
+
+/**
+ * The ticks once a Z has put back a close made over ticked rows. That close
+ * emptied them, and without them E falls through to the keyboard's place, which
+ * settled on a row that slid under it while the closed rows were gone.
+ */
+export function ticksAfterUndo(ticks: readonly string[] | undefined, now: Set<string>): Set<string> {
+  return ticks?.length ? new Set(ticks) : now;
+}
+
+/** What a close leaves in the thread when a Z takes it back. */
+export const UNDID_CLOSING = 'Undid closing it';
+
+type Row = { product: string; id: string };
+
+/**
+ * A close on the row a close is already holding is the same press again. On
+ * the board that row stays under the cursor, and a second close would first
+ * write the held one, so a Z in between reopened it and the second close shut
+ * it again.
+ */
+export function closesAgain(
+  held: { item: Row; undid?: readonly { product: string; id: string; words: string }[] } | null,
+  item: Row,
+): boolean {
+  if (!held || held.item.product !== item.product || held.item.id !== item.id) return false;
+  return !!held.undid?.some((u) => u.product === item.product && u.id === item.id && u.words === UNDID_CLOSING);
+}
+
+/** And what a Z says when there is nothing on the pile at all. */
+export const NOTHING_TO_UNDO = 'Nothing to undo yet.';
+
+/**
+ * THE KEYS THAT ARE NOT AN ANSWER. Every other key means no to the question
+ * above, but a modifier on its own is not a key she pressed, it is one she is
+ * holding on the way to pressing the Z. Without this, shift-Z would cancel the
+ * question with the shift and then re-ask it with the Z, for ever.
+ */
+export const HOLDS_A_KEY = new Set(['Shift', 'Meta', 'Control', 'Alt', 'CapsLock']);

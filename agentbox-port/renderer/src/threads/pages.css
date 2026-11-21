@@ -1,0 +1,672 @@
+/* THE INBOX AND TEAM PAGES, the sidebar and the header (approved 2026-10-01,
+   rounds 5 to 9). Ported from the approved drawings
+   (scripts/scratch/draw-round6..9.mjs). Square shapes only, the app's pattern.
+   Never a class called .run, which the app's run history owns. */
+
+/* ------------------------------------------------------------ the sidebar */
+/* The mark, the nav icons and your face share one centre line, open or shut:
+   the icons are 18px at 10px in, so their centre is 19px from the sidebar's
+   edge, and the mark (20px) and the face (22px) are placed on that centre. */
+.th-team { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 0 0 9px; margin: 0 0 18px; font-size: 14px; color: var(--text); min-width: 0; }
+.th-team-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-mark { width: 20px; height: 20px; flex: none; display: grid; place-items: center; border-radius: var(--radius); background: var(--accent); color: #1a1817; font: 600 11px var(--mono); }
+.th-side-foot { display: flex; flex-direction: column; gap: 2px; }
+
+
+/* A NEW VERSION WAITING (components/SidebarUpdate.tsx). A card above the foot,
+   with a × in its corner, shown when you point at it, that hides it until the
+   next version. With the sidebar shut it is a grey icon row in the foot list.
+   Every icon is grey: the accent here is a red-orange and read as a bug. */
+@keyframes sb-update-spin { to { transform: rotate(360deg); } }
+
+.sb-update-card { position: relative; margin: 0 0 14px; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); display: flex; flex-direction: column; gap: 6px; }
+.sb-update-card-title { display: flex; align-items: center; gap: 8px; padding-right: 22px; font-size: 13.5px; color: var(--text); }
+.sb-update-card-title svg { width: 16px; height: 16px; color: var(--text-dim); flex: none; }
+.sb-update-card[data-installing] .sb-update-card-title svg { animation: sb-update-spin 1.4s linear infinite; }
+.sb-update-card p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-faint); }
+.workspace-navigation .sb-update-go { margin-top: 4px; height: 30px; width: 100%; justify-content: center; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--wash); color: var(--text); font-size: 13px; }
+.workspace-navigation .sb-update-go:hover { background: var(--wash-strong); }
+
+/* The ×. Hidden until you point at the card, and still reachable by Tab,
+   which shows it too. */
+.workspace-navigation .sb-update-close { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; padding: 0; justify-content: center; color: var(--text-dim); background: none; opacity: 0; transition: opacity 120ms ease; }
+.workspace-navigation .sb-update-close svg { width: 13px; height: 13px; }
+.sb-update-card:hover .sb-update-close, .sb-update-card:focus-within .sb-update-close { opacity: 1; }
+.workspace-navigation .sb-update-close:hover { color: var(--text); }
+
+.workspace-navigation .sb-update-row { color: var(--text-faint); border: none; }
+.workspace-navigation .sb-update-row:hover { color: var(--text-dim); }
+.workspace-navigation .sb-update-row[data-installing] { cursor: default; }
+.workspace-navigation .sb-update-row[data-installing] svg { animation: sb-update-spin 1.4s linear infinite; }
+
+/* IN THE SIDEBAR THAT WIDENS UNDER THE POINTER the card rises out of the
+   restart row (`RailCard`): the row keeps its place in the foot list and wide
+   becomes the card's button, and the card stands on the slot's floor and grows
+   upward, so nothing under the pointer moves. The slot's 9 of floor is there
+   in both widths, as the air under the button. 52 = 9 + 3 + 30 + the card's
+   own 10 between its words and its button. */
+.sb-update-slot { position: relative; padding-bottom: 9px; }
+.workspace-navigation .sb-update-rise { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; padding: 12px 12px 52px; opacity: 1; transition: opacity .14s .08s; }
+.workspace-collapsed .sb-update-rise { opacity: 0; visibility: hidden; transition: none; }
+.sb-update-slot:hover .sb-update-close { opacity: 1; }
+.gt-rail:not(.workspace-collapsed) .sb-update-slot > .sb-update-row { position: relative; z-index: 1; margin: 3px 12px; width: calc(100% - 24px); height: 30px; padding: 0; justify-content: center; border: 1px solid var(--line-strong); background: var(--wash); color: var(--text); }
+.gt-rail:not(.workspace-collapsed) .sb-update-slot > .sb-update-row:hover { background: var(--wash-strong); }
+.gt-rail:not(.workspace-collapsed) .sb-update-slot > .sb-update-row svg { display: none; }
+.th-me { display: flex; align-items: center; gap: 9px; height: 46px; padding: 8px 0 0 8px; margin-top: 8px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--text); min-width: 0; box-sizing: border-box; }
+.th-me .tm-av { width: 22px; height: 22px; line-height: 20px; font-size: 9px; flex: none; }
+.workspace-collapsed .th-me > span:nth-child(2), .workspace-collapsed .th-me-signin { display: none; }
+.th-me > span:nth-child(2) { min-width: 0; overflow: hidden; }
+.th-me small { display: block; color: var(--text-faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-me-signin { background: none; border: 0; padding: 0; font: inherit; color: var(--text-dim); cursor: pointer; text-align: left; }
+
+/* ------------------------------------------------------------ the header */
+.th-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+/* SEARCH IS NOT A BOX. Search, New thread and Display were three outlined
+   rectangles in a row, and the run of them was overwhelming. Search is the one
+   that is not an action, so it loses its border and its 240px block and
+   answers the pointer the way the app's other quiet controls do, with a
+   background. New thread keeps its outline, because it is the thing you
+   press. Since w-3c51d02de5 it is the magnifier alone, a 32px square, at the
+   right end of the tabs row (and in the header only on the board). */
+.th-search { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius); background: none; color: var(--text-dim); font: inherit; cursor: pointer; flex: none; }
+.th-bar > .th-search { margin-left: auto; }
+.th-new { height: 32px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: none; color: var(--text); font: inherit; font-size: 13.5px; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.th-new svg { color: var(--text-dim); }
+.th-new:hover, .th-disp:hover { background: var(--wash-strong); }
+.th-disp { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: var(--radius); background: none; color: var(--text-dim); position: relative; padding: 0; cursor: pointer; }
+.th-disp.open { background: var(--wash-strong); color: var(--text); }
+.th-disp > i { position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.th-pop { position: absolute; top: 40px; right: 0; z-index: 80; width: 470px; padding: 8px 0; display: flex; flex-direction: column; background: var(--pop); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: 0 18px 50px rgba(0,0,0,.5); text-align: left; cursor: default; }
+:root[data-theme="light"] .th-pop { background: var(--surface); }
+.th-pop .line { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 10px; padding: 7px 16px; }
+.th-pop .lab { font: 10.5px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); }
+/* Beside chips that wrap, the label belongs to the first row, not the middle of them all. */
+.th-pop .line:has(> .opts) > .lab { align-self: start; line-height: 26px; }
+.th-pop .opts { display: flex; flex-wrap: wrap; gap: 5px; }
+.th-pop .opts > button { display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--tag-radius); background: none; font: inherit; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; cursor: pointer; }
+.th-pop .opts > button.on { background: rgba(255,255,255,.09); border-color: var(--text-faint); color: var(--text); }
+.th-pop .opts .th-pr, .th-pop .opts .th-urgent { margin-right: 0; }
+/* The rest of forty projects, behind one word. It is not a project, so it does
+   not wear a project's border: it reads as the way through to them. */
+.th-pop .opts > button.th-pop-more { border-color: transparent; color: var(--text-faint); padding-left: 4px; }
+.th-pop .opts > button.th-pop-more:hover { border-color: transparent; color: var(--text); }
+.th-pop .opts > .th-pop-note { align-self: center; padding-left: 4px; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+.th-pop .rule { height: 1px; background: var(--line); margin: 6px 0; }
+.th-pop .foot { display: flex; justify-content: space-between; align-items: center; padding: 6px 16px 2px; font-size: 12.5px; color: var(--text-faint); }
+.th-pop .foot button { background: none; border: 0; padding: 0; font: inherit; color: var(--text-dim); cursor: pointer; }
+
+/* ------------------------------------------------------------ marks */
+.th-st { display: inline-block; width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box; margin-right: 9px; position: relative; top: 1px; flex: none; }
+.th-st.s-waiting { background: var(--accent); }
+.th-st.s-running { border: 1.5px solid var(--accent); background: conic-gradient(var(--accent) 0 50%, transparent 50% 100%); }
+.th-st.s-scheduled { border: 1.5px dashed var(--text-faint); }
+.th-st.s-done { background: var(--text-faint); }
+/* Waiting its turn, which resolves itself, and held, which does not: the
+   second is the one worth looking at, so it is the one in the accent. */
+.th-st.s-queued { border: 1.5px solid var(--text-faint); }
+.th-st.s-held { border: 1.5px solid var(--accent); }
+.th-st.s-need { background: var(--accent); }
+.th-pr { display: inline-flex; align-items: flex-end; gap: 1.5px; height: 11px; margin-right: 8px; flex: none; }
+.th-pr i { display: block; width: 3px; background: var(--line-strong); border-radius: 1px; }
+.th-pr i:nth-child(1) { height: 5px; } .th-pr i:nth-child(2) { height: 8px; } .th-pr i:nth-child(3) { height: 11px; }
+.th-pr i.on { background: var(--text-dim); }
+.th-urgent { display: inline-grid; place-items: center; width: 12px; height: 12px; border-radius: var(--tag-radius); background: var(--accent); color: #1a1817; font: 700 9px var(--mono); margin-right: 8px; position: relative; top: 1px; flex: none; }
+/* THE ROW'S UNDERLINE RUNS THROUGH THESE MARKS (w-afb66e6661, 2026-10-02).
+   Her screenshot: an underlined title, then the people mark sitting in a gap in
+   the line, "which looks a little bit strange". A row's hover and selected
+   underline is a text-decoration on the title (styles.css, `.row .subject`),
+   and a decoration does not paint across an inline-BLOCK box: this file already
+   carries the same lesson for `.th-msg` and inline-flex. So all three marks are
+   plain inline, and the line is continuous from the first letter to the last
+   mark. */
+.th-lock { display: inline; margin-left: 9px; color: var(--text-faint); vertical-align: -1px; }
+/* WHO SEES A ROW (2026-10-02): only the unusual case wears a mark. The lock on
+   a thread only you can see, two people on one a few chosen people see, and
+   nothing on one the whole team sees, which is the default. */
+.th-shared { display: inline; margin-left: 9px; color: var(--text-faint); vertical-align: -1px; }
+/* AND HOW WIDELY (w-41ff964775): a thread only a few people see carries their
+   count beside the mark, in the mark's own faint colour. Raised 0.75px
+   (2026-10-02): on the baseline it read too low, at 1.5px too high, so it
+   sits halfway between. */
+/* PINNED (w-20323283e6): the same faint ink and the same plain inline box, so
+   the row's underline runs through it like the others. Its weight is in its
+   head, so with its tip level with the lock's foot it still read as high; it
+   hangs about two thirds of a pixel past it. */
+.th-pin { display: inline; margin-left: 9px; color: var(--text-faint); vertical-align: -3px; }
+/* A run in the cloud: the running mark is a cloud, pulsing with the dot.
+   14px wide with 6px after it, so its title starts where a dot's does. */
+.th-st-cloud { display: inline; flex: none; margin-right: 6px; color: var(--accent); vertical-align: -1px; animation: th-breathe 1.6s ease-in-out infinite; }
+@keyframes th-breathe { 50% { opacity: .45; } }
+.th-shared-n { display: inline; margin-left: 3px; font: 10.5px var(--mono); color: var(--text-faint); vertical-align: 0.75px; }
+
+/* NOT STARTED, ON THE ROW (w-afb66e6661) was a boxed capital tag here. It is
+   faint words after the title now, `.th-aside` below (w-4189a5c1a0): the box
+   was turned down, and the words were picked out of four drawings. */
+
+/* A repeating task (w-4189a5c1a0): its mark leads the title, its schedule
+   trails it in the faint ink, in sentence case rather than the tag's capitals.
+   "not started" trails a title the same way. Inline-block so the row's
+   underline, a decoration on the title cell, stops where the title does: drawn
+   inline it ran on under the faint words on an urgent row. */
+.th-repeat { margin-right: 9px; vertical-align: -2px; color: var(--text-faint); flex: none; }
+.th-aside { display: inline-block; margin-left: 12px; color: var(--text-faint); }
+/* A long aside is cut short before the title is, rather than dropped whole by
+   the cell's ellipsis. It stays an inline-block inside its box, which keeps the
+   selected row's underline off it. */
+.th-cell-title.with-aside { display: flex; align-items: center; }
+.th-cell-title.with-aside > * { flex: none; }
+.th-cell-title.with-aside > .th-title-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.th-cell-title.with-aside > .th-aside-box { flex: 1 1 0; max-width: max-content; min-width: 0; overflow: hidden; }
+.th-aside-box > .th-aside { max-width: calc(100% - 12px); overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+/* Flex items take the cell's underline, so in this cell the title alone carries it. */
+.row .subject.with-aside { text-decoration-line: none; }
+.row .subject.with-aside > .th-title-text { text-decoration: underline solid 1.5px; text-decoration-color: inherit; text-underline-offset: 4px; }
+.th-aside.late { color: var(--text-dim); }
+.th-aside.late::before { content: ''; display: inline-block; width: 5px; height: 5px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 2px; }
+
+/* ------------------------------------------------------------ the list as a table */
+.th-table .row.th-head { padding-top: 10px; padding-bottom: 8px; font: 10.5px/16px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); cursor: default; }
+.th-table .row.th-head:hover { background: none; }
+/* Your threads in sections (Pages `SectionHead`): the header is the fold, and a
+   section after the first starts with room above it. */
+.th-table > div + div > .row.th-section { padding-top: 26px; }
+.th-fold { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--text-dim); cursor: pointer; }
+.th-fold b { font-weight: 400; color: var(--text-faint); }
+.th-fold:hover, .th-fold:focus-visible { color: var(--text); outline: none; }
+.th-fold-mark { flex: none; transition: transform .12s ease; }
+.th-section.folded .th-fold-mark { transform: rotate(-90deg); }
+/* Thread, status, project, priority, updated. The status column is the width
+   of the longest word it draws ("Nothing came back") at its own type size, with
+   the Try again mark after it. A column set to `initial` takes the empty
+   fallback, so its track and its gap go and the rest close up. */
+.th-grid { --th-state: 176px; --th-proj: 150px; --th-prio: 112px; display: grid; grid-template-columns: minmax(0, 1fr) var(--th-state,) var(--th-proj,) var(--th-person,) var(--th-prio,) 96px; column-gap: 16px; align-items: center; width: 100%; min-height: 20px; }
+.th-table .row { min-height: 0; }
+.th-grid > div { line-height: 20px; }
+.th-grid.with-person { --th-proj: 140px; --th-person: 130px; }
+/* A column no row of the table fills is not drawn, header included. */
+.th-table:has(.th-head):not(:has(.th-cell-state:not(:empty))) .th-grid { --th-state: initial; }
+.th-table:has(.th-head):not(:has(.th-cell-state:not(:empty))) :is(.th-col-state, .th-cell-state) { display: none; }
+.th-table:has(.th-head):not(:has(.th-cell-proj:not(:empty))) .th-grid { --th-proj: initial; }
+.th-table:has(.th-head):not(:has(.th-cell-proj:not(:empty))) .th-col-proj { display: none; }
+.th-table:has(.th-head):not(:has(.th-cell-prio:not(:empty))) .th-grid { --th-prio: initial; }
+.th-table:has(.th-head):not(:has(.th-cell-prio:not(:empty))) .th-col-prio { display: none; }
+/* A NARROW TABLE GIVES UP PRIORITY, THEN PROJECT, so the title keeps 240
+   points. The steps are the list's own width, whose rows sit 76 inside it. */
+.th-table { container: th / inline-size; }
+@container th (max-width: 915px) {
+  .th-grid > .th-col-prio { display: none; }
+  .th-grid, .th-grid.with-person { --th-prio: initial; }
+}
+/* Narrowest, the status column gives the title back the mark's 16, and the
+   mark sits in the empty left of the right-aligned time. */
+@container th (max-width: 785px) {
+  .th-grid > .th-col-proj { display: none; }
+  .th-grid, .th-grid.with-person { --th-proj: initial; }
+  .th-grid { --th-state: 160px; }
+  .th-cell-state.can-retry { overflow: visible; }
+  .th-grid.with-person { --th-state: 176px; }
+}
+.th-grid > .num { text-align: right; }
+.th-cell-title { font-size: 14px; line-height: 20px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-cell-title.hidden { color: var(--text-dim); }
+/* THE STATUS COLUMN (w-ec2b04d449), in the project column's own type, because
+   both answer "what is this row" rather than carrying its words. It is dim
+   rather than faint: it is the one cell on the row that changes by itself. */
+.th-cell-state { font: 11.5px/20px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; min-width: 0; }
+.th-cell-state .th-st, .th-cell-state .th-st-cloud { margin-right: 8px; top: 0; }
+/* 14px wide against the dot's 12, so the word starts where a dot's does. */
+.th-cell-state .th-st-cloud { margin-right: 6px; }
+/* UNREAD (w-22da913d00): a dot in the gutter and a heavier title. The dot sits
+   1px under the row's middle, which centres it on the title's lowercase. */
+.th-table .row.unread::before { content: ''; position: absolute; left: 13px; top: 50%; width: 6px; height: 6px; background: var(--accent); }
+/* `:root` outweighs `:root:root .row .subject`, which sets every title to 400. */
+:root .th-table .row.unread .subject { font-weight: 530; }
+.th-cell-proj { font: 11.5px/20px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; min-width: 0; }
+.th-proj-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.th-proj-more { flex: none; margin-left: 6px; }
+.th-cell-proj .tm-av { width: 16px; height: 16px; line-height: 14px; font-size: 8px; margin-right: 8px; flex: none; }
+.th-cell-prio { font: 11.5px/20px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); display: flex; align-items: center; }
+.th-cell-prio.urgent { color: var(--accent); }
+.th-cell-when { font-size: 13px; line-height: 20px; color: var(--text-dim); white-space: nowrap; position: relative; }
+/* SHARE OR UNSHARE, one click, at the row's end while the pointer is on the
+   row. It takes the time's place rather than adding a column, the time comes
+   back when the pointer leaves, and a row with nothing to share keeps its
+   time. Square, quiet, and the one thing on the row that does not open it. */
+.th-row-act { position: absolute; right: -9px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 9px; border: 1px solid var(--line); border-radius: var(--tag-radius); background: none; font: inherit; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .08s ease; }
+.th-table .row:hover .th-row-act, .th-row-act:focus-visible { opacity: 1; pointer-events: auto; }
+.th-table .row:hover .has-act .th-when, .has-act:focus-within .th-when { visibility: hidden; }
+.th-row-act:hover { color: var(--text); border-color: var(--line-strong); background: var(--wash-strong); }
+.th-row-act:focus-visible { outline: none; border-color: var(--line-strong); }
+/* TRY AGAIN (w-d08dcbb6fc), on a thread nothing will start: a mark after the
+   status word, always there. Its arrow starts as far after the word as the
+   ring ends before it: 2.5 + the 3.5 padding + the arc's 1.4 inset + the
+   word's trailing letter-spacing make the ring's 8. */
+.th-retry { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin-left: 2.5px; padding: 0; border: 0; border-radius: var(--tag-radius); background: none; color: var(--text-dim); cursor: pointer; }
+/* The arrow's ink is as tall as the word's capitals (9px), and its line as heavy as theirs. */
+.th-retry svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.th-retry:hover, .th-retry:focus-visible { outline: none; color: var(--text); background: var(--wash-strong); }
+/* A THREAD CARRIED UP OR DOWN THE LIST OR A BOARD COLUMN (w-6e5b532a95).
+   Four rounds with her. What it is now (round four, "make it a linear quality
+   level"): the row STAYS in the list as its own empty slot, which slides to
+   where it will land while the rows it passes make way, and a separate
+   preview rides the pointer over everything (threads/row-drag.ts). Carrying
+   the row itself was the fault every earlier round was patching: a 1,300px bar
+   that was clipped by the panel, covered the column headings, and whose
+   padding put the title low in any box drawn round it.
+   The marks are data attributes because React owns these rows' class names.
+   `data-sorting` is "carry" while a row is in hand and "settle" for a moment
+   after: the rows only animate their shift while carrying, and the quiet below
+   (no underline, no Share, no key plate) holds through both. */
+body[data-dragging], body[data-dragging] * { cursor: grabbing !important; user-select: none; }
+.th-table[data-sorting="carry"] .row[data-drag-id] { transition: transform .18s cubic-bezier(.2,.8,.2,1); }
+/* THE SLOT: the row with its words taken out and the faintest fill between
+   its hairlines. Nothing on it but "this is where it goes". */
+.th-table .row[data-lifted] > * { visibility: hidden; }
+.th-table .row[data-lifted]::before {
+  content: ''; position: absolute; pointer-events: none;
+  left: var(--gutter); right: var(--row-r); top: 1px; bottom: 0;
+  background: rgba(255,255,255,.03);
+}
+:root[data-theme="light"] .th-table .row[data-lifted]::before { background: rgba(0,0,0,.035); }
+/* Its words come back as the preview lands on them. */
+.th-table .row[data-settling] > *, .th-card[data-settling] > * { animation: th-words-back .24s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes th-words-back { 0%, 45% { opacity: 0; } to { opacity: 1; } }
+/* THE PREVIEW. On the list a chip: the title and the project, on the panel's
+   own colour, no wider than it needs to be. On the board a copy of the card.
+   Both a touch see-through ("components get a little more transparent ...
+   when you drag them"), with a soft shadow and a hairline of light for an edge
+   rather than a drawn border. No drag dots on it, or anywhere: "the drag icon
+   is too much ... get rid of it entirely" (round five). The 16px left padding
+   is CHIP_INSET in threads/row-drag.ts, which lands the chip's title on the
+   row's. */
+.drag-preview {
+  position: fixed; left: 0; top: 0; z-index: 1000; margin: 0; pointer-events: none; will-change: transform;
+  opacity: .94; box-shadow: 0 12px 32px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.07);
+}
+:root[data-theme="light"] .drag-preview { box-shadow: 0 12px 32px rgba(17,25,48,.16), 0 0 0 1px rgba(17,25,48,.08); }
+.drag-chip {
+  display: flex; align-items: center; gap: 12px; max-width: 560px; padding: 10px 18px 10px 16px;
+  background: var(--skin-solid, var(--surface)); border-radius: var(--radius);
+  font-size: 14px; line-height: 20px; color: var(--text); white-space: nowrap;
+}
+.drag-chip .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.drag-chip .p { flex: none; margin-left: 6px; font: 11.5px/20px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+/* No underline anywhere mid-drag: it is a hover nobody meant. */
+.th-table[data-sorting] .row .subject { text-decoration-color: transparent !important; transition: none; }
+/* THE BOARD, the same way. The slot is the card's own outline with nothing
+   in it, never the orange of a selected card. */
+.th-col[data-sorting="carry"] .th-card[data-drag-id] { transition: transform .18s cubic-bezier(.2,.8,.2,1); }
+.th-card[data-drag-id] { position: relative; }
+.th-card[data-lifted], .th-card.selected[data-lifted] { background: rgba(255,255,255,.015); border-color: var(--line); }
+.th-card[data-lifted] > * { visibility: hidden; }
+.th-card.drag-preview { background: linear-gradient(rgba(255,255,255,.035), rgba(255,255,255,.035)), var(--skin-solid, var(--surface)); border-color: var(--line-strong); }
+/* Nothing that answers a hover comes up while a row is carried or settling:
+   not the key plate, not Share. */
+/* Share is faded rather than removed, so when the settle ends it comes back
+   on its own short fade instead of snapping in. */
+body:has([data-sorting]) .hint-plate { display: none !important; }
+.th-table[data-sorting] .th-row-act { opacity: 0 !important; pointer-events: none !important; }
+.th-table[data-sorting] .row:not([data-lifted]) .has-act .th-when { visibility: visible !important; }
+.th-cell-person { font-size: 13px; line-height: 20px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; }
+.th-cell-person .tm-av { margin-right: 9px; flex: none; }
+.th-empty { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; padding: 32px 24px 12vh; color: var(--text-faint); font-size: 14px; line-height: 21px; }
+.th-empty > span { max-width: 420px; }
+.th-empty > .live-mark { margin-right: 12px; }
+
+/* ------------------------------------------------------------ the view row */
+.th-bar { display: flex; align-items: center; gap: 24px; padding: 14px var(--row-r, 24px) 8px var(--text-x, 32px); min-height: 30px; }
+.th-scopes { display: inline-flex; align-items: center; }
+.th-scope { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0; background: none; border: 0; font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); position: relative; white-space: nowrap; cursor: pointer; }
+.th-scope svg { color: var(--text-faint); }
+.th-scope .tm-av { width: 18px; height: 18px; line-height: 16px; font-size: 8px; }
+.th-scope.open { color: var(--text); }
+.th-dot { color: var(--text-faint); margin: 0 12px 0 8px; font: 11px var(--mono); }
+.th-menu { position: absolute; top: 36px; left: -12px; z-index: 80; min-width: 230px; max-height: 360px; overflow: auto; padding: 5px; display: flex; flex-direction: column; gap: 1px; background: var(--pop); border: 1px solid var(--line-strong); border-radius: var(--radius); box-shadow: 0 18px 50px rgba(0,0,0,.5); letter-spacing: 0; text-transform: none; }
+:root[data-theme="light"] .th-menu { background: var(--surface); }
+.th-menu .row-i { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--radius); font-family: var(--font-ui, inherit); font-size: 13.5px; color: var(--text-dim); background: none; border: 0; text-align: left; cursor: pointer; }
+.th-menu .row-i:hover, .th-menu .row-i.on { background: rgba(255,255,255,.07); color: var(--text); }
+.th-menu .row-i .tm-av { width: 20px; height: 20px; line-height: 18px; font-size: 8px; }
+.th-menu .ico { width: 20px; height: 20px; display: grid; place-items: center; color: var(--text-faint); }
+.th-menu .sep { height: 1px; background: var(--line); margin: 4px 6px; flex: none; }
+
+/* ------------------------------------------------------------ the board */
+/* A COLUMN NEVER SQUEEZES PAST READING (w-df42206cea): in a window about 970
+   points wide the four columns were 138 points each and every title broke onto
+   three or four lines. Each column keeps 260, and when four do not fit the
+   board draws wider than the page and the list around it scrolls sideways,
+   "just like Linear, Notion and all other tables". `fit-content` with a floor
+   of the page's width keeps the right padding in the scroll and fills a wide
+   window as before. */
+.th-board { display: grid; grid-template-columns: repeat(4, minmax(260px, 1fr)); gap: 16px; padding: 10px var(--row-r, 24px) 24px var(--text-x, 32px); align-items: start; box-sizing: border-box; width: fit-content; min-width: 100%; }
+.th-col-h { display: flex; align-items: center; height: 38px; font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); }
+.th-col-h b { font-weight: 400; color: var(--text-faint); margin-left: 8px; }
+.th-card { display: block; width: 100%; text-align: left; font: inherit; background: rgba(255,255,255,.035); border: 1px solid var(--card-line); border-radius: var(--radius); padding: 14px 15px 13px; margin: 0 0 10px; cursor: pointer; }
+.th-card:hover { border-color: var(--card-line-hover); background: rgba(255,255,255,.05); }
+/* THE CARD THE KEYBOARD IS ON (w-23fc91bff5). The list's selected row is
+   underlined in --underline; a card has no single line to underline, so its
+   edge takes that colour instead: the same ink for the same idea. One pixel,
+   not two: the doubled edge read as heavy beside the hover (2026-10-02). No
+   transition, so a held J never trails behind the key. */
+.th-card.selected, .th-card.selected:hover { border-color: var(--underline); background: rgba(255,255,255,.05); }
+/* A CARD PICKED FOR A BULK COMMAND (w-2e3819913c) wears the accent, a step
+   louder than the keyboard's edge, so several picked cards and the one the
+   keyboard is on never read as the same thing. */
+.th-card.picked, .th-card.picked:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* The ground the box is drawn on fills the page, so a drag can start under the
+   shortest column as well as beside it. */
+.th-board-wrap { position: relative; min-height: 100%; }
+.th-board-wrap.banding, .th-board-wrap.banding * { user-select: none; }
+.th-band { position: absolute; z-index: 5; pointer-events: none; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 2px; }
+/* A COLUMN MOVES BY ITS HEADING, AND THE HEADING STAYS TEXT (2026-10-02).
+   The first round put a grey block behind it on hover, 6px wider than the
+   cards, and a tooltip across the first card: "visually it looks pretty
+   weird". Now the words brighten and the handle comes up, nothing else. */
+.th-col-h.movable { cursor: grab; user-select: none; touch-action: none; transition: color .12s ease; }
+.th-col-h.movable:hover { color: var(--text); }
+.th-board.dragging, .th-board.dragging * { cursor: grabbing !important; user-select: none; }
+/* The handle: six dots at the heading's right end, out of sight until the
+   pointer is over the column, faint there, and full only on the heading you
+   would grab. Never drawn mid-drag, when it would only be noise. */
+.th-col-grip { margin-left: auto; flex: none; color: var(--text-faint); opacity: 0; transition: opacity .12s ease; }
+.th-col:hover .th-col-grip { opacity: .7; }
+.th-col-h:hover .th-col-grip { opacity: 1; color: var(--text-dim); }
+.th-board.dragging .th-col-grip { opacity: 0; }
+/* THE CARRIED COLUMN IS LIFTED (2026-10-02, fourth round). A faded copy was
+   the column twice, an empty slot was "very strange visually", and a column
+   that only slid sideways "doesn't feel like I've even processed it". So it
+   rises: it rides the pointer both ways (Pages.tsx writes the transform), on
+   a panel drawn by its shadow alone, 8px proud of its cards, so the layout
+   under it never moves. Nothing is left behind; the others slide aside. */
+.th-col.lifted {
+  position: relative; z-index: 5; border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: 0 0 0 8px var(--bg-raised), 0 0 0 9px var(--line-strong), 0 22px 48px 8px rgba(0,0,0,.42);
+  will-change: transform;
+}
+.th-col.lifted .th-col-h { color: var(--text); }
+.th-board.dragging .th-col.lifted .th-col-grip { opacity: 1; color: var(--text-dim); }
+.th-card .t { font-size: 14px; line-height: 20px; color: var(--text); margin: 0 0 14px; overflow-wrap: anywhere; }
+/* THE LAST WORD AND THE MARK AFTER IT MOVE AS ONE (w-49cace6736): "we should
+   never have cases where the icon flows over but the text doesn't".
+   TitleThenMark in Pages.tsx puts them in this span. */
+.th-keep { white-space: nowrap; }
+.th-card .t.hidden { color: var(--text-dim); }
+
+/* A message from a person: their face and name first, then what they said. */
+/* Plain inline in a row, never flex: the row's hover and selected underline is
+   a text-decoration on `.subject`, and a decoration stops at an inline-flex
+   box, so a message row lit up with no underline at all. */
+.th-msg { display: inline; }
+.th-msg .tm-av { width: 20px; height: 20px; line-height: 18px; margin-right: 8px; position: relative; top: -1px; }
+.th-msg-who { font-weight: 600; color: var(--text); }
+.th-msg-who::after { content: '\00a0\00a0'; }
+.th-msg-text { color: var(--text-dim); }
+/* On a card the message sits under the name, ON ONE LINE (w-920461cbe6, her
+   words: "condense it so it always only takes up one line at most"). It used
+   to wrap like a card's title, and "Maya in your thread: Sam, your call?" read
+   best as a single subline. */
+.th-card .th-msg { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 4px; }
+.th-card .th-msg-text { grid-column: 1 / -1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.th-card .th-msg-who::after { content: none; }
+.th-card .th-msg .tm-av { margin-right: 0; top: 0; }
+.th-card .m { display: flex; align-items: center; font: 11px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); min-width: 0; }
+.th-card .m .p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* What is happening on the card, on the card's own line, ahead of its project
+   and in the ink the row's status cell wears (w-ec2b04d449). */
+/* A long state gives way before the short project name beside it. */
+.th-card .m .s { display: flex; align-items: center; color: var(--text-dim); white-space: nowrap; min-width: 0; flex-shrink: 10000; }
+.th-card .m .s .sw { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-card .m .s > :not(.sw) { flex: none; }
+.th-card .m .s::after { content: ""; width: 1px; height: 9px; margin: 0 9px; background: var(--line-strong); flex: none; }
+/* The rule divides the state from what follows it, so it goes when nothing does. */
+.th-card .m .s:not(:has(~ .th-prio-mark, ~ .p))::after { content: none; }
+.th-card .m .s .th-st, .th-card .m .s .th-st-cloud { margin-right: 7px; }
+.th-card .m .tm-av { width: 18px; height: 18px; line-height: 16px; font-size: 8px; margin-left: auto; flex: none; }
+.th-col-empty { font-size: 13px; color: var(--text-faint); padding: 4px 2px; }
+.tm-team-pane.th-pane { height: 100%; overflow: auto; }
+.th-prio-mark { display: inline-flex; margin-right: 8px; }
+.th-pop .opts .th-prio-mark { margin-right: 0; }
+
+/* ------------------------------------------------------------ a teammate's thread */
+/* The whole window: the name and what it waits on across the top, then the
+   conversation on the left and what it is about on the right. */
+/* Measured by its own width: a file opened beside it narrows the page, not the window. */
+.tp-page { padding: 14px 40px 48px; container: tp / inline-size; }
+.tp-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 28px; }
+.tp-acts { display: flex; align-items: center; gap: 10px; }
+.tp-top { margin: 0 0 28px; padding: 0 0 24px; border-bottom: 1px solid var(--line); }
+.tp-whose { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 13px; color: var(--text-dim); }
+.tp-whose .tm-av { width: 20px; height: 20px; line-height: 18px; font-size: 8px; }
+.tp-top .th-card-title { margin: 0 0 14px; font-size: 28px; line-height: 34px; font-weight: 500; letter-spacing: -.02em; color: var(--text); }
+.tp-standing { display: flex; align-items: center; flex-wrap: wrap; gap: 0 10px; margin: 0; font-size: 14px; color: var(--text-dim); }
+.tp-standing .ts-st { margin-right: 0; }
+.tp-standing b { font-weight: 500; color: var(--text); }
+.tp-standing .tp-ago { margin-left: auto; font-size: 12.5px; color: var(--text-faint); }
+.tp-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 64px; align-items: start; }
+.tp-side { position: sticky; top: 0; }
+.tp-side .ts-ticket { max-width: none; margin: 0; padding: 20px 22px 18px; border-radius: 10px; }
+.tp-side .ts-tk-part { padding: 0 0 18px; margin: 0 0 18px; border-bottom: 1px solid var(--line); }
+.tp-side .ts-tk-part > .ts-h { margin: 0 0 8px; }
+.tp-side .ts-tk-done { padding-top: 0; border-top: 0; }
+.tp-side .ts-tk-lead { margin: 0; font-size: 14px; line-height: 21px; }
+.tp-side .ts-tk-grid { grid-template-columns: 1fr; gap: 14px; padding-top: 0; border-top: 0; }
+.ts-tk-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ts-tk-files button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px 7px 7px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.ts-tk-files button:hover { background: var(--wash); border-color: var(--line-strong); }
+.ts-tk-ext { flex: none; width: 34px; padding: 5px 0; border-radius: 5px; background: var(--wash); font: 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; text-align: center; color: var(--text-dim); }
+.ts-tk-fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ts-tk-notes { flex: none; font-size: 12px; color: var(--text-faint); }
+.ts-tk-props { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px 12px; margin: 0; font-size: 13px; }
+.ts-tk-props dt { color: var(--text-faint); }
+.ts-tk-props dd { display: flex; align-items: center; gap: 7px; margin: 0; min-width: 0; color: var(--text); }
+.ts-tk-props .tm-av { width: 18px; height: 18px; line-height: 16px; font-size: 7.5px; }
+.th-back { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px 0 6px; margin-left: -6px; border: 0; border-radius: var(--radius); background: none; color: var(--text-dim); font: inherit; font-size: 13.5px; cursor: pointer; }
+.th-back:hover { background: var(--wash); color: var(--text); }
+
+/* ------------------------------------------------------------ hover (2026-10-01) */
+/* Anything under the pointer answers it the usual way, such as a slight
+   change of background. Rows, tabs, pickers and the header
+   all answer the pointer now; the sidebar already did. */
+/* ROWS ANSWER WITH THE UNDERLINE, AS THE OLD APP DID (2026-10-01): the
+   selected thread changed its underline, not its background, which worked
+   well with the pointer and when moving up and down. Hover is the faint underline and the
+   selected row the accent one (styles.css, `.row .subject`): one idea, two
+   weights, so the pointer and the keys never light two different rows the
+   same way. Buttons, tabs and pickers keep their background hover. */
+.th-table .row:not(.th-head) { cursor: pointer; }
+.tm-tab { transition: color .08s ease; }
+.tm-tab:hover { color: var(--text); }
+.th-search { transition: background-color .08s ease, color .08s ease; }
+.th-search:hover { background: var(--wash-strong); color: var(--text-dim); }
+.th-scope { padding: 0 6px; margin: 0 -6px; border-radius: var(--radius); }
+.th-scope:hover { color: var(--text); background: var(--wash); }
+.th-pop .opts > button:hover { border-color: var(--line-strong); color: var(--text); }
+.th-pop .foot button:hover { color: var(--text); }
+.th-card { transition: background-color .08s ease, border-color .08s ease; }
+
+/* ------------------------------------------------------------ empty inbox */
+.th-clear { padding: 40px var(--row-r, 24px) 40px var(--text-x, 32px); max-width: 560px; }
+.th-clear h2 { margin: 0 0 8px; font-size: 18px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
+.th-clear p { margin: 0 0 22px; font-size: 14px; line-height: 21px; color: var(--text-dim); }
+.th-clear-acts { display: flex; align-items: center; gap: 14px; }
+/* A screen of words sits in the middle of what is left under the tabs, a
+   little above centre. Nothing needs you: the heading over the New thread box,
+   one column. */
+.list-pane:has(> .th-start), .list-pane:has(> .th-empty), .list-pane:has(> .th-clear-filtered) { display: flex; flex-direction: column; }
+.th-clear.th-start { flex: 1; display: flex; flex-direction: column; justify-content: center; max-width: none; padding: 32px var(--row-r, 24px) 12vh var(--text-x, 32px); }
+.th-start > * { width: 720px; max-width: 100%; align-self: center; }
+.th-start h2 { margin: 0 0 28px; font-size: 28px; line-height: 1.15; letter-spacing: -.025em; }
+/* A tab the filters emptied. It reads as the inbox-zero screen next door, not
+   as a warning: a small tick, a short heading, the number quiet underneath.
+   Her note on the first cut, which put the whole sentence in the heading:
+   "This feels almost like a punishment in terms of the harsh text." */
+.th-clear-mark { display: block; color: var(--accent); opacity: .55; margin: 0 0 14px -1px; }
+.th-clear.th-clear-filtered { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; max-width: none; padding: 40px 24px 12vh; }
+.th-clear-filtered .th-clear-mark { margin: 0 0 14px; }
+.th-clear-filtered p { color: var(--text-faint); }
+/* With no computer there is nowhere to send a new thread. */
+.workspace-layout:has(.th-connect) .th-new { display: none; }
+/* The steps keep their left edge; the group is what is centred. */
+.th-start > .th-connect-group { width: fit-content; max-width: 100%; align-self: center; }
+.th-clear.th-start.th-connect { padding-left: 24px; padding-right: 24px; }
+.th-connect h2 { margin-bottom: 16px; }
+.th-connect ol { margin: 0 0 26px; padding: 0; list-style: none; counter-reset: step; font-size: 14px; line-height: 26px; color: var(--text); }
+/* The numbers sit on the heading's left edge, and a wrapped step under its own words. */
+.th-connect li { display: grid; grid-template-columns: 1.4em 1fr; counter-increment: step; }
+.th-connect li::before { content: counter(step) "."; color: var(--text-faint); }
+.th-connect b { font-weight: 500; overflow-wrap: anywhere; }
+.th-connect-out { height: 32px; padding: 0 13px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: none; color: var(--text); font: inherit; font-size: 13.5px; cursor: pointer; }
+.th-connect-out:hover { background: var(--wash-strong); }
+
+/* ------------------------------------------------------------ in a browser tab */
+/* No title bar to clear in a tab, so the top inset matches the bottom one
+   (2026-10-01: the bottom padding was already right). The desktop
+   window keeps its 40px: the traffic lights sit there and that band eats
+   clicks. */
+:root[data-shell="tab"] .app.workspace-layout { padding-top: 22px; }
+:root[data-shell="tab"] .workspace-layout::before { top: 22px; }
+:root[data-shell="tab"] .workspace-navigation { top: 32px; }
+/* The heading row draws no hairline under itself, on both pages. */
+.th-table .row.th-head + .row::after { display: none; }
+
+/* Your row in the sidebar's foot is a button to your account page. */
+.workspace-navigation .th-me-btn { display: flex; align-items: center; gap: 9px; width: 100%; height: 38px; padding: 0 8px; margin-left: -8px; min-width: 0; text-align: left; color: var(--text); font-size: 13.5px; }
+.workspace-navigation .th-me-btn > span:nth-child(2) { min-width: 0; overflow: hidden; }
+.workspace-collapsed .workspace-navigation .th-me-btn { width: 38px; padding: 0 0 0 8px; }
+.workspace-collapsed .workspace-navigation .th-me-btn > .tm-av { display: inline-block; }
+.th-work { min-width: 0; }
+.th-work .msg-body p, .th-work .appendix p { margin: 0 0 10px; }
+.th-work .msg-body ul, .th-work .msg-body ol, .th-work .appendix ul, .th-work .appendix ol { margin: 0 0 10px; }
+.th-follow { display: inline-flex; align-items: center; height: 30px; padding: 0 12px; border: 1px solid var(--line-strong); background: none; color: var(--text-dim); font: inherit; font-size: 13px; cursor: pointer; }
+.th-follow:hover { color: var(--text); border-color: var(--text-faint); background: var(--wash); }
+.th-follow.on { border-color: var(--line); color: var(--text-faint); }
+.th-work-note { margin: 0 0 18px; font-size: 13px; color: var(--text-dim); }
+.th-comment { margin: 28px 0 0; }
+.tp-comment-box { display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 10px 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--wash); }
+.tp-comment-box:focus-within { border-color: var(--text-faint); }
+.tp-comment-box > .tm-av { margin-top: 5px; }
+.th-comment textarea { flex: 1; min-width: 0; padding: 6px 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 14px; line-height: 20px; resize: none; }
+.th-comment textarea:focus { outline: none; }
+.th-comment button { height: 32px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.th-comment button:hover:not(:disabled) { background: var(--wash-strong, var(--wash)); }
+.th-comment button:disabled { color: var(--text-faint); border-color: var(--line); cursor: default; }
+@container tp (max-width: 980px) {
+  .tp-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .tp-side { position: static; }
+}
+@container tp (max-width: 720px) {
+  .tp-bar { flex-wrap: wrap; }
+  .tp-acts { flex-wrap: wrap; }
+  .tp-acts > * { white-space: nowrap; }
+}
+/* Collapsed, the Inbox still says something is waiting: a dot where the
+   number was (a persona lost the count when the sidebar was shut). */
+.workspace-collapsed .workspace-navigation .workspace-tab.has-count { position: relative; }
+.workspace-collapsed .workspace-navigation .workspace-tab.has-count::after { content: ''; position: absolute; top: 8px; right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+/* IN PROGRESS, AND AN AGENT ON IT NOW (2026-10-01). Queued and running share
+   the word; only the ones an agent is on turn. */
+.th-st.live { animation: th-breathe 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .th-st.live, .th-st-cloud { animation: none; } }
+.th-cell-title .th-st.live { margin-right: 8px; top: 1px; }
+.th-card .m .th-st.live { margin-right: 8px; top: 0; }
+
+/* WHOSE THREADS: the faces on the View and filters button (w-14bb56c833), in
+   place of a filter that took a row of its own over the board. Three at most,
+   overlapping, each ringed in the ground so they read as separate people. */
+.th-disp.faces { width: auto; display: inline-flex; align-items: center; gap: 9px; padding: 0 9px 0 6px; }
+.th-faces { display: inline-flex; align-items: center; }
+.th-faces .tm-av { width: 20px; height: 20px; line-height: 18px; font-size: 8.5px; box-shadow: 0 0 0 2px var(--bg); }
+/* Initials sit on a see-through film elsewhere; overlapped, the face under them would show through. */
+.th-faces span.tm-av:not(.you) { background: var(--pop); }
+.th-faces .tm-av + .tm-av, .th-faces-more { margin-left: -5px; }
+.th-faces-more { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 3px; box-sizing: border-box;
+  font: 500 9.5px var(--mono); color: var(--text-dim); background: var(--pop); border-radius: var(--radius); box-shadow: 0 0 0 2px var(--bg); }
+.th-pop .opts > button .tm-av { width: 16px; height: 16px; line-height: 14px; font-size: 7.5px; }
+/* A teammate's row has no select box: nothing on this Mac can act on it. */
+.th-their-row .mark { visibility: hidden; }
+
+/* WHERE THREADS RUN: the cloud button and its menu (threads/Pages.tsx). */
+.th-cloud.count { width: auto; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px 0 9px; font: inherit; font-size: 13px; }
+.th-cloud.count b { font-weight: 400; color: var(--text); font-variant-numeric: tabular-nums; }
+/* The same shape the count makes, for the word it wears until it is set up.
+   Room on the right for the dot, which sits in the corner of a square button. */
+.th-cloud.named { width: auto; display: inline-flex; align-items: center; gap: 7px; padding: 0 14px 0 9px; font: inherit; font-size: 13px; }
+.th-cloud-word { color: var(--text-dim); }
+.th-cloud.named:hover .th-cloud-word, .th-cloud.named.open .th-cloud-word { color: var(--text); }
+/* "Sign in again" asks for something, so it reads as brightly as New thread. */
+.th-cloud-word.ask { color: var(--text); }
+/* Picked is a soft grey here, not an orange box: one small dot beside On is
+   the menu's only orange (picked 2026-10-16 as calmer). */
+.th-cloud-pop .opts > button.picked, .th-cloud-pop .opts > button.picked:hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+/* A place this thread cannot go: dim and still, the note under it says why. */
+.th-cloud-pop .opts > button:disabled, .th-cloud-pop .opts > button:disabled:hover { opacity: .4; cursor: default; border-color: var(--line); color: var(--text-dim); }
+.th-cloud-pop .th-cloud-on-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-inline-end: 7px; vertical-align: 1px; }
+/* THE CLOUD ON: the cloud and its count orange, the box left plain. */
+.th-disp.th-cloud.lit svg, .th-disp.th-cloud.lit b { color: var(--accent); }
+.th-pop.th-cloud-pop { width: 540px; }
+.th-cloud-pop .th-cloud-onoff { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.th-cloud-pop .th-cloud-keysay { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-faint); }
+.th-cloud-pop .th-cloud-keysay kbd { font: 11px var(--mono); color: var(--text-dim); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 5px; line-height: 18px; background: none; }
+.th-cloud-pop .th-cloud-note { padding-top: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-faint); }
+.th-cloud-pop .th-cloud-use { font-size: 13px; color: var(--text); }
+.th-cloud-pop .th-cloud-warn > span:last-child { color: var(--accent); }
+.th-pop.th-cloud-invite { width: 360px; padding: 26px 26px 22px; align-items: center; text-align: center; }
+.th-cloud-invite-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.th-cloud-invite-ic svg { width: 22px; height: 22px; }
+.th-cloud-invite-head { margin-top: 14px; font-size: 16px; color: var(--text); letter-spacing: -0.01em; }
+.th-cloud-invite-line { margin: 6px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-dim); max-width: 30ch; }
+.th-cloud-invite-go { margin-top: 18px; width: 100%; height: 34px; border: 1px solid var(--accent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); font: inherit; font-size: 13.5px; cursor: pointer; }
+.th-cloud-invite-go:hover { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.th-cloud-banner { display: flex; align-items: center; gap: 14px; margin: 4px 12px 8px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.th-cloud-banner-say { flex: 1; min-width: 0; display: grid; gap: 3px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.th-cloud-banner-say b { font-weight: 500; }
+.th-cloud-setup-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
+.th-cloud-setup-say { flex: 1; min-width: 0; font-size: 13px; color: var(--text); }
+.th-cloud-manage { flex: none; height: 24px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--tag-radius); background: none; color: var(--text-dim); font: inherit; font-size: 12.5px; cursor: pointer; }
+.th-cloud-manage:hover { color: var(--text); border-color: var(--text-faint); }
+.th-cloud-go { flex: none; height: 26px; padding: 0 12px; border: 1px solid var(--accent); border-radius: var(--tag-radius); background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer; }
+.th-cloud-go:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+
+/* An account being added: the moving mark on the line, beside its words. */
+.th-cloud-banner-say:has(.cs-busy) { display: flex; align-items: center; gap: 9px; }
+
+/* On the hosted phone, over the list: what it shows may be out of date. */
+.phone-status { margin: 6px 16px 2px; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); color: var(--text-dim); font-size: 13px; line-height: 1.4; }
+
+/* THE CLOUD'S OFFER (cloud-upgrade.ts; the founder's design of 2026-10-13):
+   the last row of In progress and a card at the foot of its board column.
+   Quiet: the cloud in accent, the words in the list's own ink, an outlined
+   button the size of the row's own controls. */
+.th-table .row.th-offer-row, .th-table .row.th-offer-row:hover { cursor: default; background: none; }
+.th-offer-main { display: flex; align-items: center; gap: 10px; min-height: 30px; font-size: 14px; line-height: 20px; }
+.th-offer-ic { display: inline-flex; color: var(--accent); }
+.th-offer-ic svg { width: 15px; height: 15px; }
+.th-offer-say { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.th-offer-wait { color: var(--text-faint); }
+.th-offer-go { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--radius); background: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+.th-offer-go:hover { background: var(--bg-hover); }
+.th-offer-go svg { width: 14px; height: 14px; }
+.th-card.th-offer-card { cursor: default; background: none; border-style: dashed; }
+/* space-between, not an auto margin: a button that wraps onto its own line then starts at the left. */
+.th-offer-card .m { gap: 10px 8px; flex-wrap: wrap; justify-content: space-between; }
+.th-offer-count { display: inline-flex; align-items: center; gap: 8px; }
+.th-offer-card .m .p { flex: none; }
+.th-offer-card .m svg { width: 13px; height: 13px; flex: none; }
+.th-offer-card-go { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; border: 0; padding: 0; background: none; font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--accent); cursor: pointer; }
+.th-card .m .th-card-wait { margin-left: 8px; text-transform: none; letter-spacing: 0; }
+
+/* WHY A THREAD IS NOT IN THE CLOUD, on hovering its Status (w-de59f3ff12, ../where-why.ts).
+   The cell is mono and clips, so the card resets both. */
+.th-cell-state.has-card { overflow: visible; position: relative; cursor: help; }
+.th-why-card { display: none; position: absolute; top: calc(100% + 10px); left: 0; z-index: 30; width: 320px; padding: 11px 14px 12px;
+  background: var(--pop); border: 1px solid var(--line-strong); box-shadow: 0 18px 50px rgba(0,0,0,.45);
+  font: 13px/1.45 'Geist', 'Avenir Next', -apple-system, BlinkMacSystemFont, sans-serif; letter-spacing: 0; text-transform: none; white-space: normal; color: var(--text-dim); }
+:root[data-theme="light"] .th-why-card { background: var(--surface); box-shadow: 0 12px 32px rgba(0,0,0,.12); }
+.th-why-card b { display: block; margin-bottom: 3px; font-weight: 500; color: var(--text); }
+.th-cell-state.has-card:hover .th-why-card { display: block; }
+.phone-status-dismissible { display: flex; align-items: center; gap: 8px; padding-right: 0; }
+.phone-status-dismissible > span { flex: 1; min-width: 0; }
+.phone-status-dismissible > button { display: grid; place-items: center; flex: 0 0 44px; min-height: 44px; margin-block: -9px; padding: 0; border: 0; border-radius: var(--radius); background: transparent; color: inherit; cursor: pointer; }
+.phone-status-dismissible > button:hover { color: var(--text); }
+.phone-status-dismissible > button:focus-visible { outline: 2px solid var(--text); outline-offset: -4px; }

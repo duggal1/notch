@@ -1,0 +1,57 @@
+// WHERE J AND K GO: EVERY THREAD THE PAGE DRAWS, A TEAMMATE'S INCLUDED
+// (w-fb16bcaeba, 2026-10-05).
+//
+// Her words: "if I'm in team view on my board then it should show that
+// naturally as I'm navigating through the inbox. If I want to not see it then
+// i would remove my team's visibility." The keyboard used to walk only her own
+// rows, so J went quiet on the last of hers with her teammates' rows still
+// drawn under it. A stop is one of your threads or one of their cards, in the
+// order the list or the board draws them; with nobody else picked there are
+// no cards, so your own page walks as it always has.
+// Pure, so tests read it directly
+// (tests/j-walks-onto-a-teammates-thread-when-they-are-on-the-page.test.mts).
+import type { ThreadCard, WorkItem } from '../types';
+import type { BoardEntry } from './page-rules';
+import type { MixedRow } from './people-rules';
+
+export type Stop = { item: WorkItem; card?: undefined; lead?: undefined } | { card: ThreadCard; item?: undefined; lead?: undefined };
+/** A row above the threads: an invitation or a group. J and K on the page stop on it; a walk from an open thread does not. */
+export type PageStop = Stop | { lead: { key: string }; item?: undefined; card?: undefined };
+
+/** One name per stop: a thread of yours by its id, a card by whose and which thread. */
+export const stopKey = (s: PageStop): string => (s.lead ? `lead/${s.lead.key}` : s.item ? `item/${s.item.product}/${s.item.id}` : `card/${s.card.personId}/${s.card.threadId}`);
+
+export const leadStops = (rows: readonly { key: string }[]): PageStop[] => rows.map((lead) => ({ lead: { key: lead.key } }));
+
+/** The list's stops: the merged table when a teammate is on it, else your own rows.
+ *  A row of yours is a stop only when it is in `items`, as the table draws it. */
+export function listStops(items: WorkItem[], mixed: MixedRow[] | null): Stop[] {
+  if (!mixed) return items.map((item) => ({ item }));
+  const ids = new Set(items.map((i) => i.id));
+  return mixed.filter((r) => (r.card ? true : ids.has(r.item.id)));
+}
+
+/** The board's stops, down each column and on to the next, cards included. */
+export function boardStops(columns: { rows: BoardEntry[] }[]): Stop[] {
+  return columns.flatMap((c) => c.rows).flatMap((e): Stop[] => (e.item ? [{ item: e.item }] : e.card ? [{ card: e.card }] : []));
+}
+
+/** The stop one step from `from`, or null at either end. A `from` the page is
+ *  not drawing steps from `fallback`, the keyboard's last place in the walk. */
+export function stepStop<S extends PageStop>(stops: S[], from: PageStop | null, dir: 1 | -1, fallback = -1): S | null {
+  const key = from ? stopKey(from) : null;
+  const at = key ? stops.findIndex((s) => stopKey(s) === key) : -1;
+  const next = (at >= 0 ? at : fallback) + dir;
+  return next >= 0 && next < stops.length ? stops[next] : null;
+}
+
+/**
+ * THE STEP FROM A THREAD THAT HAS LEFT THE PAGE WHILE OPEN (w-0d55a2b160).
+ * Your reply to a person takes the thread out of Needs you and keeps you on it,
+ * so it sits nowhere in the list; `place` is where it sat. What slid into that
+ * place is the next one, and the one before it is the previous one.
+ */
+export function stepFromPlace(stops: Stop[], place: number, dir: 1 | -1): Stop | null {
+  const next = dir === 1 ? place : place - 1;
+  return next >= 0 && next < stops.length ? stops[next] : null;
+}

@@ -1,0 +1,168 @@
+// THE TWO SENTENCES THE NEW TASK CARD OWES HER.
+//
+// Both come out of a tester's onboarding, the first non-technical person to be
+// walked through Agentbox, and both are about the same seam: the user's words went into
+// the card and the card said nothing back.
+//
+// 1. WHY IT WILL NOT TAKE THIS. She sent a task into the practice project and
+// it was accepted, filed, and never run. Nobody misbehaved. The supervisor skips
+// practice projects in four separate places on purpose (main/supervisor.mts): a
+// practice project is not a project anybody works in, it points at no folder,
+// and starting a real session in it is the thing that must never happen. The
+// defect is that the CARD did not know that, so it took the task, filed it, and
+// left her watching a row that would never move. The status flapping she then
+// reported is the same fault seen from the other end: there was never a run
+// behind it.
+//
+//    THE FIX IS A REFUSAL, NOT A RUN. Making practice projects runnable is the
+//    one repair that is not allowed here. So the card says no, in a sentence,
+//    before she presses anything — which is also the cheaper half, because
+//    the system swallowing something the user typed is the failure this codebase
+//    keeps paying for (CLAUDE.md).
+//
+// 2. WHERE THE ONE IT TOOK WENT.
+//
+// They live here rather than inside Compose.tsx for the reason
+// `belongsInInbox` lives in list-rules.ts: what a card does NOT say has no
+// symptom, so the rule has to be testable without rendering anything. And
+// because copy is part of the design (a project rule, CLAUDE.md), the words are
+// constants that a test can hold to, not string literals scattered through a
+// component.
+
+import { resetDay } from '../../shared/usage.mts';
+
+/**
+ * As much of a project as either sentence needs. The practice mark is written
+ *  by main/store.mts off `project.json` (PRACTICE_FLAG) rather than matched on
+ *  a name, because "Practice" is a name somebody could reasonably give a real
+ *  project of their own, and a refusal aimed at real work is worse than the
+ *  bug it fixes. */
+export interface ComposeTarget {
+  name: string;
+  practice?: boolean;
+}
+
+/**
+ * THE REFUSAL, in plain English, with the way out in it.
+ *
+ * Kept to two short sentences: the first is the fact she could not have known
+ * (nothing here ever runs), the second is what to do instead. A dense screen is
+ * a failed screen, and a refusal nobody finishes reading is a refusal that did
+ * not happen.
+ */
+export const PRACTICE_REFUSAL =
+  'Nothing runs in Practice, it is only somewhere to try things out. '
+  + 'Pick one of your own projects and this will start.';
+
+/**
+ * Whether the card must refuse, and what it says when it does. Null is the
+ * ordinary case, which is every task into a real project.
+ *
+ * `scripted` IS THE ONE EXEMPTION AND IT IS NOT A LOOPHOLE. The first run's own
+ * example task really is sent into the practice project, and it really is
+ * answered a couple of seconds later — by the app itself, out of a pre-written
+ * line (main/store.mts finishFirstRunTask, shared/first-run-practice.mts), with
+ * no session behind it. That task is the only one in the practice project with
+ * something waiting to answer it, and the card can tell it apart with no
+ * guessing: it is the one the walk typed in itself, so it is the one arriving
+ * with a `prefill`. Anything she writes herself in there has nobody to pick it
+ * up, and that is exactly what a tester hit.
+ */
+export function practiceRefusal(
+  product: ComposeTarget | null | undefined,
+  opts: { scripted?: boolean } = {},
+): string | null {
+  if (!product?.practice) return null;
+  if (opts.scripted) return null;
+  return PRACTICE_REFUSAL;
+}
+
+/**
+ * 3. AND WHY SEND IS OFF WHEN THERE IS NO PROJECT AT ALL (w-f8d123be62).
+ *
+ * The same seam a third time. A tester on a new account saw "No project" on the
+ * chip, typed a message, pressed Send and got nothing: `canSend` wants a
+ * product and there was not one, and the only tooltip the button had was the
+ * practice refusal, which had nothing to say about this.
+ *
+ * My Workspace is made for everybody at boot now (main/main.mts), so this
+ * should be unreachable. "Should be" is why the sentence exists: making that
+ * folder can fail on a full or locked disk, and the old failure mode was a log
+ * line nobody reads and a dead button. The wording is the one approved on
+ * 2026-10-05, and it is split in two because the second half is a BUTTON that
+ * opens the New project card, not words to read.
+ */
+export const NO_PROJECT_REASON = 'Nowhere to send this yet.';
+export const NO_PROJECT_ACTION = 'Make your first project';
+
+export function noProjectYet(
+  product: ComposeTarget | null | undefined,
+  opts: { person?: boolean; noComputer?: boolean } = {},
+): { reason: string; action: string } | null {
+  // A message to a teammate is not filed anywhere, so it is never waiting on a
+  // project and must never be told that it is.
+  if (opts.person) return null;
+  if (product) return null;
+  // The web app's projects are a computer's; it cannot make one of its own.
+  if (opts.noComputer) return { reason: 'No computer is connected yet.', action: '' };
+  return { reason: NO_PROJECT_REASON, action: NO_PROJECT_ACTION };
+}
+
+/**
+ * THE CONFIRMATION, one line, NAMING THE PROJECT IT WENT TO.
+ *
+ * It replaced "Queued → Kestrel · Z to undo". Two things were wrong with that
+ * for the person it is written for. "Queued" is a word about our machinery, and
+ * the arrow is punctuation standing in for a verb; neither says the plain thing
+ * she was looking for, which is that her task is somewhere now. The project's
+ * own name is the load-bearing half: the whole of a tester's confusion was not
+ * being able to tell where the typed task had gone.
+ *
+ * `when` is whatever the card's clock says when she asked for a later start,
+ * and it rides in the middle rather than replacing the "Sent to" half: a task
+ * she scheduled has still been sent, and the sentence that dropped the word
+ * made "Queued" read as a lie about a task that had not started, and scheduled
+ * asks looked as if they had gone quiet.
+ *
+ * THE UNDO IS SAID OUT LOUD, unchanged, because a way back she cannot see is
+ * one she will not take.
+ */
+export function sentLine(p: {
+  to: string; when?: string | null; held?: boolean;
+  /** The new row's entry in `supervisor.atLimit`: every login of its tool is out of usage. */
+  limit?: { tool: string; until: number } | null; now?: number;
+}): string {
+  // "Started in", because "Sent to Office admin" read as a message to a person.
+  // And "Added to Later" for the one answer on the Send later menu with no
+  // moment in it (w-afb66e6661): it did not start, so saying it did is a lie,
+  // and it is not scheduled either.
+  if (p.held) return `Added to Later in ${p.to} · Z to undo`;
+  if (p.limit && !p.when) {
+    const now = p.now ?? Date.now();
+    const at = p.limit.until > now
+      ? new Date(p.limit.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(/\s/g, '').toLowerCase()
+      : null;
+    const day = at ? resetDay(p.limit.until, now) : null;
+    // Short, because the card holds about thirty characters on this line and
+    // the reason is the half that must survive; its title names the task.
+    return `${at ? `${p.limit.tool} is out until ${at}${day ? ` ${day}` : ''}` : `${p.limit.tool} is out of usage`} · Z to undo`;
+  }
+  const where = p.when ? `Scheduled in ${p.to}` : `Started in ${p.to}`;
+  return `${p.when ? `${where} · ${p.when}` : where} · Z to undo`;
+}
+
+/**
+ * What the toast says between Send and the computer's answer (w-461fbd8d2d).
+ *
+ * The card closes the moment Send is pressed, so for one round trip, which on
+ * a phone's relay is about half a second, this is the only sign the press
+ * landed. It names the same place `sentLine` will, in the same verb, so the
+ * toast that replaces it reads as the same sentence finishing. No Z yet:
+ * nothing has been written for Z to take back.
+ */
+export function sendingLine(p: { kind: 'task' | 'repeat' | 'message'; to: string; held?: boolean; scheduled?: boolean }): string {
+  if (p.kind === 'message') return p.to ? `Sending to ${p.to}…` : 'Sending…';
+  if (p.held) return `Adding to Later in ${p.to}…`;
+  if (p.scheduled || p.kind === 'repeat') return `Scheduling in ${p.to}…`;
+  return `Starting in ${p.to}…`;
+}

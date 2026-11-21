@@ -1,0 +1,1051 @@
+// THE INBOX AND TEAM PAGES' PURE RULES (approved 2026-10-01, w-e731ca9376).
+//
+// No React and no styles, so tests read them directly
+// (tests/threads-the-pages.test.mjs). What a Display menu choice keeps, how
+// the rows are ordered, how "Updated" is said, and what goes in each board
+// column for the Team, where your own threads come from this Mac and your
+// teammates' from the cards their Macs publish.
+import { handedOn, shownToPeople, shownToTeam, visibilityOf } from '../../../shared/thread-cards.mts';
+import type { Seen } from './summary-rules';
+import { hiddenUntil, placedAt } from '../list-rules';
+import type { AgentVoice, Product, ThreadCard, ThreadStateWord, View, WorkItem } from '../types';
+import { voiceName } from '../../../shared/agent-voice.mts';
+import { priorityIdOf, priorityValueOf, type PriorityId } from '../priority';
+import { dayAndTime, firstRealLine, itemOptions } from '../format';
+import { asksSomething } from '../../../shared/teammates.mts';
+import { threadState } from '../../../shared/thread-cards.mts';
+import { dropPlaces, placeScore, placedScore, shownPriority } from '../../../shared/rank.mts';
+import { plainWords } from '../team/agent-mentions';
+import { heldByAPerson, iSpokeLast, isTaskRow, isWorkThread, lastSpeaker, nameIsAPersons, taskGiver, whatWaits, type TeamRow } from '../../../shared/team-rules.mts';
+import { handedFrom } from '../../../shared/thread-link.mts';
+import { taskWords } from '../team/company';
+import { shownTitle } from '../../../shared/thread-title.mts';
+import { localDate } from '../local-dates';
+import { isCause, waitingOn, causeWhere } from '../../../shared/causes.mts';
+
+export type PageId = 'inbox' | 'team';
+export type UpdatedWindow = 'today' | 'week' | 'any';
+/** Privacy: Private, Shared, or neither picked ('any'). */
+export type Privacy = 'any' | 'shared' | 'private';
+export interface Display {
+  view: 'list' | 'board';
+  sort: 'priority' | 'updated';
+  priorities: PriorityId[];
+  projects: string[];
+  updated: UpdatedWindow;
+  /** Absent on a display saved before the choice existed, which reads as All. */
+  privacy?: Privacy;
+}
+
+// Both pages open as a list, each tab on its own, and B turns either into a
+// board; the choice is remembered once changed.
+export const DEFAULT_DISPLAY: Record<PageId, Display> = {
+  inbox: { view: 'list', sort: 'priority', priorities: [], projects: [], updated: 'any', privacy: 'any' },
+  team: { view: 'list', sort: 'priority', priorities: [], projects: [], updated: 'any', privacy: 'any' },
+};
+
+/**
+ * HIDE PRIVATE, FOR WHEN SOMEBODY IS LOOKING AT YOUR SCREEN (2026-10-04,
+ * w-f6ea56b89a): "I'm showing the app to my friends, it would be nice in that
+ * case to be able to filter out the private tasks." A private thread is
+ * exactly a row that wears the lock (`rowSharing` says 'private'), so the
+ * filter takes away what the eye already reads as private. A row where the
+ * question does not arise (a message, an agent, the app's own rows) is not
+ * private and stays under Hide private.
+ */
+export function keepsPrivacy(seen: Seen | null | undefined, privacy: Privacy | undefined): boolean {
+  if (privacy === 'shared') return seen !== 'private';
+  if (privacy === 'private') return seen === 'private';
+  return true;
+}
+
+/** A click on Private or Shared picks it, and a click on the lit one lets go,
+ *  the way the Priority line works. */
+export const nextPrivacy = (now: Privacy | undefined, clicked: Exclude<Privacy, 'any'>): Privacy =>
+  (now === clicked ? 'any' : clicked);
+
+// ONE CHOICE FOR THE WHOLE PAGE, not one per half of it. Each half remembers
+// its own view and filters, and a privacy choice kept in only one of them
+// would bring every private row back the moment a teammate's face was lit.
+const PRIVACY_KEY = 'threads.privacy';
+
+export function readPrivacy(store: Pick<Storage, 'getItem'> | null = typeof localStorage === 'undefined' ? null : localStorage): Privacy {
+  try {
+    const p = JSON.parse(store?.getItem(PRIVACY_KEY) ?? 'null');
+    return p === 'shared' || p === 'private' ? p : 'any';
+  } catch {
+    return 'any';
+  }
+}
+
+export function writePrivacy(p: Privacy, store: Pick<Storage, 'setItem'> | null = typeof localStorage === 'undefined' ? null : localStorage) {
+  try { store?.setItem(PRIVACY_KEY, JSON.stringify(p)); } catch { /* private mode */ }
+}
+
+/** The display the page draws: the half it is on, with the one privacy choice
+ *  on it. Off a team no row is private, so there it is always All. */
+export const pageDisplay = (d: Display, privacy: Privacy, onTeam: boolean): Display =>
+  ({ ...d, privacy: onTeam ? privacy : 'any' });
+
+// V FLIPS THE VIEW AND NOTHING ELSE (w-58c8f466e7): the sort and every filter
+// stay, because the list and the board are the same threads in two shapes.
+export const flipView = (d: Display): Display => ({ ...d, view: d.view === 'board' ? 'list' : 'board' });
+
+// THE TEAM BOARD SORTED BY UPDATED UNTIL 2026-10-02, and a saved team display
+// carried that default with it, so the board never ran by priority. A display
+// saved since then carries `v: 2`; one without it that says Updated was the old
+// default speaking, and reads as Priority.
+const DISPLAY_VERSION = 2;
+
+/**
+ * WHICH OF THE TWO REMEMBERED DISPLAYS THE ONE PAGE IS ON.
+ *
+ * The Inbox and the Team page became one page (w-05ff3d1438), and the page
+ * read the inbox's display and nothing else, so the team's board default
+ * above could never be reached: lighting a teammate's face left you in the
+ * list. There is one page now, so "per page" is read as "per audience". Each
+ * half remembers what was last chosen for it, which is why this is a lookup
+ * and not an effect that forces board on and overrules a choice.
+ */
+export const pageFor = (withOthers: boolean): PageId => (withOthers ? 'team' : 'inbox');
+
+const KEY = (page: PageId) => `threads.display.${page}`;
+
+export function readDisplay(page: PageId, store: Pick<Storage, 'getItem'> | null = typeof localStorage === 'undefined' ? null : localStorage): Display {
+  try {
+    const raw = store?.getItem(KEY(page));
+    if (!raw) return DEFAULT_DISPLAY[page];
+    const d = JSON.parse(raw);
+    return {
+      view: d.view === 'board' || d.view === 'list' ? d.view : DEFAULT_DISPLAY[page].view,
+      sort: page === 'team' && d.sort === 'updated' && d.v !== DISPLAY_VERSION ? 'priority'
+        : d.sort === 'updated' || d.sort === 'priority' ? d.sort : DEFAULT_DISPLAY[page].sort,
+      priorities: Array.isArray(d.priorities) ? d.priorities.filter((p: unknown) => ['urgent', 'high', 'medium', 'low'].includes(p as string)) : [],
+      projects: Array.isArray(d.projects) ? d.projects.filter((p: unknown) => typeof p === 'string') : [],
+      updated: d.updated === 'today' || d.updated === 'week' ? d.updated : 'any',
+    };
+  } catch {
+    return DEFAULT_DISPLAY[page];
+  }
+}
+
+export function writeDisplay(page: PageId, d: Display, store: Pick<Storage, 'setItem'> | null = typeof localStorage === 'undefined' ? null : localStorage) {
+  try { store?.setItem(KEY(page), JSON.stringify({ ...d, v: DISPLAY_VERSION })); } catch { /* private mode */ }
+}
+
+/** Whether any filter is on, which is what puts the dot on the Display icon. */
+export const isFiltered = (d: Display) => d.priorities.length > 0 || d.projects.length > 0 || d.updated !== 'any'
+  || d.privacy === 'shared' || d.privacy === 'private';
+
+const startOfDay = (now: number) => { const t = new Date(now); t.setHours(0, 0, 0, 0); return t.getTime(); };
+
+/** What the filters keep. The rows the app makes itself (no project) always
+ *  stay. `seen` is who sees the row (`rowSharing`), for the privacy choice.
+ *  A MESSAGE TO YOU PASSES THE PROJECT FILTER (w-5a432fb112): `direct` names
+ *  the conversation projects, which no chip offers, so any lit chip hid every
+ *  message. "Messages to me ARE my tasks." */
+export function keeps(item: Pick<WorkItem, 'priority' | 'product' | 'updatedAt'> & Pick<Ranked, 'wrote' | 'createdAt' | 'start'>, d: Display, now: number, seen?: Seen | null, direct?: ReadonlySet<string>): boolean {
+  if (!keepsPrivacy(seen, d.privacy)) return false;
+  if (d.priorities.length && !d.priorities.includes(priorityIdOf(shownPriority(item, !!direct?.has(item.product))))) return false;
+  if (d.projects.length && item.product && !d.projects.includes(item.product) && !direct?.has(item.product)) return false;
+  if (d.updated === 'today' && !(sentAt(item) >= startOfDay(now))) return false;
+  if (d.updated === 'week' && !(sentAt(item) >= now - 7 * 86_400_000)) return false;
+  return true;
+}
+
+// YOUR PROJECT ORDER, THEN URGENT, HIGH, MEDIUM, LOW, newest first inside a
+// level. One comparator, read by the list, by every column of the board and by
+// the merge of a teammate's rows, because the two disagreed: a section
+// promising priority order was not in one (w-5a08121f99).
+//
+// PRIORITY INCLUDES PROJECTS (w-e263a8a0fb, 2026-10-02): the board ran each
+// thread's own level alone, so one project's threads were scattered down a
+// column and the order set in Settings > Project priority counted for nothing
+// on the page. A project's place comes first, by `productRankScore`, the same
+// rule the fleet runs by; inside one project the level is the number the row
+// shows, so the levels never read out of order. A project never placed scores
+// nothing, so with no order this is the level sort it was.
+//
+// A CONVERSATION RANKS WITH YOUR TOP PROJECT (w-2e8aa16f0f): `direct` names
+// the conversation projects, and `placeScore` gives them the top place, so a
+// High message sits under that project's Urgent and above its Medium.
+//
+// AND A THREAD YOU DRAGGED SITS WHERE YOU PUT IT (w-6e5b532a95). So the order
+// is one number: the project's place plus the value of the level the row
+// shows (9, 7, 5, 2, all under a project's 100), or the thread's own place,
+// which replaces it (`placedScore`, shared/rank.mts). A drop works out that
+// place from this same number (`dropPlaces`).
+//
+// A MESSAGE NOBODY LEVELLED CARRIES 0, which the sorter reads as no level and so
+// Medium; it was reading as Low, under every agent thread. And at one level a
+// person comes before an agent.
+export const rankScore = (r: Ranked, projectOrder: string[] = [], direct?: ReadonlySet<string>): number =>
+  placedScore(r.place, placeScore(projectOrder, r.product ?? '', direct) + priorityValueOf(priorityIdOf(shownPriority(r, !!direct?.has(r.product ?? '')) || null)));
+const fromAPerson = (r: Ranked, direct?: ReadonlySet<string>) => (direct?.has(r.product ?? '') || heldByAPerson(r) ? 1 : 0);
+export const byPriority = (projectOrder: string[] = [], direct?: ReadonlySet<string>) => (a: Ranked, b: Ranked) =>
+  rankScore(b, projectOrder, direct) - rankScore(a, projectOrder, direct) || fromAPerson(b, direct) - fromAPerson(a, direct) || placedAt(b) - placedAt(a);
+/** `product` is the project's slug, which is what the running order holds. */
+export type Ranked = { priority?: number | null; updatedAt: number; placedAt?: number; createdAt?: number; start?: string; status?: string; wrote?: WorkItem['wrote']; product?: string | null; place?: number; pinned?: boolean; assignee?: string };
+
+/**
+ * WHEN A PERSON LAST WROTE ON THE THREAD (w-21b638d821): the newest of the
+ * opening message, a reply (a picked option and an approval are replies), and
+ * starting it from Later. An agent's write never moves it, because the Status
+ * column already says what the agent is doing. A thread no person has written
+ * on reads when it was made; a row with no record of who wrote what, a
+ * teammate's card, reads when it last changed.
+ */
+export function sentAt(r: Ranked): number {
+  if (!r.wrote) return r.updatedAt;
+  const by = (field: string) => {
+    const w = r.wrote?.[field];
+    return w && w.source !== 'agent' ? w.ts : 0;
+  };
+  return Math.max(by('body'), by('answer'), r.start === 'now' ? by('start') : 0) || r.createdAt || r.updatedAt;
+}
+const bySent = (a: Ranked, b: Ranked) => sentAt(b) - sentAt(a);
+
+/**
+ * WHEN A THREAD WAS FINISHED: the moment its status was written as done, which
+ * the fold keeps per field. Not `updatedAt`, which a label or a late note moves:
+ * 8 of 734 finished threads on a real store were touched more than a day after
+ * they were done (2026-10-02). A row with no record of it, a teammate's card
+ * among them, falls back to when it last changed, and so does any row that is
+ * not finished.
+ */
+export const finishedAt = (r: Ranked): number => (r.status === 'done' && r.wrote?.status?.ts) || r.updatedAt;
+const byFinished = (a: Ranked, b: Ranked) => finishedAt(b) - finishedAt(a);
+
+// THE DONE TAB IS A HISTORY, NOT A QUEUE (w-c61f5bf497). Under Sort by Priority
+// it was a wall of Urgent rows in no order a reader could follow, and nothing
+// in it is waiting on a priority any more. So Done always runs newest finished
+// first.
+//
+// AND IN PROGRESS RUNS NEWEST SENT FIRST (w-21b638d821). It is where you go to
+// find what you just sent, and in the fleet's order that was often halfway
+// down. Nothing in it waits on you, so it reads by when you last wrote.
+// `running` is its column on the board. Needs you and Later keep the Display's
+// sort.
+type Cmp = (a: Ranked, b: Ranked) => number;
+//
+// A PINNED THREAD COMES FIRST (w-20323283e6), in every tab but Done and under
+// either sort, so the few threads you still mean to finish today are not dug
+// out of fifty. Among themselves the pinned ones keep the Display's sort, and
+// a drag orders them the way it orders anything else (`dropWithPins`).
+const pinnedOpen = (r: Ranked) => (r.pinned && r.status !== 'done' ? 1 : 0);
+const pinnedFirst = (then: Cmp): Cmp => (a, b) => pinnedOpen(b) - pinnedOpen(a) || then(a, b);
+export const order = (d: Pick<Display, 'sort'>, tab?: string, projectOrder: string[] = [], direct?: ReadonlySet<string>): Cmp => {
+  if (tab === 'done') return byFinished;
+  if (tab === 'progress' || tab === 'running') return pinnedFirst(bySent);
+  return pinnedFirst(d.sort === 'updated' ? bySent : byPriority(projectOrder, direct));
+};
+
+/** The time column's heading: on Done it is when each thread was finished, on
+ *  Later when it comes back, and everywhere else when you last wrote (`sentAt`). */
+export const timeHeading = (tab?: string) => (tab === 'done' ? 'Done' : tab === 'snoozed' ? 'Back' : 'Sent');
+
+/**
+ * WHEN A THREAD IN LATER COMES BACK, for the column that used to say how long
+ * ago it was touched (power-test-1, issue 18). A tester set a weekly check to
+ * Monday 9am, went to Later to check it, and read "4 min ago": the return time
+ * had been said once, in a toast, and nowhere since.
+ *
+ * The same answer `returnAt` gives in App.tsx, which is what put the row in
+ * Later in the first place: a schedule, or a reminder you set. A thread added
+ * to Later and never started has neither, and the row already says "not
+ * started" beside its name.
+ */
+export function backWords(i: Parameters<typeof hiddenUntil>[0] & { runAt?: number }, now = Date.now()): string {
+  const at = Math.max(hiddenUntil(i), i.runAt ?? 0);
+  return at > 0 ? dayAndTime(at, now) : '';
+}
+
+/**
+ * The rows in the order the Display menu asked for.
+ *
+ * PRIORITY USED TO MEAN "LEAVE THEM ALONE", on the grounds that the list
+ * arrived in the app's own ranking. That ranking is `byRunningOrder(score)` in
+ * App.tsx, which throws away a level an agent wrote, so a board was reported
+ * running Medium, Low, High, Medium under that heading. It sorts here now, by
+ * `projectOrder` (your running order of projects) and then the level each row
+ * shows.
+ *
+ * The two rows the app makes itself stay at the top of either sort. They belong
+ * to no project (`product` is empty, trouble-row.ts and update-row.ts) because
+ * they are about every project at once, so ranking them against one project's
+ * work would put them somewhere meaningless. `keeps` exempts them for the same
+ * reason.
+ */
+export function sorted<T extends Ranked & { product?: string }>(rows: T[], d: Display, tab?: string, projectOrder: string[] = [], direct?: ReadonlySet<string>): T[] {
+  const by = order(d, tab, projectOrder, direct);
+  const mine = rows.filter((r) => r.product !== '');
+  if (mine.length === rows.length) return rows.slice().sort(by);
+  return [...rows.filter((r) => r.product === ''), ...mine.sort(by)];
+}
+
+/** The same order, for the board's cards, which carry a level and a project
+ *  slug. A card of yours is timed by its thread, so Done reads when it finished. */
+const timed = (e: BoardEntry): Ranked => ({ ...e, product: e.projectSlug, ...(e.item ? { status: e.item.status, wrote: e.item.wrote, createdAt: e.item.createdAt, start: e.item.start, place: e.item.place, pinned: e.item.pinned, placedAt: e.item.placedAt } : {}) });
+export function sortedEntries(entries: BoardEntry[], d: Display, column?: string, projectOrder: string[] = [], direct?: ReadonlySet<string>): BoardEntry[] {
+  const by = order(d, column, projectOrder, direct);
+  return entries.slice().sort((a, b) => by(timed(a), timed(b)));
+}
+
+/** A card's score under Sort by Priority, the number a drop on the board works from. */
+export const entryScore = (e: BoardEntry, projectOrder: string[] = [], direct?: ReadonlySet<string>) => rankScore(timed(e), projectOrder, direct);
+
+/**
+ * A fresh snapshot, wearing the places just dropped that it does not carry
+ * yet (w-6e5b532a95). `unsaved` is the app's own record of them and is pruned
+ * here: a place the snapshot already carries, a thread no longer in it, or a
+ * place older than PLACE_WAIT, is no longer waited for. The last is so that a
+ * place the main process has since cleared (a level picked straight after)
+ * cannot be forced back on forever. Untouched rows are handed back as they came.
+ */
+export const PLACE_WAIT = 15_000;
+export type Unsaved = Record<string, { place: number; at: number }>;
+export function overlayPlaces<T extends { id: string; place?: number }>(items: T[], unsaved: Unsaved, now = Date.now()): T[] {
+  const ids = Object.keys(unsaved);
+  if (!ids.length) return items;
+  const byId = new Map(items.map((i) => [i.id, i]));
+  for (const id of ids) {
+    const it = byId.get(id);
+    if (!it || it.place === unsaved[id].place || now - unsaved[id].at > PLACE_WAIT) delete unsaved[id];
+  }
+  return items.map((i) => (i.id in unsaved ? { ...i, place: unsaved[i.id].place } : i));
+}
+
+/** The same wait for a pin just set or cleared (w-20323283e6). */
+export type UnsavedPins = Record<string, { pinned: boolean; at: number }>;
+export function overlayPins<T extends { id: string; pinned?: boolean }>(items: T[], unsaved: UnsavedPins, now = Date.now()): T[] {
+  const ids = Object.keys(unsaved);
+  if (!ids.length) return items;
+  const byId = new Map(items.map((i) => [i.id, i]));
+  for (const id of ids) {
+    const it = byId.get(id);
+    if (!it || !!it.pinned === unsaved[id].pinned || now - unsaved[id].at > PLACE_WAIT) delete unsaved[id];
+  }
+  return items.map((i) => (i.id in unsaved ? { ...i, pinned: unsaved[i.id].pinned } : i));
+}
+
+/**
+ * The places a drop writes (w-6e5b532a95), for rows as drawn: `id` let go in
+ * front of `beforeId`, or at the end for null. The list and every board column
+ * both come through here, so a drag means the same thing in either view.
+ */
+export function placesForDrop(rows: { id: string; score: number }[], id: string, beforeId: string | null): Record<string, number> | null {
+  const from = rows.findIndex((r) => r.id === id);
+  const at = beforeId ? rows.findIndex((r) => r.id === beforeId) : -1;
+  return dropPlaces(rows, from, at < 0 ? rows.length : at);
+}
+
+/**
+ * The same drop, with the line between the pinned threads and the rest
+ * (w-20323283e6). A row let go among the pinned ones is pinned, and one let go
+ * among the rest is unpinned, so dragging is a way to pin as well as to order.
+ * The gap ON the line, under the last pinned row and over the first of the
+ * rest, belongs to whichever side the row came from: dragging a pinned row to
+ * the foot of its group must not unpin it. `pin` is null when it stays as it was.
+ *
+ * THE PLACE IS WORKED OUT AMONG THE GROUP IT LANDS IN, never across the line
+ * (w-844ae75078, 2026-10-13: "Suddenly I can't seem to drag threads"). The
+ * pins are drawn above the rest whatever they score, so at the line the two
+ * neighbours' scores can be upside down, and a place between them put a thread
+ * dragged to the top of the rest back at the bottom, and a pin dragged to the
+ * foot of the pins back at the top.
+ */
+export function dropWithPins(rows: { id: string; score: number; pinned?: boolean }[], id: string, beforeId: string | null): { places: Record<string, number> | null; pin: boolean | null } {
+  const moved = rows.find((r) => r.id === id);
+  if (!moved || !placesForDrop(rows, id, beforeId)) return { places: null, pin: null };
+  const rest = rows.filter((r) => r.id !== id);
+  const at = beforeId ? rest.findIndex((r) => r.id === beforeId) : -1;
+  const below = at < 0 ? undefined : rest[at];
+  const above = at < 0 ? rest[rest.length - 1] : rest[at - 1];
+  const onTheLine = !!above?.pinned && !!below && !below.pinned;
+  const lands = onTheLine ? !!moved.pinned : !!(below ?? above ?? moved).pinned;
+  // Let go on the line among the pins is the foot of the pins.
+  const group = rows.filter((r) => r.id === id || !!r.pinned === lands);
+  const before = below && !!below.pinned === lands ? below.id : null;
+  return { places: placesForDrop(group, id, before), pin: lands === !!moved.pinned ? null : lands };
+}
+
+/* ------------------------------------------------------- the tabs and Tab */
+
+export type TabName = 'inbox' | 'progress' | 'snoozed' | 'done';
+
+/**
+ * WHERE A PRESS OF TAB LANDS: on the threads page, Tab cycles the states.
+ *
+ * `order` is handed in rather than written down here, so there is one list of
+ * tabs and it is the one the bar is drawing (INBOX_TABS in Pages.tsx). A second
+ * copy written out in the key handler is the fault this repo has already had:
+ * a Scheduled tab appeared on screen and three presses of Tab landed on a stop
+ * with no tab under it.
+ *
+ * It wraps at both ends, and a view the bar is not drawing lands on the first
+ * tab rather than nowhere.
+ */
+export function nextTab<T extends string>(order: readonly T[], current: string, back = false): T | 'inbox' {
+  if (!order.length) return 'inbox';
+  const at = order.indexOf(current as T);
+  if (at < 0) return order[0];
+  return order[(at + (back ? -1 : 1) + order.length) % order.length];
+}
+
+/**
+ * WHAT A TAB THE FILTERS HAVE EMPTIED SAYS INSTEAD OF "NOTHING NEEDS YOU".
+ *
+ * Her report with a screenshot: "It says Nothing needs you, but that's not
+ * correct because it literally says needs you 13... if you're accidentally on a
+ * filter, you can think there's no work for you when there's actually a ton."
+ *
+ * IT IS TWO SENTENCES, NOT ONE (her second note, 2026-10-01). The first cut of
+ * this put the whole of it in the heading: "Your filters hide all 37 threads
+ * that need you", 18 point, as the only thing on the page. She read it as
+ * telling her off. "It's also nice to be finished with the inbox tasks in your
+ * filter. This doesn't really give us a feeling of any reward... This feels
+ * almost like a punishment in terms of the harsh text."
+ *
+ * She is right, and the reason is that one screen covers two moments. You left
+ * a filter on by accident, or you just finished everything in it, and from the
+ * app's side those look identical. So the heading says the half that is true of
+ * both and is good news in either, in the same shape as "Nothing needs you"
+ * next door, and the number moves into a quiet line under it where it informs
+ * rather than accuses.
+ */
+export function filteredEmptyWords(view: TabName | string, hidden: number): { head: string; line: string } {
+  const head = {
+    progress: 'Nothing in your filter is running',
+    snoozed: 'Nothing in your filter is in Later',
+    done: 'Nothing in your filter is closed',
+  }[view as string] ?? 'Nothing in your filter needs you';
+  const line = hidden === 1
+    ? 'One more thread is behind your filters.'
+    : `${hidden} more threads are behind your filters.`;
+  return { head, line };
+}
+
+/**
+ * THE ONE LINE AN EMPTY TAB CARRIES.
+ *
+ * `starting` is a send whose row has not landed yet, and it only changes In
+ * progress: Later and Done say nothing about a task on its way to them. Here
+ * rather than in the component so a test can read the words.
+ *
+ * `waiting` is what Needs you holds, because "Nothing is running." alone was
+ * read as the first task having vanished, the tab beside it holding the thread
+ * that had just finished (F-142).
+ */
+export function emptyTabWords(view: View | string, starting = false, waiting = 0): string {
+  if (view === 'progress') {
+    if (starting) return 'Starting your task…';
+    if (!waiting) return 'Nothing is running.';
+    return `Nothing is running. ${waiting === 1 ? 'One thread waits' : `${waiting} threads wait`} in Needs you.`;
+  }
+  // A finished thread waits in Needs you until its owner closes it, which a
+  // persona read as the app losing it.
+  return {
+    snoozed: 'Nothing is waiting for later. "Add it to Later" on a new thread writes one down without starting it.',
+    done: 'Nothing closed yet. A finished thread waits in Needs you until you close it.',
+  }[view as string] ?? 'Nothing here.';
+}
+
+/**
+ * THE PROJECTS THE DISPLAY MENU OFFERS, MOST RECENTLY USED FIRST.
+ *
+ * A store with about forty projects drew 37 chips in nine rows, taller than the
+ * rest of the menu put together. So eight, ranked by the newest thread in each,
+ * and the rest behind one button.
+ *
+ * A PICKED PROJECT IS NEVER IN `rest`. A chip that is on and out of sight is
+ * the same silent filter the honest empty state exists to stop.
+ */
+export function projectChoices(
+  products: Product[],
+  items: Pick<WorkItem, 'product' | 'updatedAt' | 'agent'>[],
+  { picked = [], limit = 8 }: { picked?: string[]; limit?: number } = {},
+): { shown: Product[]; rest: Product[] } {
+  const last = new Map<string, number>();
+  for (const i of items) {
+    if (i.agent) continue;
+    const was = last.get(i.product) ?? 0;
+    if (i.updatedAt > was) last.set(i.product, i.updatedAt);
+  }
+  const ranked = products
+    .filter((p) => !isDirect(p) && !(p as { practice?: boolean }).practice)
+    .sort((a, b) => (last.get(b.slug) ?? 0) - (last.get(a.slug) ?? 0) || a.name.localeCompare(b.name));
+  const on = ranked.filter((p) => picked.includes(p.slug));
+  const off = ranked.filter((p) => !picked.includes(p.slug));
+  const ordered = [...on, ...off];
+  const keep = Math.max(limit, on.length);
+  return { shown: ordered.slice(0, keep), rest: ordered.slice(keep) };
+}
+
+/** "Updated", in plain words: "just now", "6 min ago", "4 hours ago", "Yesterday", "Sep 28". */
+export function updatedWords(ts: number, now = Date.now()): string {
+  const min = Math.max(0, Math.floor((now - ts) / 60_000));
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const hours = Math.floor(min / 60);
+  if (ts >= startOfDay(now)) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  if (ts >= startOfDay(now) - 86_400_000) return 'Yesterday';
+  return localDate(ts, { month: 'short', day: 'numeric' });
+}
+
+/** A product that is a message record between two people, which no project list shows. */
+export const isDirect = (p: Product | undefined | null) => !!(p as { team?: { direct?: boolean } } | undefined)?.team?.direct;
+
+/** The conversation projects among these, which Sort by Priority ranks with
+ *  your top project (`byPriority`, w-2e8aa16f0f). */
+export const conversationSlugs = (products: readonly Product[] = []): ReadonlySet<string> =>
+  new Set(products.filter(isDirect).map((p) => p.slug));
+
+/**
+ * WHO AN OPEN CONVERSATION WOULD HAND TO NEW THREAD, in the shape the card's
+ * `initial` takes: the first person in To, everyone else beside them.
+ *
+ * Everyone in the record but you, because you are in every conversation you
+ * can see and a To field that named you would be asking you to message
+ * yourself. The person who STARTED the record counts the same as the rest:
+ * they are its `sharedBy` rather than one of its `people`, which is the one
+ * place a conversation's membership is written in two fields.
+ *
+ * Null on anything that is not a conversation, which is what keeps the Add
+ * people control off every other page, and null where the only person in it
+ * is you, because there is nothing there to add to.
+ *
+ * AND NULL WHEN THE COMPANY HOLDS NOBODY WHO IS NOT ALREADY HERE (2026-10-01).
+ * The Add people button shows only when there is someone left in the company
+ * to add; otherwise it is cleaner not to show it at all. A two person company,
+ * or a group that is already everyone,
+ * has nothing the control could do: it would open a card holding exactly the
+ * people on screen. Somebody who is in the conversation and has since left the
+ * company is not room either, which is why this counts the company against
+ * this conversation rather than counting heads on both sides.
+ */
+export function peopleInConversation(
+  product: Product | undefined | null,
+  me: string | null,
+  company: ReadonlyArray<{ id: string }> = [],
+): { to: string; also: string[] } | null {
+  if (!isDirect(product) || !me) return null;
+  const t = product!.team!;
+  const here = new Set([...(t.people ?? []), ...(t.sharedBy ? [t.sharedBy] : [])]);
+  const ids = [...here].filter((p) => p && p !== me);
+  if (!ids.length) return null;
+  if (!company.some((p) => p.id !== me && !here.has(p.id))) return null;
+  return { to: ids[0], also: ids.slice(1) };
+}
+
+/** Who the small menu on an agent thread offers. */
+export function peopleToAdd<P extends { id: string }>({ item, me, company }: {
+  item: { visibleTo?: string[] };
+  me: string | null;
+  company: readonly P[];
+}): P[] {
+  if (!me) return [];
+  const on = new Set(item.visibleTo ?? []);
+  return company.filter((p) => p.id !== me && !on.has(p.id));
+}
+
+/** What an agent thread saves when someone is added. One the team sees stays seen by the team. */
+export function addPeopleToAgentThread(item: { visibility?: string; visibleTo?: string[] }, person: string): { visibility: 'team' | 'people'; visibleTo: string[] } {
+  return { visibility: item.visibility === 'team' ? 'team' : 'people', visibleTo: [...new Set([...(item.visibleTo ?? []), person])] };
+}
+
+/** Add people on the thread on screen: a conversation opens New thread and is
+ *  never written to; an agent thread takes the person it was given. */
+export function whatAddPeopleDoes({ product, item, person, me, company }: {
+  product: Product | undefined | null;
+  item: { visibility?: string; visibleTo?: string[] };
+  person?: string;
+  me: string | null;
+  company: ReadonlyArray<{ id: string }>;
+}): { opens: { to: string; also: string[] } } | { edits: { visibility: 'team' | 'people'; visibleTo: string[] } } | null {
+  if (isDirect(product)) {
+    const who = peopleInConversation(product, me, company);
+    return who ? { opens: who } : null;
+  }
+  return person ? { edits: addPeopleToAgentThread(item, person) } : null;
+}
+
+/**
+ * WHO SEES A ROW, AS THE INBOX SAYS IT (2026-10-01). Her threads from before
+ * she joined stay hers unless she shares them, so the inbox has to say which
+ * ones the team can see and let her change it. 'team' or 'private' by the
+ * Team page's own rule (shared/thread-cards.mts shownToTeam), or null where
+ * the question does not arise: nobody signed in, a message between people, an
+ * agent's own row, or a teammate's thread, which is theirs to share.
+ */
+// 'people' SINCE w-41ff964775: shared, but with the people named on it rather
+// than the team. The row says which quietly (a count beside the mark) and the
+// summary panel is where the list is changed.
+export function rowSharing(
+  item: Pick<WorkItem, 'visibility' | 'visibleTo' | 'createdAt' | 'createdBy' | 'agent'>,
+  product: Product | undefined | null,
+  team: { me: string | null; since?: number | null } | null,
+): Seen | null {
+  if (!team || !product || isDirect(product) || item.agent) return null;
+  if (item.createdBy && item.createdBy !== team.me) return null;
+  if (!shownToTeam(item, team.since ?? null, product)) return 'private';
+  return shownToPeople(item, product).length ? 'people' : 'team';
+}
+
+/**
+ * WHAT A MESSAGE ROW SAYS, so it reads plainly as a message and shows who it
+ * is with. Who else is in the
+ * conversation, whether the newest message is mine, and its first line. Null
+ * on anything that is not a conversation.
+ */
+export function messageLine(item: WorkItem, product: Product | undefined | null, me: string | null, nameOf: (id: string) => string = () => 'Someone'): { people: string[]; fromMe: boolean; text: string } | null {
+  if (!isDirect(product) || isTaskRow(item)) return null;
+  const team = (product as { team?: { people?: string[]; sharedBy?: string | null } }).team;
+  const everyone = [...(team?.people ?? []), ...(team?.sharedBy ? [team.sharedBy] : []), ...(item.people ?? [])];
+  let people = [...new Set(everyone)].filter((p) => p && p !== me);
+  if (!people.length && item.createdBy && item.createdBy !== me) people = [item.createdBy];
+  // The row's face is the first name's, so whoever wrote the words it shows
+  // goes first. The record's order puts a group's starter last.
+  const from = (by: string | null | undefined) =>
+    by && by !== me && people.includes(by) ? [by, ...people.filter((p) => p !== by)] : people;
+  // A CHAT WITH THREADS SAYS WHAT IS WAITING ON YOU (w-920461cbe6), and so
+  // changes as the chat does. One clause, picked 2026-10-05 in her words: "I
+  // prefer Maya in your thread, Sam, your call." So a thread with replies to
+  // you says who wrote the newest one and what they said, and wins over the
+  // chat, because a thread is the easy thing to miss and the chat is in front
+  // of you the moment you open it. With no thread waiting, the chat's newest
+  // line. Never a thread you are not in, and never two things joined by a dot
+  // (the shipped "· 2 new in the chat" was the line she called messy).
+  const waits = whatWaits(item, me);
+  if (waits && item.talk) {
+    const line = (text: string) => firstRealLine(plainWords(text));
+    const newest = waits.threads[0];
+    if (newest) {
+      const where = newest.mine ? 'your thread' : 'a thread';
+      return { people: from(newest.lastBy), fromMe: false, text: `${nameOf(newest.lastBy)} in ${where}: ${line(newest.last)}` };
+    }
+    const said = item.talk.chat[item.talk.chat.length - 1];
+    if (said) return { people: from(said.by), ...signedLine(said, line(said.text), me, nameOf) };
+  }
+  const answered = !!item.answer && item.answer !== '(withdrawn)';
+  // An agent mentioned in the message reads as its words, not its link (w-7b9cb8636a).
+  //
+  // AND THE LINE TAKEN IS THE LATEST REAL ONE (w-560647d4db). This took the
+  // message's first line, full stop, and the first real conversation between
+  // two teammates had a message opening on "Additional:" with the findings
+  // under it — so the row said a word that is not news and not even a subject.
+  // `firstRealLine` steps over a bare label and takes the line under it; it
+  // runs AFTER the mention links are flattened, so a message opening on a
+  // mention is judged on the words somebody actually reads.
+  const text = firstRealLine(plainWords(String((answered ? item.answer : item.body) || item.title || '')));
+  const wrote = answered ? item.wrote?.answer : item.wrote?.body;
+  const by = wrote?.by ?? item.createdBy ?? null;
+  return { people: from(by), ...signedLine({ by, voice: wrote?.voice, forAgent: wrote?.forAgent }, text, me, nameOf) };
+}
+
+// An agent's message is its own, on its owner's list too: "You:" is only for what
+// a person typed.
+function signedLine(said: { by: string | null; voice?: AgentVoice; forAgent?: AgentVoice }, words: string, me: string | null, nameOf: (id: string) => string): { fromMe: boolean; text: string } {
+  const mine = !!me && said.by === me;
+  if (said.voice) return { fromMe: false, text: `${voiceName(said.voice, mine || !said.by ? '' : nameOf(said.by), { mine })}: ${words}` };
+  return { fromMe: mine, text: said.forAgent ? `For ${said.forAgent.name}: ${words}` : words };
+}
+
+/** A waiting row on a team says on whom; with nobody signed in there is only you. */
+export function waitingWord(item: Pick<WorkItem, 'assignee' | 'people' | 'wrote' | 'createdBy'>, product: Product | undefined | null, me: string | null, nameOf: (id: string) => string = () => 'Someone', { inNeedsYou = false } = {}): string {
+  if (!me) return 'Waiting';
+  // Needs you is on you, whoever spoke last: a comment on a file is not a message.
+  if (inNeedsYou) return 'Waiting on you';
+  const on = (id: string | null | undefined) => (id && id !== me ? `Waiting on ${nameOf(id)}` : 'Waiting on you');
+  if (isDirect(product)) {
+    if (!iSpokeLast(item, product, me)) return on(me);
+    const t = (product as { team?: { people?: string[]; sharedBy?: string | null } }).team;
+    const others = [...new Set([...(item.people ?? []), ...(t?.people ?? []), t?.sharedBy])].filter((p): p is string => !!p && p !== me);
+    return others.length ? `Waiting on ${others.map(nameOf).join(', ')}` : on(me);
+  }
+  return heldByAPerson(item) ? on(item.assignee) : on(me);
+}
+
+/**
+ * A MESSAGE'S PRIORITY, once anyone has set one. A message is made with 0 by
+ * the system, which would read as Low on every row; the sorter
+ * (main/message-priority.mts) or the person setting it is what makes it real.
+ */
+export function messagePriority(item: WorkItem): number | null {
+  const set = item.wrote?.priority;
+  return set && set.source !== 'system' ? item.priority ?? null : null;
+}
+
+// The words a row's Status cell would only repeat from the tab it is under.
+const TAB_SAYS: Partial<Record<string, readonly string[]>> = {
+  inbox: ['Waiting on you', 'Waiting'],
+  progress: ['In progress'],
+};
+export const repeatsTheTab = (word: string, tab?: string): boolean => !!tab && !!TAB_SAYS[tab]?.includes(word);
+
+/**
+ * The Status word a row draws under a tab, or null for none. In Needs you an
+ * agent thread waiting on you says Answered rather than nothing, so the row says
+ * why it is there; a teammate waiting on you keeps their words.
+ */
+export function cellUnderTab(word: string, tab: string | undefined, { fromPeople, asks = false }: { fromPeople: boolean; asks?: boolean }): string | null {
+  if (tab === 'inbox' && fromPeople) return word;
+  if (!repeatsTheTab(word, tab)) return word;
+  if (tab !== 'inbox') return null;
+  return asks ? 'Waiting on you' : 'Answered';
+}
+
+/** The agent's newest word is a question with no options to pick, so only your words answer it. */
+export function asksForYourWords(item: Pick<WorkItem, 'result' | 'note' | 'body'> & { wrote?: Record<string, { ts: number } | undefined> }): boolean {
+  if (itemOptions(item).length) return false;
+  const said = (item.wrote?.note?.ts ?? 0) > (item.wrote?.result?.ts ?? 0) ? item.note : item.result;
+  return asksSomething(said);
+}
+
+/** The level a row names: none at Medium, which is what an unset thread runs at. */
+export function rowPriorityId(priority: number | null): PriorityId | null {
+  if (priority === null) return null;
+  const id = priorityIdOf(priority);
+  return id === 'medium' ? null : id;
+}
+
+/** What a teammate's card puts where a project goes: nothing for a task, whose card names its kind there. */
+export const cardPlace = (card: Pick<ThreadCard, 'project' | 'task'>): string => (card.task || card.project === 'Task' ? '' : card.project ?? '');
+
+// ------------------------------------------------------------------ the board
+
+export interface BoardEntry {
+  key: string;
+  ownerId: string | null;
+  state: ThreadStateWord;
+  title: string | null;
+  project: string | null;
+  projectSlug: string | null;
+  priority: number | null;
+  updatedAt: number;
+  item: WorkItem | null;
+  card: ThreadCard | null;
+  /** An agent is on it right now (your own threads only; a teammate's card does not say). */
+  live?: boolean;
+  /** A conversation with people, on your own Inbox board: who, and whether you spoke last. */
+  message?: { people: string[]; fromMe: boolean };
+  /** A task given to a person, on your own board: what its row says. */
+  task?: { word: string; unread: boolean; other: string | null; held?: boolean };
+}
+
+/**
+ * Every thread worth showing the team, as board entries: yours from this Mac
+ * (so they open), your teammates' from their cards (so they show their
+ * summary), done ones only from today. Messages between two people never.
+ */
+// `stateOf` IS THE TABS' OWN RULE, handed in by App.tsx (2026-10-01: the board
+// said Running for work the tab did not, and Team and Inbox should never
+// disagree). Your own threads sit in
+// the column whose tab lists them; `threadState` is only the fallback for a row
+// no tab lists. `live` is the set an agent is on right now.
+export function teamEntries({ items, products, cards, me, now, since = null, stateOf, live, allMine = false, nameOf }: {
+  items: WorkItem[]; products: Product[]; cards: ThreadCard[]; me: string | null; now: number; since?: number | null;
+  /** A teammate's first name, for a conversation's line (w-920461cbe6). */
+  nameOf?: (id: string) => string;
+  stateOf?: (item: WorkItem) => ThreadStateWord | null; live?: Set<string>;
+  /** Your own page (w-05ff3d1438): every thread of yours, the private ones
+   *  included, and your conversations with people (w-2ad23ca814). */
+  allMine?: boolean;
+}): BoardEntry[] {
+  const bySlug = new Map(products.map((p) => [p.slug, p]));
+  const today = startOfDay(now);
+  const out: BoardEntry[] = [];
+  for (const item of items) {
+    if (item.agent) continue;
+    const product = bySlug.get(item.product);
+    if (!product) continue;
+    // A MESSAGE IS ON YOUR OWN BOARD, in the column the Inbox tabs give it
+    // (w-2ad23ca814: a message from a teammate was on no column at all). The
+    // Team page's board stays about work, so it never draws one.
+    if (isDirect(product)) {
+      const task = allMine ? taskWords(item, product, me, nameOf ?? (() => 'Someone'), stateOf?.(item) === 'waiting', { items, cards }) : null;
+      if (task) {
+        const state = stateOf?.(item);
+        if (!state || (state === 'done' && !(item.updatedAt >= today))) continue;
+        out.push({
+          key: `mine/${item.product}/${item.id}`, ownerId: item.assignee && item.assignee !== 'agent' ? item.assignee : me, state, title: shownTitle(item), project: null,
+          projectSlug: product.slug, priority: shownPriority(item), updatedAt: item.updatedAt, item, card: null, task,
+        });
+        continue;
+      }
+      const said = allMine ? messageLine(item, product, me, nameOf) : null;
+      const state = said && stateOf?.(item);
+      // A closed conversation is not finished work: replying is what closes it.
+      if (!said || !state || state === 'done') continue;
+      out.push({
+        key: `mine/${item.product}/${item.id}`, ownerId: me, state, title: said.text, project: null,
+        projectSlug: product.slug, priority: messagePriority(item), updatedAt: item.updatedAt, item, card: null,
+        message: { people: said.people, fromMe: said.fromMe },
+      });
+      continue;
+    }
+    // A teammate's row that synced into a shared project is theirs, and their
+    // card already stands for it; drawn here it would be on the board twice,
+    // once under your name.
+    if (me && item.createdBy && item.createdBy !== me) continue;
+    // Your threads from before you joined are not on the team's board, any
+    // more than they are on anyone else's (shared/thread-cards.mts). One you
+    // made private stays, with its lock, so you can see it is hidden.
+    // ON YOUR OWN PAGE EVERY ONE OF YOURS STAYS (w-05ff3d1438): leaving them
+    // out is how threads once went missing from the board.
+    if (!allMine && visibilityOf(item, product) !== 'private' && !shownToTeam(item, since, product)) continue;
+    const state = stateOf?.(item) ?? threadState(item, now);
+    if (state === 'done' && !(item.updatedAt >= today)) continue;
+    out.push({
+      key: `mine/${item.product}/${item.id}`, ownerId: me, state, title: shownTitle(item),
+      project: isCause(item) && item.status !== 'done' ? causeWhere(item, waitingOn(item, items), (slug) => bySlug.get(slug)?.name ?? slug) : product.name,
+      projectSlug: product.slug, priority: shownPriority(item), updatedAt: item.updatedAt, item, card: null,
+      live: !!live?.has(item.id),
+    });
+  }
+  // A teammate's card names its project and not its slug. A shared project
+  // carries the same name on every Mac, so the name finds your copy of it, and
+  // with it the project's place in your order.
+  const slugOfName = new Map(products.map((p) => [p.name, p.slug]));
+  for (const card of cards) {
+    if (card.personId === me) continue;
+    // A PRIVATE THREAD IS NOT ON THE BOARD AT ALL (decided 2026-10-01): a lock
+    // on the board draws attention to it. Cards are no longer published for
+    // them; one left over from before is skipped here.
+    if (!card.visible) continue;
+    if (card.state === 'done' && !(card.updatedAt >= today)) continue;
+    out.push({
+      key: `card/${card.personId}/${card.threadId}`, ownerId: card.personId, state: card.state, title: card.visible ? card.title : null,
+      project: card.visible ? cardPlace(card) || null : null, projectSlug: (card.visible && slugOfName.get(card.project ?? '')) || null, priority: card.priority, updatedAt: card.updatedAt, item: null, card,
+    });
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+// LATER, AS THE TAB SAYS (w-23fc91bff5). The tab was renamed from Scheduled on
+// w-afb66e6661 and this column kept the old word, one screen away from it.
+export const BOARD_COLUMNS: { state: ThreadStateWord; label: string }[] = [
+  { state: 'waiting', label: 'Waiting' },
+  { state: 'running', label: 'In progress' },
+  { state: 'scheduled', label: 'Later' },
+  { state: 'done', label: 'Done today' },
+];
+
+/* ------------------------------------------- the columns, in your order */
+// THE COLUMNS ARE YOURS TO ORDER (w-23fc91bff5): "make the columns in the board
+// draggable so you can move them around to reorder your board as desired".
+// One order for the board, remembered on this Mac, and handed to
+// `boardColumns` so what is drawn and what J, K and the arrows walk agree.
+export const DEFAULT_COLUMN_ORDER: ThreadStateWord[] = BOARD_COLUMNS.map((c) => c.state);
+const COLUMN_KEY = 'threads.board.columns';
+
+/** The saved order, made whole: a column it does not know is dropped and a
+ *  column it is missing goes back at the end, so no column is ever lost. */
+export function readColumnOrder(store: Pick<Storage, 'getItem'> | null = typeof localStorage === 'undefined' ? null : localStorage): ThreadStateWord[] {
+  try {
+    const saved = JSON.parse(store?.getItem(COLUMN_KEY) ?? 'null');
+    if (!Array.isArray(saved)) return DEFAULT_COLUMN_ORDER;
+    const known = [...new Set(saved.filter((s): s is ThreadStateWord => DEFAULT_COLUMN_ORDER.includes(s)))];
+    return [...known, ...DEFAULT_COLUMN_ORDER.filter((s) => !known.includes(s))];
+  } catch {
+    return DEFAULT_COLUMN_ORDER;
+  }
+}
+
+export function writeColumnOrder(order: ThreadStateWord[], store: Pick<Storage, 'setItem'> | null = typeof localStorage === 'undefined' ? null : localStorage) {
+  try { store?.setItem(COLUMN_KEY, JSON.stringify(order)); } catch { /* private mode */ }
+}
+
+/**
+ * THE SLOT A CARRIED COLUMN IS OVER, from numbers alone: the slots' centres,
+ * measured once when the drag starts, and where the carried column's middle
+ * is now. The nearest centre wins, so it changes exactly halfway between two.
+ * It used to be read off the column the browser said was under the pointer,
+ * and a column sliding out of the way is still drawn there for a few frames,
+ * so a swap undid itself every frame: "swapping back and forth at about 40
+ * frames per second" (2026-10-02).
+ */
+export function slotUnder(centres: number[], x: number): number {
+  let best = -1;
+  for (let i = 0; i < centres.length; i++) if (best < 0 || Math.abs(centres[i] - x) < Math.abs(centres[best] - x)) best = i;
+  return best;
+}
+
+/** The order with `state` moved to place `index`, the rest closing up. */
+export function columnTo(order: ThreadStateWord[], state: string, index: number): ThreadStateWord[] {
+  if (index < 0 || index >= order.length || !order.includes(state as ThreadStateWord)) return order.slice();
+  const next = order.filter((s) => s !== state);
+  next.splice(index, 0, state as ThreadStateWord);
+  return next;
+}
+
+/** A column dropped on another takes that column's place: moving right it
+ *  lands after it, moving left before it, which is where the eye put it. */
+export function moveColumn(order: ThreadStateWord[], from: string, to: string): ThreadStateWord[] {
+  const a = order.indexOf(from as ThreadStateWord);
+  const b = order.indexOf(to as ThreadStateWord);
+  if (a < 0 || b < 0 || a === b) return order.slice();
+  const next = order.filter((s) => s !== from);
+  next.splice(b, 0, from as ThreadStateWord);
+  return next;
+}
+
+/** The Team's own filters: one person (or everyone) and one project (or all). */
+export function teamKeeps(e: BoardEntry, { person, projectName }: { person: string | null; projectName: string | null }, d: Display, now: number): boolean {
+  if (person && e.ownerId !== person) return false;
+  if (projectName && e.project !== projectName) return false;
+  if (d.priorities.length && !d.priorities.includes(priorityIdOf(e.priority))) return false;
+  const at = e.item ? sentAt(e.item) : e.updatedAt;
+  if (d.updated === 'today' && !(at >= startOfDay(now))) return false;
+  if (d.updated === 'week' && !(at >= now - 7 * 86_400_000)) return false;
+  return true;
+}
+
+/**
+ * THE BOARD, COLUMN BY COLUMN, IN THE ORDER IT IS DRAWN. InboxBoard draws
+ * exactly this, and App.tsx walks it with J and K (`boardWalk`), so the keys go
+ * where the eye goes: down a column, then on to the top of the next. They used
+ * to walk the current tab's list, which a card from another column is not in,
+ * so J stopped with the board still full (2026-10-02).
+ */
+export function boardColumns({ items, products, display, now, stateOf, cards = [], picked, me, since = null, live, order = DEFAULT_COLUMN_ORDER, projectOrder = [], nameOf, waitingIsInProgress = false }: {
+  items: WorkItem[]; products: Product[]; display: Display; now: number;
+  nameOf?: (id: string) => string;
+  stateOf?: (item: WorkItem) => ThreadStateWord | null;
+  cards?: ThreadCard[]; picked?: string[]; me: string | null; since?: number | null; live?: Set<string>;
+  /** The columns left to right, as you dragged them (`readColumnOrder`). */
+  order?: ThreadStateWord[];
+  /** Your running order of projects, which Sort by Priority reads first. */
+  projectOrder?: string[];
+  /** The team's board: your own waiting threads count as in progress too, as the team's cards count them. */
+  waitingIsInProgress?: boolean;
+}): { state: ThreadStateWord; label: string; rows: BoardEntry[] }[] {
+  const who = picked ?? (me ? [me] : []);
+  // A teammate's card is shared with you by definition, so it is never private.
+  const seen = (e: BoardEntry): Seen | null => (e.item
+    ? rowSharing(e.item, products.find((p) => p.slug === e.item!.product), me ? { me, since } : null)
+    : 'team');
+  // A board with no Waiting column (Everything else) still shows a teammate's
+  // waiting thread: for you it is in progress, and it was simply dropped.
+  const noWaiting = !order.includes('waiting');
+  const entries = teamEntries({ items: me && !who.includes(me) ? [] : items, products, cards: cards.filter((c) => who.includes(c.personId)), me, now, since, stateOf, live, allMine: true, nameOf })
+    .map((e) => (noWaiting && (e.card || waitingIsInProgress) && e.state === 'waiting' ? { ...e, state: 'running' as const } : e))
+    .filter((e) => !e.item || e.message || (display.projects.length === 0 || display.projects.includes(e.item.product)))
+    .filter((e) => keepsPrivacy(seen(e), display.privacy))
+    .filter((e) => teamKeeps(e, { person: null, projectName: null }, display, now));
+  // EVERY COLUMN TAKES THE DISPLAY'S SORT, not just the list view
+  // (w-5a08121f99). `teamEntries` hands these back newest first. Except Done
+  // today, which runs newest finished first like the Done tab (w-c61f5bf497).
+  return order.flatMap((state) => BOARD_COLUMNS.filter((c) => c.state === state))
+    .map((col) => ({ ...col, rows: sortedEntries(entries.filter((e) => e.state === col.state), display, col.state, projectOrder, conversationSlugs(products)) }));
+}
+
+/** Your threads on the board, in reading order: what `selected` in App.tsx
+ *  counts. J and K walk `boardStops` (walk-rules.ts), which keeps a
+ *  teammate's cards in their places too (w-fb16bcaeba). */
+export function boardWalk(columns: { rows: BoardEntry[] }[]): WorkItem[] {
+  return columns.flatMap((c) => c.rows).flatMap((e) => (e.item ? [e.item] : []));
+}
+
+/**
+ * THE LEFT AND RIGHT ARROWS ON THE BOARD (w-23fc91bff5): from the card the
+ * keyboard is on (`index` in `boardWalk`) to the card level with it in the
+ * nearest column that has a thread of yours in it, or the last card there if
+ * that column is shorter. At either edge it stays put. Returns an index in
+ * `boardWalk`, which is what App.tsx's `selected` counts.
+ */
+export function boardSideways(columns: { rows: BoardEntry[] }[], index: number, dir: 1 | -1): number {
+  const mine = columns.map((c) => c.rows.flatMap((e) => (e.item ? [e.item] : [])));
+  let start = 0;
+  for (let c = 0; c < mine.length; c++) {
+    const row = index - start;
+    if (row >= 0 && row < mine[c].length) {
+      for (let n = c + dir; n >= 0 && n < mine.length; n += dir) {
+        if (!mine[n].length) continue;
+        const before = mine.slice(0, n).reduce((sum, col) => sum + col.length, 0);
+        return before + Math.min(row, mine[n].length - 1);
+      }
+      return index;
+    }
+    start += mine[c].length;
+  }
+  return index;
+}
+
+
+/** YOUR CONVERSATION WITH ONE PERSON: the newest row in the message record of
+ *  exactly you two (the record lists who it was shared with; its maker is
+ *  `sharedBy`). Null before the first message. */
+export function conversationWith(personIds: string | string[], { products, items, me }: { products: Product[]; items: WorkItem[]; me: string | null }): WorkItem | null {
+  // Exactly these people and you: a pair's conversation is not the group's.
+  const want = new Set([...[].concat(personIds as never), ...(me ? [me] : [])] as string[]);
+  const on = (t: NonNullable<Product['team']>) => [...new Set([...t.people, ...(t.sharedBy ? [t.sharedBy] : [])])];
+  const exactly = (t: NonNullable<Product['team']>) => on(t).length === want.size && on(t).every((p) => want.has(p));
+  // The record both Macs settle on: the lowest id (main/team/index.mts, directWith).
+  const record = products
+    .filter((p) => p.team?.direct && exactly(p.team))
+    .sort((a, b) => String(a.team!.projectId).localeCompare(String(b.team!.projectId)))[0];
+  if (!record) return null;
+  return items.filter((i) => i.product === record.slug && !i.agent && !isTaskRow(i) && !isWorkThread(i))
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0] ?? null;
+}
+
+const othersIn = (item: WorkItem, product: Product, me: string | null) => {
+  const t = product.team!;
+  return [...new Set([...(t.people ?? []), ...(t.sharedBy ? [t.sharedBy] : []), ...(item.people ?? [])])].filter((p) => p && p !== me);
+};
+
+/** "with Dev, Maya" beside the name of a thread about work; null where the name already is the people. */
+export function workAudience(item: WorkItem, product: Product | undefined | null, me: string | null, nameOf: (id: string) => string): string | null {
+  if (!isDirect(product) || !isWorkThread(item)) return null;
+  const ids = othersIn(item, product!, me);
+  return ids.length ? `with ${ids.map(nameOf).join(', ')}` : null;
+}
+
+/** Whom a thread was handed to: it is closed, but it did not finish. */
+export function handedTo(item: { status?: string; answer?: string | null }): string | null {
+  return handedOn(item) ? String(item.answer).slice('Given to '.length).replace(/\.$/, '') : null;
+}
+
+export function handedInitials(name: string): string {
+  const words = name.split(/\s+/).filter(Boolean);
+  return (words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? '?').slice(0, 2)).toUpperCase();
+}
+
+/** The task a thread became when it was handed on: its link leads back here, from the one who gave it. */
+export function taskHandedFrom<T extends TeamRow & { id: string; body?: string | null }>(items: readonly T[], threadId: string, me: string | null = null): T | null {
+  return items.find((t) => {
+    if (!isTaskRow(t)) return false;
+    const giver = taskGiver(t);
+    return (!me || giver === me) && handedFrom(t.body, giver)?.id === threadId;
+  }) ?? null;
+}
+
+/** "Dev, Maya": the conversation itself is named for who is in it, unless someone renamed it. */
+export function conversationName(item: WorkItem, product: Product | undefined | null, me: string | null, nameOf: (id: string) => string): string | null {
+  if (!isDirect(product) || isWorkThread(item) || isTaskRow(item) || nameIsAPersons(item)) return null;
+  const ids = othersIn(item, product!, me);
+  return ids.length ? ids.map(nameOf).join(', ') : null;
+}
+
+/** The tab that holds a thread in this state, for opening it from elsewhere. */
+export function tabOfState(state: ThreadStateWord | null): View | null {
+  if (state === 'waiting') return 'inbox';
+  if (state === 'running') return 'progress';
+  if (state === 'scheduled') return 'snoozed';
+  if (state === 'done') return 'done';
+  return null;
+}
+
+/**
+ * THE TAB THE THREAD'S BAR NAMES, AND THE ONE BACK GOES TO (w-474ac45a33).
+ *
+ * The bar named the tab you were standing on, which is where the thread was
+ * when you opened it and not where it is now. A thread filed from the composer
+ * opens under In progress, finishes while you read it, and the bar went on
+ * saying IN PROGRESS over a tab reading "Nothing is running." The thread's own
+ * state is the answer wherever it has one; a thread in no tab keeps the page
+ * you are standing on.
+ */
+export function crumbTab(state: ThreadStateWord | null, standingOn: View): View {
+  return tabOfState(state) ?? standingOn;
+}

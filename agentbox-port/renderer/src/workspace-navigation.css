@@ -1,0 +1,1133 @@
+/* Approved Workspace layout, with shared expanded/collapsed geometry. */
+.app.workspace-layout { --workspace-width: 202px; --workspace-left: calc(44px + var(--workspace-width)); position: relative; padding: 40px 22px 22px var(--workspace-left); }
+.app.workspace-collapsed { --workspace-width: 38px; }
+.workspace-layout::before { content: ''; position: absolute; top: 40px; bottom: 22px; left: var(--workspace-left); right: 22px; border-radius: var(--radius); background: var(--skin-pane, var(--surface)); backdrop-filter: blur(var(--skin-blur, 0px)); box-shadow: inset 0 1px 0 rgba(255,255,255,.40), inset 1px 0 0 rgba(255,255,255,.12), var(--shadow-card); pointer-events: none; }
+:root[data-theme="dark"] .workspace-layout::before { box-shadow: inset 0 1px 0 rgba(255,255,255,.13), inset 1px 0 0 rgba(255,255,255,.05), var(--shadow-card); }
+.workspace-layout > .topbar { position: relative; z-index: 1; padding: 0 20px 0 32px; height: 64px; min-height: 64px; flex: 0 0 64px; border-bottom: 1px solid var(--line); }
+.workspace-title { margin: 0; font-size: 17px; font-weight: 500; letter-spacing: -.015em; }
+.workspace-layout > .body { position: relative; padding: 0; min-height: 0; }
+:root .workspace-layout > .body > .list-pane { background: none; border: 0; box-shadow: none; backdrop-filter: none; border-radius: 0 0 var(--radius) var(--radius); }
+.workspace-navigation { position: absolute; top: 50px; bottom: 22px; left: 22px; width: var(--workspace-width); display: flex; flex-direction: column; z-index: 2; -webkit-app-region: no-drag; }
+.workspace-navigation button { font: inherit; font-size: 13px; color: var(--text-faint); border: 0; background: none; border-radius: var(--radius); cursor: pointer; height: 36px; flex: none; display: flex; align-items: center; padding: 0 10px; gap: 11px; }
+.workspace-navigation svg { width: 18px; height: 18px; flex: none; }
+.workspace-tabs { display: flex; flex-direction: column; gap: 3px; }
+.workspace-tabs.workspace-places { margin-top: 3px; }
+.workspace-navigation .workspace-tab { width: 100%; text-align: left; }
+.workspace-navigation .workspace-tab.active { background: var(--wash); color: var(--text); font-weight: 500; }
+/* Light: a lifted fill and a hairline rather than a grey block (w-22da913d00). */
+:root[data-theme="light"]:not([data-skin]) .workspace-navigation .workspace-tab.active { background: rgba(255, 255, 255, .75); box-shadow: inset 0 0 0 1px var(--line); }
+.workspace-navigation button:hover { background: var(--wash); color: var(--text); }
+.workspace-navigation button:focus-visible:where(:not([data-clicked])) { outline: 2px solid var(--underline); outline-offset: 2px; }
+.workspace-collapsed .workspace-navigation button > span { display: none; }
+.workspace-layout .topbar .tabs.searching { flex: 1; width: auto; }
+@media(max-width:700px) { .app.workspace-layout { --workspace-width: 38px; } .workspace-layout .workspace-navigation button > span { display: none; } }
+
+.workspace-layout::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag; }
+/* Reported after ⌘K's backdrop, so it would put the drag back over the box's outside. */
+.workspace-layout:has(> .palette-backdrop)::after { -webkit-app-region: no-drag; }
+/* NO TRAFFIC LIGHTS on Linux or Windows, so the 40px above is an empty band
+   over the pane. The top inset matches the bottom one. The drag strip is that
+   same height: any taller and it covers the top of the pane and eats the
+   clicks there. preload.cjs sets this on every window but the Mac's. The Mac
+   rules above stay at 40. */
+:root[data-window="flat"] .app.workspace-layout { padding-top: 22px; }
+:root[data-window="flat"] .workspace-layout::before { top: 22px; }
+:root[data-window="flat"] .workspace-navigation { top: 32px; }
+:root[data-window="flat"] .workspace-layout::after { height: 22px; }
+
+/* The task stays inside the same raised foreground as the list. */
+.workspace-layout .focus-pane { position: relative; min-height: 0; }
+.workspace-layout .focus-pane > .back-esc { position: absolute; left: 12px; top: 14px; }
+/* What runs under the reply box dissolves before it, rather than being cut against its edge. */
+.workspace-layout .focus-scroll { background: transparent; }
+.workspace-layout .focus-dock { background: transparent; padding-bottom: 24px; }
+.workspace-layout .focus-dock::before { background: none; }
+.workspace-layout .dock-card { background: var(--wash); border-radius: var(--radius); }
+
+.workspace-layout.workspace-task > .topbar { height: 88px; min-height: 88px; flex-basis: 88px; }
+.workspace-task-header { flex: 1; min-width: 0; -webkit-app-region: no-drag; }
+.workspace-task-header .keep-line { max-width: none; width: 100%; margin: 0; padding: 0; border: 0; }
+.workspace-task-header .keep-line-title { font-size: 17px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.workspace-task-header .byline { margin-top: 6px; }
+
+/* THE TWO THINGS AT THE RIGHT OF A TASK'S BAR SHARE ONE EDGE —, 2026-09-20.
+   MEASURED BEFORE, in the running app at 1440: the control cluster sat at
+   1276..1398 and the byline's figures ended at 1276. Exactly 1276. They touched
+   with no gap at all, one row lower, because the header and the controls are
+   flex siblings and the header's right edge IS where the controls begin. So the
+   figures read as a tail wedged under the buttons rather than as anything lined
+   up with them, and the two also overlapped vertically by 11px. The controls
+   come out of the flex row and go to the top right corner, which is the row the
+   TITLE is on. The header then has the full width, so its byline runs to the
+   bar's own 20px inset and the figures end on the same edge the last icon ends
+   on. Title row and byline row, one right edge, nothing touching. ONLY THE
+   TITLE PAYS FOR THE ICONS, with a padding the width of the cluster and a gap.
+   The byline passes underneath them because they no longer reach down into it.
+   The August choice is untouched by all this: the figures are still at the
+   right-hand end of the byline, plain, which is the one thing approved about
+   them. This is the right-hand end finally being an edge rather than
+   wherever the buttons happened to stop.
+*/
+/* The bar is already `position: relative` where it is declared at the top of
+   this file, so the corner has something to be absolute inside. */
+.workspace-layout.workspace-task > .topbar > .topbar-right {
+  position: absolute; top: 14px; right: 20px;
+}
+/* THE RESERVE FOLLOWS WHAT IS ACTUALLY IN THE CORNER (w-581dbc6cc4,
+   2026-09-27, and again w-e731ca9376, 2026-10-01). What is in it now is the
+   Summary button, a 10 point gap and the square three-dot button: 161 points,
+   measured in the built app at 1440 (1237..1398). 18 of air on top of that is
+   the same 18 it always kept. */
+.workspace-layout.workspace-task .workspace-task-header .keep-line-title { padding-right: 179px; }
+
+/* AND THE TWO ROWS NEED AIR BETWEEN THEM, w-581dbc6cc4, 2026-09-27. The corner
+   marks sat almost on the change figures below them, a few pixels short of
+   enough, and the whole corner looked wrong as a result.
+
+   MEASURED BEFORE THIS, at 2103 by 1183: the corner marks end at
+   y=88 and the figures begin at y=90. Two points. The marks are 34 tall against
+   a 24 point title row, so they hang 6 points below the title's baseline row
+   and land almost on the line underneath.
+
+   WHY IT IS DONE IN TWO RULES. The bar is a fixed 88 and the header is centred
+   inside it, so growing the header alone moves the TITLE up by half of whatever
+   the byline gains, and the title is what the corner marks are aligned to. So
+   the header is pinned to the top of the bar first, by exactly the 18 points of
+   slack it had above it, and only then does the byline drop. The title does not
+   move at all; the byline does.
+
+   The gap comes out at 10, which is the same 10 the marks in that row keep
+   between themselves. The header ends at 117 against the bar's 128, so nothing
+   is tight at the bottom either. */
+/* MARGIN AND NOT PADDING. The back chevron is absolute against this element
+   with `top: 0`, so padding leaves it behind at the bar's top edge while the
+   title moves down: measured at y=40 against a title at 58, 18 points adrift.
+   A margin moves the whole box, and the chevron keeps the title's line. */
+.workspace-layout.workspace-task .workspace-task-header { align-self: flex-start; margin-top: 18px; }
+/* THE FIGURES NO LONGER CLOSE THIS LINE (w-e731ca9376, 2026-10-01). They
+   are the detail on the code row of the thread's menu, so the 8 point drop
+   that gave them air under the corner marks (w-299ee43d2e) went with them. The
+   words under her title keep their 7 from `.keep-line > .focus-meta`. */
+/* Message embeds stay passive; the HTML file reader accepts input. */
+.workspace-layout .focus-pane iframe { pointer-events: none; }
+.workspace-layout .focus-pane .one-frame { pointer-events: auto; }
+
+/* THE INBOX COUNT IS DRAWN IN THE TAB'S OWN TYPE (w-5f02e7b525, option C2:
+   the number is the label's type exactly).
+
+   It was an 11px badge in a --wash capsule, and full ink when it first moved
+   onto Inbox. On a deselected tab it should match the deselected label's type.
+
+   So the number does not have a look of its own at all. `color` and
+   `font-weight` inherit from the tab button, and the size is the label's 13px.
+   A deselected tab is --text-faint at 400 and the number goes with it; `.active`
+   is --text at 500 and the number goes with that too. One rule, both states,
+   and nothing to keep in step by hand if the tab's own type ever moves.
+
+   `font-variant-numeric: tabular-nums` stays: the number changes as work moves
+   and the label must not jog sideways under it. `line-height` matches the
+   label's box so the figures sit on the same line as the word. */
+.workspace-running { font-size: 13px; font-weight: inherit; line-height: 18px; font-variant-numeric: tabular-nums; color: inherit; }
+.has-count .workspace-running { margin-left: auto; min-width: 20px; text-align: right; }
+.workspace-collapsed .workspace-running { display: none; }
+@media(max-width:700px) { .workspace-running { display: none; } }
+/* SEARCH, ABOVE THE TABS (w-5988eed6f3). A line under it rather than a box,
+   inset to the glass and the keys so it is no wider than what it underlines,
+   and fainter than any divider: at full width and --line it read as too long
+   and too loud. */
+.workspace-find { margin: 0 0 14px; }
+.workspace-navigation .workspace-find button { position: relative; width: 100%; height: 32px; border-radius: 0; color: var(--text-faint); }
+.workspace-navigation .workspace-find button:hover { background: none; color: var(--text); }
+.workspace-find button::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: 0; height: 1px; background: var(--line); opacity: .55; transition: opacity .14s; }
+.workspace-find button:hover::after { opacity: 1; }
+.workspace-collapsed .workspace-find button::after { opacity: 0; }
+.workspace-keys { margin-left: auto; font-size: 12px; letter-spacing: .02em; color: var(--text-faint); opacity: .7; transition: opacity .14s .08s; }
+.workspace-collapsed .workspace-keys { opacity: 0; transition: opacity .06s; }
+@media(max-width:700px) { .workspace-keys { display: none; } }
+
+.workspace-bottom { margin-top: auto; padding-top: 24px; }
+.workspace-utilities { display: flex; flex-direction: column; gap: 2px; padding-bottom: 12px; }
+/* SETTINGS SITS 4 POINTS OFF THE BOTTOM WHEN IT IS THE LAST ROW (w-b59cbe3154,
+   2026-10-05). With nobody to show, the corner row is not drawn at all
+   (WorkspaceNavigation.tsx), so this padding is the whole of the air under
+   Settings. As built that air was 66 (this 12, plus the row's 8 of margin and
+   46 of height), and removing the row alone left 12: "no i meant there was too
+   much space. 12 px was too much." Shown 0, 4 and 8 she picked 4. The 12 above
+   is untouched, because with a row under it this is the gap between two
+   things rather than the foot of the sidebar. */
+.workspace-utilities:last-child { padding-bottom: 4px; }
+.workspace-utilities button { width: 100%; }
+.workspace-bottom .workspace-footer { margin-top: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+.workspace-usage:empty { display: none; }
+.workspace-usage .usage-box { width: 100%; }
+
+/* Blur only the backdrop image. Content and controls remain sharp. Overscan
+   prevents transparent edges when the background blur is increased. */
+:root[data-skin] body, :root[data-skin] .settings-screen { isolation: isolate; background-image: none; }
+:root[data-skin] body::before, :root[data-skin] .settings-screen::before {
+  content: ''; position: fixed; inset: calc(-2 * var(--skin-background-blur, 0px)); z-index: -1; pointer-events: none;
+  background-image: var(--skin-veil), var(--skin-tint), var(--skin-image);
+  background-repeat: no-repeat; background-position: center; background-size: cover;
+  background-blend-mode: normal, multiply, normal;
+  filter: blur(var(--skin-background-blur, 0px));
+}
+.theme-dials { flex-wrap: wrap; }
+
+/* Utilities are destinations on the same foreground, with the workspace
+   navigation remaining in place. Hidden tasks cannot take focus underneath. */
+.workspace-settings > .body[hidden] { display: none; }
+/* SETTINGS SWAPS THE SIDEBAR (w-ccadd13c46, 2026-10-05), the way Linear does.
+   While it is up the app's own sidebar and the panel's header step aside, and
+   the settings menu stands exactly where the sidebar stood, at the sidebar's
+   expanded width even if it was collapsed. The panel is the same raised panel
+   the inbox sits on, so nothing else on the window moves.
+
+   The screen stays `position: relative` with a z-index so it paints above the
+   panel's own `::before`; the menu is therefore placed against the screen's
+   box, which starts at --workspace-left and 40px down, and reaches back out to
+   the sidebar's 22px gutter from there. */
+.app.workspace-layout.workspace-settings { --workspace-width: 202px; }
+.workspace-layout.workspace-settings > .workspace-navigation,
+.workspace-layout.workspace-settings > .topbar { display: none; }
+.workspace-layout > .settings-embedded { position: relative; inset: auto; z-index: 1; flex: 1; min-height: 0; display: flex; flex-direction: column; background: transparent; isolation: auto; }
+:root[data-skin] .settings-embedded::before { content: none; }
+.workspace-layout .settings-embedded .set-nav {
+  position: absolute; top: 10px; bottom: 0; left: calc(22px - var(--workspace-left)); width: var(--workspace-width);
+  min-width: 0; padding: 0; border: 0; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.settings-embedded .set-pane { flex: 1; min-height: 0; background: transparent; border-radius: var(--radius); }
+.workspace-utilities button[aria-current="page"] { background: var(--wash); color: var(--text); }
+/* THE READING IS A ROW LIKE FEEDBACK AND SETTINGS (w-dcaa2c122e), picked from
+   five drawn in the app: the gauge in their icon column, the agent's name on
+   their labels' edge, the percent where Inbox shows its count, at their size.
+   It sits 2 under Settings, as they sit to each other, and narrow it keeps
+   its gauge as they keep theirs. */
+.workspace-navigation .workspace-usage { padding: 0 0 12px; margin-top: -10px; }
+.workspace-navigation .workspace-usage .usage-pill { display: flex; align-items: center; gap: 11px; width: 100%; height: 36px; min-height: 36px; padding: 0 10px; border: 0; border-radius: var(--radius); font-size: 13px; text-align: left; color: var(--text-faint); }
+.workspace-navigation .workspace-usage .usage-pill:hover { background: var(--wash); color: var(--text); }
+.workspace-navigation .usage-row-num { margin-left: auto; font-variant-numeric: tabular-nums; }
+.workspace-navigation .usage-pill.is-close .usage-row-num { color: var(--text); }
+/* Its limits open above it as wide as the sidebar, the way your account menu opens from your row. */
+/* Its own width, not the rail's: on the narrow rail that was 44px, and "This session" and "28% used" ran into each other. */
+.workspace-navigation .workspace-usage .usage-panel { top: auto; bottom: calc(100% + 8px); left: 0; right: auto; width: 268px; border-radius: 0; }
+.workspace-navigation .usage-panel .usage-meter, .workspace-navigation .usage-panel .usage-meter > i { border-radius: 0; }
+/* Using more than one agent, its limits list each under a hairline, the one used last tagged. */
+.usage-panel .usage-other { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.usage-panel h3 small { margin-left: 8px; font-size: 10.5px; font-weight: 500; color: var(--text-faint); }
+.usage-panel .usage-read { margin-top: 8px; font-size: 11.5px; color: var(--agent-ink); }
+@media(max-width:700px) { .workspace-usage { display: none; } }
+/* THE INSTRUCTIONS PAGE IS ONE PAGE (w-4cbcd888ae, 2026-10-01). Picked from
+   three drawn in the real app: a heading that says who the page is for and
+   one card holding the instructions as a page you read. The section sidebar
+   was removed when the user instructions became one file. It is wider than
+   the other settings pages because what it
+   shows is documents, not rows. */
+.set-inner.instructions-page { max-width:920px; }
+/* THE HEADING IS THE SWITCH. A dotted underline did not read as something to
+   click, so the words carry a solid underline and an arrow after them. */
+.instr-lead { font-size:20px; font-weight:600; letter-spacing:-.012em; margin:0 0 24px; color:var(--text); }
+.instr-scope { position:relative; display:inline-block; }
+.instr-scope-word { display:inline-flex; align-items:center; gap:6px; font:inherit; color:var(--text); background:none; border:0; padding:0; cursor:pointer;
+  text-decoration: underline solid var(--text-faint); text-decoration-thickness:1.5px; text-underline-offset:5px; }
+.instr-scope-word:hover, .instr-scope-word[aria-expanded="true"] { text-decoration-color:var(--text); }
+.instr-scope-arrow { width:14px; height:14px; flex:none; color:var(--text-dim); }
+.instr-scope-menu { position:absolute; left:-8px; top:calc(100% + 8px); z-index:20; min-width:220px; max-height:360px; overflow-y:auto;
+  padding:5px; border:1px solid var(--line); border-radius:var(--radius); background:var(--pop); box-shadow:var(--shadow-card);
+  font-size:13px; font-weight:400; letter-spacing:0; }
+.instr-scope-menu button { display:block; width:100%; text-align:left; font:inherit; color:var(--text-dim); background:none; border:0; border-radius:var(--radius); padding:7px 10px; cursor:pointer; }
+.instr-scope-menu button:hover, .instr-scope-menu button[aria-checked="true"] { background:var(--wash); color:var(--text); }
+.instr-scope-menu hr { border:0; border-top:1px solid var(--line); margin:5px 4px; }
+/* A single readable column for shared and project instructions. */
+.instr-body { width:100%; }
+/* Rounded like the settings card (settings.css .set-plate), so the two sit together. */
+.instr-card { border:1px solid var(--line); border-radius:10px; background:var(--film-strong); }
+.instr-part { padding:16px 26px 22px; scroll-margin-top:16px; }
+.instr-part + .instr-part { border-top:1px solid var(--line); }
+.instr-part-head { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:30px; }
+.instr-part-head h2 { font-size:14px; font-weight:600; margin:0; }
+.instr-part-tools { display:flex; align-items:center; gap:14px; margin-left:auto; }
+.instr-edit { font:inherit; font-size:12px; color:var(--text-dim); border:1px solid var(--line); border-radius:var(--radius); background:transparent; padding:5px 11px; cursor:pointer; }
+.instr-edit:hover:not(:disabled), .instr-edit[aria-pressed="true"] { color:var(--text); background:var(--wash); }
+.instr-edit:disabled { opacity:.4; cursor:default; }
+.instr-part-desc { font-size:13px; line-height:1.6; color:var(--text-faint); margin:8px 0 4px; max-width:75ch; }
+/* What she wrote, the way it will read. */
+.instr-md { font-size:13.5px; line-height:1.65; color:var(--text-dim); user-select:text; overflow-wrap:anywhere; }
+.instr-md > :first-child { margin-top:8px; }
+.instr-md > :last-child { margin-bottom:0; }
+.instr-md h1, .instr-md h2, .instr-md h3 { color:var(--text); font-weight:600; letter-spacing:-.01em; margin:20px 0 8px; }
+.instr-md h1 { font-size:20px; } .instr-md h2 { font-size:18px; } .instr-md h3 { font-size:15px; }
+.instr-md p { margin:0 0 10px; max-width:78ch; }
+.instr-md ul, .instr-md ol { margin:0 0 10px; padding-left:20px; }
+.instr-md li { margin:3px 0; }
+.instr-md strong { color:var(--text); font-weight:600; }
+.instr-md code { font-family:var(--mono); font-size:12px; }
+.instr-md pre { font-family:var(--mono); font-size:12px; line-height:1.7; background:var(--wash); border:1px solid var(--line); border-radius:var(--radius); padding:12px 14px; margin:6px 0 12px; overflow-x:auto; }
+.instr-md a { color:var(--text); }
+.instr-card-ours { margin-top:24px; background:var(--wash); }
+/* RESTORE IS A LINK IN THE CORNER, NOT A BUTTON IN THE WAY (w-94b3af4e70,
+   2026-09-28). Option C of four drawings, chosen because it is clean. It opens
+   the user's own earlier versions of the box,
+   newest first, with the original at the foot of the list. */
+.instruction-restore { position:relative; }
+.instr-part-head .instruction-restore-link { font:inherit; font-size:12px; background:none; border:none; padding:0; color:var(--text-faint); cursor:pointer; }
+.instr-part-head .instruction-restore-link:hover:not(:disabled) { color:var(--text); }
+.instruction-restore-menu { position:absolute; top:calc(100% + 8px); right:0; z-index:20; min-width:260px; max-height:320px; overflow-y:auto;
+ border:1px solid var(--line); border-radius:var(--radius); background:var(--pop); box-shadow:var(--shadow-card); padding:6px; }
+.instr-part-head .instruction-restore-menu button { display:flex; width:100%; gap:16px; justify-content:space-between; align-items:baseline;
+ font:inherit; font-size:12px; background:transparent; cursor:pointer;
+ border:none; border-radius:var(--radius); padding:8px 10px; text-align:left; color:var(--text); }
+.instr-part-head .instruction-restore-menu button:hover:not(:disabled) { background:var(--wash); }
+.instruction-restore-size { color:var(--text-faint); font-size:11px; white-space:nowrap; }
+.instr-part-head .instruction-restore-menu button.instruction-restore-original { border-top:1px solid var(--line); border-radius:0; margin-top:4px; padding-top:12px; }
+.instruction-restore-empty { font-size:12px; line-height:1.5; color:var(--text-faint); padding:8px 10px; max-width:240px; }
+.instruction-undo { font:inherit; font-size:11px; color:var(--text-dim); background:transparent; border:none; padding:0; text-decoration:underline; cursor:pointer; }
+/* THE WRITING SURFACE, behind Edit (and straight away on an empty section).
+
+   NO GRIP AND NO MONOSPACE. The default textarea, with its resize grip, felt
+   almost like raw HTML. The grip is a browser default nothing else in
+   this app shows, and a monospace face makes prose the user wrote read like a
+   config file. This is the user's own writing, set in the app's own text.
+
+   AND IT LOOKS LIKE SOMETHING YOU WRITE IN, WITHOUT A SENTENCE SAYING SO. It
+   was unclear the box could be edited, and that has to be shown visually, not
+   with text explaining it: UX is never explained with text.
+
+   Three states, and each one is doing a job the old sentence was doing badly:
+
+     at rest   a writing panel, the wash at half strength. Faint enough to stay
+               a page of the user's own words, present enough to read as somewhere to
+               type rather than as rendered text.
+     hover     the same panel at full strength, so the pointer finds its edges
+               before the click.
+     focus     an accent down the left edge, with the caret in it. The caret is
+               there the moment Edit is pressed (../components/InstructionSettings).
+
+   The accent rides in the padding rather than outside it, so nothing shifts
+   between the three states: only colour moves. It grows with what is in it, so
+   the page and the writing surface hold the same text at the same length. */
+.instr-part textarea { display:block; resize:none; width:100%; min-height:220px; margin-top:10px; field-sizing:content;
+  padding:16px 18px; border:0; border-left:2px solid transparent; border-radius:var(--radius);
+  background:var(--wash); color:var(--text); caret-color:var(--text);
+  font:14px/1.75 inherit; font-family:inherit;
+  transition:background .12s ease, border-color .12s ease; }
+.instr-part textarea:hover { background:color-mix(in srgb, var(--wash) 100%, var(--text) 4%); }
+.instr-part textarea:focus { outline:none; background:color-mix(in srgb, var(--wash) 100%, var(--text) 4%); border-left-color:var(--underline); }
+.instr-part textarea::placeholder { color:var(--text-faint); }
+/* Saving, saved, and the errors a person can act on. Empty the rest of the
+   time: an idle line here is the page explaining itself. */
+.instruction-save { font-size:11px; color:var(--text-faint); margin-top:14px; min-height:14px; }
+/* ADHD MODE: its switch sits where Edit sits on the others, and its rules show
+   only while it is on. */
+.instr-part-tools .set-sw { flex:none; }
+/* The app's own task brief, behind a line she has to open (w-3dc46f3a67). It is
+   quieter than the two boxes above it because it is ours and not hers. */
+
+:root .workspace-layout > .settings-embedded { background: transparent; }
+
+.settings-usage { margin: 28px 0 36px; }
+.settings-usage > h2 { margin:0 0 16px; font-size:16px; font-weight:500; }
+.settings-usage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }
+.settings-usage-provider { padding:20px; background:var(--wash); border:1px solid var(--line); border-radius:var(--radius); }
+.settings-usage-provider h3 { font-size:14px; font-weight:500; margin:0 0 20px; }
+.settings-usage-window { margin-bottom:18px; }
+.settings-usage-window > div { display:flex; justify-content:space-between; gap:12px; font-size:12px; color:var(--text-dim); margin-bottom:9px; }
+.settings-usage-window .usage-meter { display:block; width:100%; height:3px; }
+.settings-usage-window p, .settings-usage-provider small { color:var(--text-faint); font-size:11px; margin:8px 0 0; }
+.settings-usage-empty { font-size:13px; color:var(--text-faint); }
+
+.workspace-page-heading { display:flex; align-items:center; gap:12px; min-width:0; -webkit-app-region:no-drag; }
+.workspace-back { width:28px; height:28px; margin-left:-6px; display:grid; place-items:center; padding:0; background:transparent; border:0; border-radius:var(--radius); color:var(--text-faint); cursor:pointer; }
+.workspace-back svg { width:18px; height:18px; }
+.workspace-back:hover { background:var(--wash); color:var(--text); }
+.workspace-back:focus-visible { outline:2px solid var(--underline); outline-offset:2px; }
+
+/* A task's navigation belongs to its heading, not the conversation gutter. */
+.workspace-task-header { display:flex; align-items:center; gap:14px; }
+.workspace-task-header > .back-esc { position:static; flex:0 0 28px; width:28px; height:28px; padding:5px; margin:0 0 0 -6px; align-self:center; }
+.workspace-task-header > .back-esc svg { width:18px; height:18px; }
+.workspace-task-header > .keep-line { flex:1; min-width:0; }
+.workspace-layout .focus { padding-top:28px; }
+
+/* Inline is a single reading flow; previews open only when asked for. */
+.inline-artifact { width:100%; height:min(680px, 70vh); min-height:360px; margin:24px 0; }
+.inline-artifact .doc-pane { height:100%; width:100%; }
+.workspace-layout .doc-card { border-radius:var(--radius); }
+.inline-artifact .doc-card { margin:0; }
+.inline-artifact .doc-grip { display:none; }
+.workspace-layout .inline-artifact iframe { pointer-events:auto; }
+.artifact-placements { display:flex; align-items:center; gap:2px; }
+.artifact-placements button { font:inherit; font-size:11px; color:var(--text-faint); background:none; border:0; border-radius:var(--radius); padding:5px 7px; cursor:pointer; }
+.artifact-placements button[aria-pressed="true"] { background:var(--wash); color:var(--text); }
+.artifact-placements button:hover { color:var(--text); }
+.artifact-placements button:focus-visible { outline:2px solid var(--underline); }
+.workspace-layout .doc-head { gap:8px; padding:12px; }
+.workspace-layout .doc-crumb { min-width:0; font-size:11px; }
+.workspace-layout .doc-marks { flex:none; gap:6px; }
+.workspace-layout[data-artifact-layout="beside"] > .body > .list-pane { min-width:400px; }
+.workspace-layout[data-artifact-layout="beside"] > .body > .artifact-host > .doc-pane { min-width:560px; }
+.workspace-layout[data-artifact-layout="beside"] .focus { padding:28px 28px 40px; }
+/* The reply box keeps the words' 28, not the dock's 32, so its edges are theirs. */
+.workspace-layout[data-artifact-layout="beside"] .focus-dock { padding-left:28px; padding-right:calc(28px + var(--scroll-gutter, 0px)); }
+.workspace-layout[data-artifact-layout="beside"] > .body > .artifact-host > .doc-pane .doc-card { margin:12px; }
+/* THE CONVERSATION IS NOT HIDDEN IN FULL SCREEN ANY MORE. It was, until the
+   reply line along the foot was chosen; what is left of it now is its dock,
+   under the page. The block at the end of this file is the whole of it. */
+.workspace-layout[data-artifact-layout="focus"] > .body > .artifact-host > .doc-pane { flex:1 !important; width:100%; }
+.workspace-layout[data-artifact-layout="focus"] .doc-grip { display:none; }
+.workspace-layout[data-artifact-layout="focus"] .doc-card { margin:12px; }
+.artifact-tweaks { position:fixed; right:34px; bottom:30px; z-index:100; display:flex; align-items:center; gap:5px; padding:8px; background:var(--skin-solid,var(--surface)); border:1px solid var(--line-strong); border-radius:6px; box-shadow:0 4px 24px #0002; }
+.artifact-tweaks > span { padding:0 8px; color:var(--text-faint); font-size:11px; }
+.artifact-tweaks button { padding:6px 10px; font:inherit; font-size:12px; background:none; border:0; border-radius:3px; color:var(--text-dim); cursor:pointer; }
+.artifact-tweaks button[aria-pressed="true"] { color:var(--text); background:var(--wash); }
+.artifact-link-card { display:flex; align-items:center; gap:14px; width:100%; margin:22px 0; padding:16px 18px; border:1px solid var(--line); border-radius:var(--radius); background:var(--wash); color:var(--text-dim); text-align:left; font:inherit; cursor:pointer; }
+.artifact-link-card > svg { width:22px; height:22px; flex:none; }
+.artifact-link-card > span:nth-child(2) { min-width:0; flex:1; }
+.artifact-link-card strong { display:block; font-size:13px; font-weight:500; overflow:hidden; text-overflow:ellipsis; }
+.artifact-link-card small { display:block; font-size:11px; color:var(--text-faint); margin-top:4px; }
+.artifact-link-card:hover { border-color:var(--line-strong); color:var(--text); }
+.artifact-link-card:focus-visible { outline:2px solid var(--underline); outline-offset:2px; }
+
+.artifact-host { display:contents; }
+.artifact-tweaks select { font:inherit; font-size:11px; border:0; border-left:1px solid var(--line); padding:5px 8px; color:var(--text-dim); background:var(--skin-solid,var(--surface)); }
+.inline-artifact .doc-text { overflow:auto; }
+.code-file-pick { display:none; }
+.workspace-layout .doc-pane { container-type:inline-size; container-name:artifact; }
+@container artifact (max-width: 800px) {
+  .code-artifact { flex-direction:column; }
+  .code-tree { display:none; }
+  /* THE PICKER IS THE TREE, FOR A PANE TOO NARROW TO HOLD ONE.`appearance:none`
+     is the whole of the fix and the rest follows from it. While it was `auto`,
+     Chromium drew the arrow and the app had no say in where: measured at 772px
+     of pane, the native glyph sat about 9px from the border and a couple of
+     points below the middle, in a filled weight this app uses nowhere else. The
+     right padding below is what reserves room for ours.
+  */
+  .code-file-pick { display:block; position:relative; flex:none; margin:8px 12px; }
+  .code-file-picker { display:block; width:100%; padding:8px 34px 8px 8px; color:var(--text-dim); border:1px solid var(--line); background:var(--code-ground); border-radius:var(--radius); font:12px/1.5 var(--mono); appearance:none; -webkit-appearance:none; }
+  /* Centred on the box rather than on the text, and 12px in from its edge,
+     which is the same 12px the box itself is inset from the code column. The
+     select under it takes every click; this is only the mark. */
+  .code-pick-caret {
+    position:absolute; right:12px; top:50%; margin-top:-6.5px;
+    width:13px; height:13px; color:var(--text-faint); pointer-events:none;
+  }
+}
+
+/* A compact arrow shares the title line; metadata stays below the title.
+   ONE POINT UP (2026-10-01): the back arrow sat a couple of pixels too low.
+   Measured in the built renderer at 1440 with the
+   title at 17px: at top 0 the chevron's ink top sat 1.6 points under the top
+   of the title's capitals and its centre 0.45 under theirs. At -1 the ink top
+   is 0.6 under and the centre 0.55 over, so it sits on the title's first line
+   and starts where the letters start. */
+.workspace-task-header { position:relative; display:block; padding:0 0 0 28px; }
+.workspace-task-header > .back-esc {
+ position:absolute; left:0; top:-1px; margin:0; padding:4px;
+ width:24px; height:24px; display:flex; align-items:center; justify-content:center;
+ color:var(--text-dim);
+}
+.workspace-task-header > .back-esc svg { width:16px; height:16px; }
+.workspace-layout.workspace-task > .topbar { height:88px; min-height:88px; flex-basis:88px; }
+.workspace-layout[data-reading-width="balanced"] .focus { max-width:1180px; }
+.workspace-layout[data-reading-width="balanced"] .focus-dock-inner { max-width:1116px; }
+@media (min-width:1800px) {
+ .workspace-layout[data-reading-width="balanced"] .focus { max-width:1360px; }
+ .workspace-layout[data-reading-width="balanced"] .focus-dock-inner { max-width:1296px; }
+}
+/* Sentences keep a reading measure in the wide column; what is drawn uses all of it. */
+.workspace-layout .focus .markdown :is(p, ul, ol, blockquote, h1, h2, h3, h4):not(:has(img, video, .inline-media, .inline-image)),
+.workspace-layout .focus .msg-body.typed:not(:has(img, video, .inline-media, .inline-image)) { max-width:760px; }
+/* A picture is as wide as the sentences: the whole column was too big to take in at once. */
+.workspace-layout .focus .markdown .inline-image { max-width:min(100%, 760px); }
+.workspace-artifact-header { display:none; min-width:0; flex:1; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .workspace-task-header { display:none; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .workspace-artifact-header { display:block; }
+.workspace-artifact-header .doc-head { padding:0; background:none; border:0; min-height:32px; }
+.workspace-artifact-header .doc-crumb { font-size:14px; }
+.workspace-artifact-header .doc-crumb-part:not(:last-child),
+.workspace-artifact-header .doc-crumb-sep { display:none; }
+/* NO FILE NAME OVER A FULL SCREEN DOCUMENT.The path is still the crumb
+   everywhere else; it is only this one place, where the file is the whole
+   window and she already knows what she opened, that it is noise. So the bar is
+   0 and the document starts at the top of the window. The marks come out of the
+   flow and float in the corner, drawn only while she is reaching for them. 64
+   points to none. THE WINDOW CAN STILL BE MOVED. `.workspace-layout::after` is
+   a 40 point strip of window drag across the whole top, and with no bar it is
+   the only thing on this screen that moves the window. The marks and the reach
+   sit in that strip, so both are marked no-drag; what it costs is the top right
+   220 points as a drag handle, and the other thousand-odd are untouched.
+*/
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .workspace-artifact-header .doc-crumb { display:none; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .topbar {
+  height:0; min-height:0; flex-basis:0; padding:0; border-bottom:0; overflow:visible;
+}
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .workspace-artifact-header .doc-head { min-height:0; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .workspace-artifact-header .doc-marks {
+  /* 52, NOT 11, AND THAT IS THE WHOLE BUG (w-a5dae7e990, 2026-09-22). At top:11
+     the marks sat almost entirely inside it, and a drag region swallows the
+     press: macOS moves the window instead of giving the click to the page. They
+     did NOT sit there before this row. They rode in a 64 point bar that put
+     them below 40, and they went dead in the same change that took that bar to
+     nothing. A `no-drag` on the marks is not enough, because `::after` is
+     generated as the LAST child of `.workspace-layout` and its drag rectangle
+     is collected after their no-drag one. Sitting clear of the strip needs no
+     such argument, so that is what they do: 52 puts them just inside the top
+     right corner of the document's own card, which is where the eye already
+     goes. AND HEADLESS CHROME CANNOT SEE ANY OF THIS. `-webkit-app-region`
+     exists only in Electron, so a mark buried under a drag strip hit-tests
+     perfectly in the Chrome harness and is stone dead in the real app. That is
+     why the round before this one measured clean and changed nothing.
+  */
+  position:fixed; top:52px; right:26px; z-index:8;
+  padding:2px; border-radius:var(--radius);
+  background:color-mix(in srgb, var(--surface) 86%, transparent);
+  border:1px solid var(--line);
+  box-shadow:var(--shadow-md);
+  -webkit-app-region:no-drag;
+  opacity:0; transform:translateY(-4px); pointer-events:none;
+  transition:opacity .16s ease, transform .16s ease;
+}
+/* THIS SELECTOR HAS TO MATCH THE SHAPE OF THE ONE ABOVE IT, which carries
+   [data-artifact-layout] and a :not. A shorter one here loses on specificity
+   and is silently ignored, and the marks then never come back at all. That is
+   how it was found: `data-chrome` said "up" and the opacity stayed 0.
+*/
+.workspace-layout[data-artifact-layout="focus"][data-chrome="up"]:not(.workspace-settings) .workspace-artifact-header .doc-marks,
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .workspace-artifact-header .doc-marks:has(.av-share-box) {
+  opacity:1; transform:none; pointer-events:auto;
+}
+/* The corner that wakes them. Transparent, and the only piece of our own
+   document lying over the file, which is the whole reason it exists: see
+   full-screen-chrome.ts. */
+/* THE REACH SITS UNDER THE MARKS, AND `z-index:1` IS THE WHOLE OF WHY. It was
+   7, which looks higher than the marks' 8 and is not: `.topbar` is
+   `position:relative; z-index:1`, so it opens a stacking context and the marks'
+   8 is spent INSIDE it. Against this element, in the root context, the whole
+   bar is worth 1, so a reach at 7 lay over all three marks and ate every click
+   on them. Measured 2026-09-22 with elementFromPoint at the centre of each
+   mark: `div.chrome-reach` all three times, and a real press on the close mark
+   left the document open.At 1 it ties with `.topbar` and loses the tie on
+   document order, which is what puts it under the marks, and it still beats
+   `.body` (positioned, z-index auto) so it stays over the document it has to
+   lie over.
+*/
+.chrome-reach { position:fixed; top:0; right:0; z-index:1; -webkit-app-region:no-drag; }
+/* AND THE DRAG STRIP STOPS SHORT OF THAT CORNER TOO. The marks are clear of it
+   now, so this is not what makes them work; it is here so that nothing in this
+   corner is a drag region at all, and the reach underneath them cannot be
+   swallowed either. The window is still dragged by the thousand-odd points to
+   the left of it. */
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings)::after { right: 260px; }
+/* AND THE WINDOW DRAG STRIP STOPS SHORT OF THAT CORNER, which is what was
+   really killing the three marks (w-a5dae7e990, 2026-09-22). The marks are at
+   top:11 and 34 tall, so they sit almost entirely inside it. They did not
+   before: they used to ride in a 64 point bar that put them BELOW 40, and they
+   stopped working in the same change that took that bar to nothing. A `no-drag`
+   on the marks themselves is not enough and that is the trap. `::after` is
+   generated as the LAST child of `.workspace-layout`, so its drag rectangle is
+   collected after their no-drag one and wins. The only reliable answer is to
+   not put a drag region there at all. HEADLESS CHROME CANNOT SEE THIS.
+   `-webkit-app-region` exists only in Electron, so a mark buried under a drag
+   strip hit-tests perfectly in the Chrome harness and is stone dead in the
+   real app. That is why the first fix measured clean and changed nothing.
+   240 is the marks plus the reach plus air. The window is still dragged by
+   the thousand-odd points to the left of it.
+*/
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings)::after { right: 240px; }
+/* The card under a full screen document loses its own top margin, because the
+   air it was paying for was under a bar that is not there any more. */
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .body { padding-top:0; }
+.workspace-layout[data-reading-width="wide"] .focus { max-width:1200px; }
+.workspace-layout[data-reading-width="wide"] .focus-dock-inner { max-width:1136px; }
+.workspace-layout[data-reading-width="edge"] .focus { max-width:none; padding-left:20px; padding-right:20px; }
+/* The 20 is the dock's padding, not a margin on top of its 32: stacked, the
+   box began 52 in against the words' 20. */
+.workspace-layout[data-reading-width="edge"] .focus-dock { padding-left:20px; padding-right:calc(20px + var(--scroll-gutter, 0px)); }
+.workspace-layout[data-reading-width="edge"] .focus-dock-inner { max-width:none; }
+.artifact-tweaks { max-width:calc(100vw - 48px); flex-wrap:wrap; }
+
+/* The preview supplies its own entrance and return, without a layout picker. */
+.artifact-expand, .artifact-return {
+ display:inline-flex; align-items:center; justify-content:center; gap:6px;
+ flex:none; height:28px; padding:0 8px; border:1px solid transparent;
+ border-radius:var(--radius); background:transparent; color:var(--text-dim);
+ font-family:inherit; font-size:12px; line-height:1; cursor:pointer;
+}
+.artifact-expand { border-color:var(--line); }
+.artifact-expand:hover, .artifact-return:hover { background:var(--line); color:var(--text); }
+.artifact-expand:focus-visible, .artifact-return:focus-visible { outline:2px solid var(--text-dim); outline-offset:2px; }
+.workspace-artifact-header .artifact-return { margin-left:-8px; margin-right:12px; }
+.workspace-artifact-header .doc-crumb { flex:1; }
+@media (max-width:700px) {
+ .workspace-artifact-header .artifact-return { margin-right:0; }
+ .workspace-artifact-header .doc-crumb { font-size:12px; }
+}
+
+/* HTML previews float on the conversation; code and notes keep their toolbar. */
+.workspace-layout .inline-artifact .doc-html .doc-card { background:transparent; border:0; box-shadow:none; }
+.workspace-layout .inline-artifact .doc-html .doc-head { background:transparent; padding:0 0 10px; }
+.workspace-layout .inline-artifact .doc-html .doc-view { border:1px solid var(--line); border-radius:var(--radius); }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .topbar > .topbar-right { display:none; }
+
+.artifact-entry-card { margin:24px 0; padding:20px; border:1px solid var(--line); border-radius:var(--radius); background:color-mix(in srgb, var(--text) 3%, transparent); }
+.artifact-entry-summary { display:flex; align-items:center; gap:12px; }
+.artifact-entry-summary > svg { width:25px; height:25px; color:var(--text-faint); flex:none; }
+.artifact-entry-summary strong { display:block; font-size:14px; font-weight:500; overflow-wrap:anywhere; }
+.artifact-entry-summary small { display:block; margin-top:4px; font-size:12px; color:var(--text-faint); }
+.artifact-entry-actions { display:flex; gap:8px; margin-top:18px; flex-wrap:wrap; }
+.artifact-entry-actions button { display:inline-flex; align-items:center; gap:7px; padding:7px 12px; font:inherit; font-size:12px; color:var(--text-dim); background:transparent; border:1px solid var(--line); border-radius:var(--radius); cursor:pointer; }
+.artifact-entry-actions svg { width:15px; height:15px; }
+.artifact-entry-actions button:hover { background:var(--line); color:var(--text); }
+.artifact-entry-actions button:focus-visible { outline:2px solid var(--text-dim); outline-offset:2px; }
+
+.artifact-entry-card:has(.artifact-thumbnail) { padding:0; overflow:hidden; }
+.artifact-thumbnail { position:relative; width:100%; height:auto; aspect-ratio: 2 / 1; max-height:360px; overflow:hidden; background:var(--surface); border-bottom:1px solid var(--line); }
+.artifact-thumbnail iframe { display:block; width:1200px; height:800px; border:0; transform-origin:top left; pointer-events:none; }
+.artifact-thumbnail > span { position:absolute; inset:0; display:grid; place-items:center; color:var(--text-faint); font-size:12px; }
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary { margin:16px 20px 0; }
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions { margin:14px 20px 18px; }
+
+/* Compact attachments sit between messages without becoming a second page. */
+.artifact-entry-card:has(.artifact-thumbnail) {
+  display:grid; grid-template-columns: 180px minmax(0, 1fr);
+  grid-template-rows:auto auto; gap:0 18px;
+  max-width:620px; padding:12px;
+}
+.artifact-entry-card .artifact-thumbnail {
+  grid-row:1 / 3; width:180px; height:110px; aspect-ratio:auto;
+  border:1px solid var(--line); border-radius:3px;
+}
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {margin:10px 0 0; min-width:0;}
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary > svg {display:none;}
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary strong {font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block;}
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary > div {min-width:0;}
+.artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {margin:12px 0 6px; gap:14px;}
+.artifact-entry-card .artifact-entry-actions button {font-size:12px; padding:3px 0; border:0; background:none; box-shadow:none;}
+.artifact-thumbnail pre {margin:0; padding:10px; font:9px/1.8 ui-monospace,monospace; color:var(--text); white-space:pre; overflow:hidden;}
+.artifact-thumbnail[data-kind="markdown"] pre {font-family:inherit; font-size:10px; white-space:pre-wrap;}
+@media (max-width:600px) {
+ .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:110px minmax(0,1fr); gap:0 12px;}
+ .artifact-entry-card .artifact-thumbnail {width:110px; height:100px;}
+ .artifact-entry-card .artifact-entry-actions {flex-wrap:wrap;}
+}
+
+/* The approved reading width stays balanced; artifacts never split the chat. */
+.workspace-layout[data-artifact-layout="inline"] > .body > .list-pane {flex:1; width:100%;}
+.inline-artifact:empty {display:none;}
+.inline-artifact:has(.artifact-host:empty) {display:none;}
+.workspace-layout .inline-artifact .doc-pane {flex:1 !important; min-width:0;}
+
+/* Excerpt: a readable content strip, with quiet actions in a single footer. */
+[data-preview-treatment="excerpt"] .artifact-entry-card:has(.artifact-thumbnail) {
+ grid-template-columns:minmax(0,1fr) auto; grid-template-rows:105px auto;
+ max-width:620px; padding:0; gap:0;
+}
+[data-preview-treatment="excerpt"] .artifact-entry-card .artifact-thumbnail {
+ grid-column:1 / 3; grid-row:1; width:100%; height:105px; border:0;
+ border-bottom:1px solid var(--line); border-radius:0;
+}
+[data-preview-treatment="excerpt"] .artifact-thumbnail pre {font-size:11px; line-height:1.6; padding:12px 16px;}
+[data-preview-treatment="excerpt"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {margin:12px 16px;}
+[data-preview-treatment="excerpt"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {margin:12px 16px; align-self:center;}
+[data-preview-treatment="excerpt"] .artifact-entry-summary small {display:none;}
+
+/* Cover: a small visual tile, with the document name and actions underneath. */
+[data-preview-treatment="cover"] .artifact-entry-card:has(.artifact-thumbnail) {
+ display:flex; flex-direction:column; max-width:340px; padding:0; gap:0;
+}
+[data-preview-treatment="cover"] .artifact-entry-card .artifact-thumbnail {
+ width:100%; height:150px; border:0; border-bottom:1px solid var(--line); border-radius:0;
+}
+[data-preview-treatment="cover"] .artifact-thumbnail pre {font-size:11px; padding:16px; line-height:1.8;}
+[data-preview-treatment="cover"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {margin:14px 16px 0;}
+[data-preview-treatment="cover"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {margin:12px 16px 14px;}
+
+/* Margin: the attachment reads as a quiet text link with a glimpse on the right. */
+[data-preview-treatment="margin"] .artifact-entry-card:has(.artifact-thumbnail) {
+ grid-template-columns:minmax(0,1fr) 140px; max-width:540px;
+ padding:14px 0; gap:0 24px; border:0; border-top:1px solid var(--line);
+ border-bottom:1px solid var(--line); background:transparent; box-shadow:none;
+}
+[data-preview-treatment="margin"] .artifact-entry-card .artifact-thumbnail {
+ grid-column:2; grid-row:1 / 3; width:140px; height:88px;
+}
+[data-preview-treatment="margin"] .artifact-entry-card .artifact-entry-summary {grid-column:1; grid-row:1;}
+[data-preview-treatment="margin"] .artifact-entry-card .artifact-entry-actions {grid-column:1; grid-row:2;}
+
+/* Document: a content excerpt with a title above, lightly marked in the margin. */
+[data-preview-treatment="document"] .artifact-entry-card:has(.artifact-thumbnail) {
+ display:flex; flex-direction:column; max-width:540px;
+ padding:0 0 0 18px; gap:0; border:0; border-left:2px solid var(--line);
+ border-radius:0; background:transparent; box-shadow:none;
+}
+[data-preview-treatment="document"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {order:0; margin:0 0 12px;}
+[data-preview-treatment="document"] .artifact-entry-summary small {display:none;}
+[data-preview-treatment="document"] .artifact-entry-card .artifact-thumbnail {
+ order:1; width:100%; height:135px; border:0; border-radius:2px;
+}
+[data-preview-treatment="document"] .artifact-thumbnail:not([data-kind="html"]) {background:transparent;}
+[data-preview-treatment="document"] .artifact-thumbnail pre {padding:0; font-size:12px; line-height:1.8;}
+[data-preview-treatment="document"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {order:2; margin:12px 0 0;}
+
+/* Filmstrip: a wide visual slice with a single compact caption and actions. */
+[data-preview-treatment="filmstrip"] .artifact-entry-card:has(.artifact-thumbnail) {
+ grid-template-columns:minmax(0,1fr) auto; grid-template-rows:76px auto;
+ max-width:740px; padding:0; gap:0; border-radius:5px;
+}
+[data-preview-treatment="filmstrip"] .artifact-entry-card .artifact-thumbnail {
+ grid-row:1; grid-column:1 / 3; width:100%; height:76px; border:0; border-bottom:1px solid var(--line); border-radius:0;
+}
+[data-preview-treatment="filmstrip"] .artifact-thumbnail iframe {margin-top:-22px;}
+[data-preview-treatment="filmstrip"] .artifact-thumbnail pre {font-size:11px; padding:10px 16px; line-height:1.7;}
+[data-preview-treatment="filmstrip"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {margin:14px 16px;}
+[data-preview-treatment="filmstrip"] .artifact-entry-summary small {display:none;}
+[data-preview-treatment="filmstrip"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {margin:14px 16px; align-self:center;}
+@media(max-width:700px) {
+ [data-preview-treatment="excerpt"] .artifact-entry-card:has(.artifact-thumbnail),
+ [data-preview-treatment="filmstrip"] .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:minmax(0,1fr);}
+ [data-preview-treatment="excerpt"] .artifact-entry-card .artifact-thumbnail,
+ [data-preview-treatment="filmstrip"] .artifact-entry-card .artifact-thumbnail {grid-column:1;}
+ [data-preview-treatment="excerpt"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions,
+ [data-preview-treatment="filmstrip"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {margin-top:0;}
+}
+
+/* Excerpt refinements: quieter framing and controls revealed on demand. */
+:is([data-preview-treatment="caption"], [data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-entry-card:has(.artifact-thumbnail) {
+ position:relative; display:block; max-width:620px; padding:0; overflow:hidden;
+}
+:is([data-preview-treatment="caption"], [data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-entry-card .artifact-thumbnail {
+ width:100%; height:150px; border:0; border-radius:0;
+}
+:is([data-preview-treatment="caption"], [data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-thumbnail pre {
+ font-size:12px; line-height:1.8; padding:14px 18px;
+}
+:is([data-preview-treatment="caption"], [data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-entry-summary small {display:none;}
+
+[data-preview-treatment="caption"] .artifact-entry-card:has(.artifact-thumbnail) {
+ border:0; background:transparent; box-shadow:none; overflow:visible;
+}
+[data-preview-treatment="caption"] .artifact-entry-card .artifact-thumbnail {border:1px solid var(--line); border-radius:4px; height:110px;}
+[data-preview-treatment="caption"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {margin:12px 0; padding-right:200px;}
+[data-preview-treatment="caption"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {position:absolute; right:0; bottom:0; margin:9px 0;}
+[data-preview-treatment="caption"] .artifact-entry-summary strong {font-weight:400; color:var(--text-muted);}
+
+[data-preview-treatment="overlay"] .artifact-entry-card .artifact-thumbnail {height:175px;}
+[data-preview-treatment="overlay"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {
+ position:absolute; bottom:0; left:0; right:0; margin:0; padding:12px 16px;
+ background:var(--surface); border-top:1px solid var(--line); min-height:42px;
+}
+[data-preview-treatment="overlay"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {
+ position:absolute; bottom:7px; right:10px; margin:0; padding:3px 6px;
+ background:var(--surface); opacity:0; pointer-events:none; transition:opacity 140ms ease;
+}
+[data-preview-treatment="preview-only"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {
+ position:absolute; bottom:0; left:0; right:0; margin:0; padding:10px 14px;
+ background:var(--surface); border-top:1px solid var(--line);
+ opacity:0; pointer-events:none; transition:opacity 140ms ease;
+}
+[data-preview-treatment="preview-only"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {
+ position:absolute; top:10px; right:10px; margin:0; padding:6px 10px; gap:14px;
+ background:var(--surface); border:1px solid var(--line); border-radius:4px;
+ box-shadow:0 2px 8px #0002; opacity:0; pointer-events:none; transition:opacity 140ms ease;
+}
+:is([data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-entry-card:hover .artifact-entry-actions,
+:is([data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-entry-card:focus-within .artifact-entry-actions,
+[data-preview-treatment="preview-only"] .artifact-entry-card:hover .artifact-entry-summary,
+[data-preview-treatment="preview-only"] .artifact-entry-card:focus-within .artifact-entry-summary {opacity:1; pointer-events:auto;}
+@media (hover:none) {
+ :is([data-preview-treatment="overlay"], [data-preview-treatment="preview-only"]) .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions,
+ [data-preview-treatment="preview-only"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {opacity:1; pointer-events:auto;}
+}
+@media (prefers-reduced-motion:reduce) {
+ .artifact-entry-card .artifact-entry-actions, .artifact-entry-card .artifact-entry-summary {transition:none !important;}
+}
+[data-preview-treatment="caption"] .artifact-entry-card:has(.artifact-thumbnail) {display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-rows:110px auto; gap:0 16px;}
+[data-preview-treatment="caption"] .artifact-entry-card .artifact-thumbnail {grid-column:1 / 3; grid-row:1;}
+[data-preview-treatment="caption"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary {padding:0; margin:12px 0; align-self:center;}
+[data-preview-treatment="caption"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {position:static; margin:12px 0; align-self:center;}
+
+/* Margin finalists: no horizontal rules, with three different arrangements. */
+:is([data-preview-treatment="margin-clean"], [data-preview-treatment="margin-left"], [data-preview-treatment="margin-row"]) .artifact-entry-card:has(.artifact-thumbnail) {
+ border:0; background:transparent; box-shadow:none; padding:0;
+ max-width:540px; gap:0 22px;
+}
+[data-preview-treatment="margin-clean"] .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:minmax(0,1fr) 140px;}
+[data-preview-treatment="margin-clean"] .artifact-entry-card .artifact-thumbnail {grid-column:2; grid-row:1 / 3; width:140px; height:88px;}
+[data-preview-treatment="margin-clean"] .artifact-entry-card .artifact-entry-summary {grid-column:1; grid-row:1;}
+[data-preview-treatment="margin-clean"] .artifact-entry-card .artifact-entry-actions {grid-column:1; grid-row:2;}
+[data-preview-treatment="margin-left"] .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:140px minmax(0,1fr);}
+[data-preview-treatment="margin-left"] .artifact-entry-card .artifact-thumbnail {width:140px; height:88px;}
+[data-preview-treatment="margin-row"] .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:96px minmax(0,1fr) auto; grid-template-rows:auto; max-width:680px; gap:16px; align-items:center;}
+[data-preview-treatment="margin-row"] .artifact-entry-card .artifact-thumbnail {grid-row:1; width:96px; height:64px;}
+[data-preview-treatment="margin-row"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-summary,
+[data-preview-treatment="margin-row"] .artifact-entry-card:has(.artifact-thumbnail) .artifact-entry-actions {margin:0;}
+@media(max-width:700px) {
+ [data-preview-treatment="margin-row"] .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:96px minmax(0,1fr); gap:8px 16px;}
+ [data-preview-treatment="margin-row"] .artifact-entry-card .artifact-thumbnail {grid-row:1 / 3;}
+ [data-preview-treatment="margin-row"] .artifact-entry-card .artifact-entry-actions {grid-column:2;}
+}
+
+/* A quiet attachment stack: each thumbnail, label and actions form one row. */
+.workspace-layout.workspace-task > .topbar {padding-left:20px;}
+[data-preview-treatment="margin-left"] .artifact-entry-list {
+ display:flex; flex-direction:column; gap:8px; max-width:560px; margin:24px 0;
+}
+[data-preview-treatment="margin-left"] .artifact-entry-list:empty {display:none;}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-card:has(.artifact-thumbnail) {
+ grid-template-columns:128px minmax(0,1fr); grid-template-rows:auto auto;
+ align-content:center; gap:6px 18px; width:100%; max-width:none;
+ padding:10px; margin:0; border-radius:5px;
+ background:color-mix(in srgb, var(--text) 2%, transparent);
+}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-card:hover {
+ background:color-mix(in srgb, var(--text) 4%, transparent);
+}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-thumbnail {width:128px; height:80px;}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-summary {margin:0 !important; align-self:end;}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-actions {margin:0 !important; gap:6px; align-self:start; align-items:center; justify-content:flex-start;}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-actions button {
+ height:28px; flex:0 0 auto; width:max-content; padding:0 7px;
+ gap:5px; line-height:1; border-radius:4px;
+ background:color-mix(in srgb, var(--text) 4%, transparent);
+}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-actions button:hover {background:var(--line);}
+[data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-actions svg {width:13px; height:13px; flex:none;}
+@media(max-width:600px) {
+ [data-preview-treatment="margin-left"] .artifact-entry-list .artifact-entry-card:has(.artifact-thumbnail) {grid-template-columns:96px minmax(0,1fr); gap:6px 12px;}
+ [data-preview-treatment="margin-left"] .artifact-entry-list .artifact-thumbnail {width:96px; height:80px;}
+}
+
+/* The beside design viewer uses the same quiet chrome as the approved inline
+   preview. The page has its own frame; its controls belong to the app glass. */
+.workspace-layout[data-artifact-layout="beside"] .doc-html .doc-card { background:transparent; border:0; box-shadow:none; }
+.workspace-layout[data-artifact-layout="beside"] .doc-html .doc-head { background:transparent; padding:0 0 10px; min-height:38px; }
+.workspace-layout[data-artifact-layout="beside"] .doc-html .doc-view { border:1px solid var(--line); border-radius:var(--radius); }
+.workspace-layout[data-artifact-layout="beside"] .doc-html .artifact-expand { background:transparent; border-color:transparent; }
+.workspace-layout[data-artifact-layout="beside"] .doc-html .artifact-expand:hover { background:var(--wash); }
+/* Both panes already include their own insets; a legacy gutter would overflow
+   the split when the conversation reaches its 400px minimum. */
+.workspace-layout[data-artifact-layout="beside"] > .body { gap:0; }
+
+/* design-hover-toolbar: exploratory HTML chrome. The iframe always owns the
+   full card; revealing controls never shifts its content or scroll position. */
+.workspace-layout:is([data-design-toolbar="floating"],[data-design-toolbar="corner"],[data-design-toolbar="edge"])[data-artifact-layout="beside"] .doc-html .doc-head {
+ position:absolute; z-index:5; opacity:0; pointer-events:none;
+ background:var(--skin-solid,var(--surface)); border:1px solid var(--line);
+ box-shadow:0 3px 14px #0002; min-height:38px; padding:6px 10px;
+ transition:opacity 140ms ease,transform 140ms ease;
+}
+.workspace-layout[data-design-toolbar="floating"][data-artifact-layout="beside"] .doc-html .doc-head {
+ top:10px; left:10px; right:10px; border-radius:6px; transform:translateY(-4px);
+}
+.workspace-layout[data-design-toolbar="corner"][data-artifact-layout="beside"] .doc-html .doc-head {
+ top:10px; right:10px; border-radius:6px; transform:translateY(-4px);
+}
+.workspace-layout[data-design-toolbar="corner"][data-artifact-layout="beside"] .doc-html .doc-crumb { display:none; }
+.workspace-layout[data-design-toolbar="edge"][data-artifact-layout="beside"] .doc-html .doc-head {
+ top:0; left:0; right:0; border-radius:0; border-width:0 0 1px; transform:translateY(-100%); padding:9px 12px;
+}
+.workspace-layout:is([data-design-toolbar="floating"],[data-design-toolbar="corner"],[data-design-toolbar="edge"])[data-artifact-layout="beside"] .doc-html .doc-card:is(:hover,:focus-within) > .doc-head,
+.workspace-layout:is([data-design-toolbar="floating"],[data-design-toolbar="corner"],[data-design-toolbar="edge"])[data-artifact-layout="beside"] .doc-html .doc-card:focus-within > .doc-head {
+ opacity:1; pointer-events:auto; transform:translateY(0);
+}
+/* A browsed page has a browser bar rather than the document header the block
+   above floats, and it is flush to the pane's edge rather than inset. The two
+   rules that put the inset there are written through the whole path, so these
+   have to be as well or they lose the cascade by one class. */
+.workspace-layout[data-artifact-layout="beside"] .doc-browsing .doc-view { border:0; border-radius:0; }
+.workspace-layout[data-artifact-layout="beside"] > .body > .artifact-host > .doc-pane.doc-browsing .doc-card,
+.workspace-layout[data-artifact-layout="focus"] .doc-pane.doc-browsing .doc-card {
+ margin:0; border:0; border-radius:0;
+}
+
+@media (hover:none) {
+ .workspace-layout[data-design-toolbar][data-artifact-layout="beside"] .doc-html .doc-head { opacity:1; pointer-events:auto; transform:none; }
+}
+@media (prefers-reduced-motion:reduce) {
+ .workspace-layout[data-design-toolbar] .doc-html .doc-head { transition:none; }
+}
+
+/* The attachment stays in the conversation; selection identifies its viewer. */
+[data-preview-treatment="margin-left"] .artifact-entry-actions button[aria-pressed="true"] {
+ color:var(--text); background:color-mix(in srgb,var(--text) 9%,transparent);
+ border-color:var(--line-strong); box-shadow:inset 0 1px 2px #00000008;
+}
+
+/* Keep the app's material visible until the document has actually loaded. */
+.preview-frame {position:relative; flex:1; min-height:0; overflow:hidden; background:var(--skin-solid,var(--surface));}
+.preview-frame > .doc-view {position:absolute; inset:0; width:100%; height:100%; box-sizing:border-box;}
+ .preview-loading {display:flex; flex:1; min-height:0; overflow:hidden; background:var(--skin-solid,var(--surface));}
+.preview-frame > .preview-loading, .artifact-thumbnail > .preview-loading {position:absolute; inset:0;}
+.preview-skeleton {width:100%; padding:clamp(24px,5%,56px); box-sizing:border-box; animation:preview-skeleton-breathe 2.4s ease-in-out infinite;}
+.preview-skeleton-title, .preview-skeleton-line, .preview-skeleton-block {background:color-mix(in srgb,var(--text) 7%,transparent); border-radius:3px;}
+.preview-skeleton-title {width:48%; height:20px; margin-bottom:24px;}
+.preview-skeleton-line {width:90%; height:9px; margin-bottom:12px;}
+.preview-skeleton-short {width:64%;}
+.preview-skeleton-block {width:100%; height:clamp(80px,20vh,180px); margin:28px 0; opacity:.55;}
+.artifact-thumbnail .preview-skeleton {padding:12px;}
+.artifact-thumbnail .preview-skeleton-title {height:6px; margin-bottom:9px;}
+.artifact-thumbnail .preview-skeleton-line {height:3px; margin-bottom:5px;}
+.artifact-thumbnail .preview-skeleton-block {height:22px; margin:8px 0;}
+@keyframes preview-skeleton-breathe {0%,100% {opacity:.65;} 50% {opacity:1;}}
+@media (prefers-reduced-motion:reduce) {.preview-skeleton {animation:none;}}
+
+/* Paint under the skeleton, then reveal without a dark intermediate frame. */
+.preview-frame > .doc-view, .artifact-thumbnail iframe {transition:opacity 220ms ease;}
+.preview-frame > .preview-loading, .artifact-thumbnail > .preview-loading {z-index:1; pointer-events:none; transition:opacity 220ms ease;}
+.preview-loading[data-ready="true"] {opacity:0;}
+@media (prefers-reduced-motion:reduce) {
+ .preview-frame > .doc-view, .artifact-thumbnail iframe,
+ .preview-frame > .preview-loading, .artifact-thumbnail > .preview-loading {transition:none;}
+}
+
+/* Chat attachments stay quiet; only the expanded viewer uses a crossfade. */
+.retained-preview {display:contents;}
+.artifact-thumbnail iframe {transition:none; filter:saturate(.4);}
+.artifact-thumbnail pre {opacity:.65;}
+.artifact-thumbnail .preview-skeleton {animation:none;}
+.artifact-thumbnail > .preview-loading {transition:none;}
+.preview-loading[data-delayed="true"] .preview-skeleton {visibility:hidden;}
+
+/* A LOCAL APP SAYS WHAT IT IS DOING (LocalPreviewStatus.tsx). The design-file
+   skeleton read as an empty card on a dark theme, and a port nothing listens on
+   looked exactly like one still loading. This is drawn in the chrome's own
+   vocabulary rather than as a dialog: the status in the spaced mono capitals
+   the row times and section labels use, the address in the title face at the
+   film's 400 weight, the one accent only on a live state, and a square
+   hairline button in the same capitals. All tokens, so every theme dresses it.
+   It is a short log, read top to bottom like a terminal: what it tried, for how
+   long, and where it stands now, left aligned and high in the pane. That look
+   was picked over two others (w-cf58256de2); they are in the product's
+   decisions log and are not to be brought back. */
+/* The window's own colours, taken above the pane: `.doc-pane.doc-html` swaps in
+   a neutral dark set for a page's frame, which turned the one orange blue and
+   the warm greys cool. A custom property is resolved where it is declared, so
+   these hold the theme's values all the way down. */
+body {
+  --window-accent: var(--accent); --window-text: var(--text); --window-text-dim: var(--text-dim);
+  --window-text-faint: var(--text-faint); --window-line: var(--line); --window-line-strong: var(--line-strong);
+}
+.local-status {
+  --accent: var(--window-accent); --text: var(--window-text); --text-dim: var(--window-text-dim);
+  --text-faint: var(--window-text-faint); --line: var(--window-line); --line-strong: var(--window-line-strong);
+  position:absolute; inset:0; z-index:1; display:flex; flex-direction:column; align-items:flex-start; justify-content:flex-start;
+  padding:72px 64px; text-align:left; background:var(--skin-solid,var(--surface)); color:var(--text); overflow:hidden;
+}
+/* THE EDGE A PAGE WEARS. Beside a card, and inline, the hairline that holds a
+   page is drawn on the page itself (.doc-view above), so a status covering the
+   page, or standing in for it when nothing runs, took the edge away and sat on
+   the card as a flat block. It wears the same line in the same places, in the
+   page's colour, taken on the frame before the status swaps to the window's
+   own tokens, so the edge does not move when the app appears. */
+.preview-frame { --frame-line: var(--line); }
+.workspace-layout .inline-artifact .doc-html .local-status,
+.workspace-layout[data-artifact-layout="beside"] .doc-html .local-status { border:1px solid var(--frame-line); border-radius:var(--radius); }
+.local-status-clock {font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--text-dim);}
+.local-status-dot {flex:none; width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 45%,transparent); animation:local-status-pulse 1.6s ease-out infinite;}
+.local-status[data-state="down"] .local-status-dot {background:transparent; box-shadow:inset 0 0 0 1.2px var(--text-faint); animation:none;}
+.local-status-host {font-size:30px; font-weight:400; letter-spacing:-.03em; line-height:1.05; color:var(--text); overflow-wrap:anywhere;}
+.local-status-detail {max-width:30em; font-size:14px; line-height:1.55; color:var(--text-dim);}
+.local-status-retry {
+  position:relative; z-index:1; padding:9px 18px; border:1px solid var(--line-strong); border-radius:var(--radius); background:transparent;
+  color:var(--text); font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; cursor:pointer;
+}
+.local-status-retry:hover {border-color:var(--accent); color:var(--accent);}
+@keyframes local-status-pulse {0% {box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 45%,transparent);} 100% {box-shadow:0 0 0 7px transparent;}}
+.local-status-log {width:min(460px,100%); margin-top:28px; border-top:1px solid var(--line);}
+.local-status-line {
+  display:grid; grid-template-columns:18px 1fr auto; align-items:center; padding:11px 0; border-bottom:1px solid var(--line);
+  font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--text-faint);
+}
+.local-status-mark {color:var(--text-faint);}
+.local-status-now {color:var(--text);}
+.local-status-detail {margin-top:20px;}
+.local-status-retry {margin-top:24px;}
+@media (prefers-reduced-motion:reduce) {.local-status-dot {animation:none;}}
+
+/* AND THE CORNER HAS TO STAY THE CORNER AT EVERY WINDOW SHAPE. The edit above
+   was approved on condition that it works at every screen size.
+
+   The backdrop is `cover` and centred, so the window never shows the whole
+   picture, and WHICH part it drops depends on the window's shape. Wider than
+   3:2 it scales to the width and crops top and bottom, so the window's left
+   edge is the picture's left edge and the corrected corner is where it is
+   wanted. TALLER than 3:2 it scales to the height and crops the SIDES, so the
+   window's left edge lands somewhere in the middle of the picture, which is
+   bright, and the whole bright top band is in view. The edit is then off
+   screen and the corner is back to exactly how it was before.
+
+   Measured on the built app before this rule, contrast of Search:
+
+     1440x944  2.33     1152x900  2.23     980x900   1.84
+     980x600   2.20     980x1200  1.49     980x1400  1.43
+
+   1.43 is the unfixed number; it started at 1.40. The app's minimum is 980x600
+   (main/main.mts), so 980 wide on a tall display is reachable, and anyone
+   running the window down one side of a portrait monitor would have seen no
+   fix at all.
+
+   So whenever that side crop happens, the picture's left edge is pinned to the
+   window's left edge. At exactly 3:2 there is no side crop, so `left` and
+   `center` are the same pixel and the switch is continuous; nothing moves at
+   3:2 or at any shape wider than it. Only the THIRD layer is the
+   photograph. The first is the veil and the second the tint, both flat, so
+   they keep centre and have to be restated or the shorthand resets them. */
+
+/* ═══ THE REPLY LINE ALONG THE FOOT ═══, option A, chosen 2026-09-21. In full screen the pane is already mounted with
+   the real thread, the real options strip and the real composer in it, and it
+   used to be hidden outright. This shows only its dock, under the page, so the
+   composer here is the composer used everywhere else. That is the
+   whole of it. WHAT IT COSTS THE PAGE, measured in a 1440 by 944 window where
+   the page is otherwise 882 tall: 56 points on a row with nothing to pick, 97
+   with the options folded, 204 with three of them open. The strip starts FOLDED
+   here and nowhere else, which is in Focus.tsx beside `optsOpen`. THREE OTHER
+   PATHS WERE BUILT AND PHOTOGRAPHED BESIDE THIS ONE and are now deleted with
+   `chat-path.ts` and the `data-chat-path` switch: a drawer over the right edge,
+   a card in the bottom corner, and a permanent left column. Their drawings and
+   their numbers are in decisions.md, 2026-09-21. Do not rebuild one as an
+   option; this is decided.
+*/
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .body { flex-direction:column; gap:0; }
+/* `order` IS LOAD-BEARING. The conversation is FIRST in the document, because
+   in every other layout it is the left or the only pane; turned into a column
+   without this the reply line lands above the page instead of under it.
+   THE PANE IS NOT A CHILD OF `.body`: ArtifactSurface portals it into a
+   `.artifact-host` (display:contents), so the rule has to go through it. It
+   was written as `.body > .doc-pane`, matched nothing, and a tall picture
+   then pushed the reply line off the bottom of the window (w-fe09f5794f). */
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .body > .artifact-host > .doc-pane { order:1; flex:1 1 auto !important; width:100%; min-height:0; }
+/* A PICTURE IN FULL SCREEN IS SHOWN AT THE WINDOW'S WIDTH AND SCROLLS. Fitting
+   the whole of it, as the pane beside the conversation does, shrinks a long
+   design board to a strip down the middle of an empty window. It still never
+   grows past its own size. */
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .doc-pane.doc-image .doc-card { overflow-y:auto; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .doc-picture { flex:none; width:auto; height:auto; max-height:none; margin:16px; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .body > .list-pane {
+  order:2; display:flex; flex-direction:column; flex:0 0 auto; min-width:0;
+  background:transparent; border-radius:0; overflow:visible;
+}
+/* Everything above the dock is the conversation, and the conversation is what
+   she left to read the page. */
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .body > .list-pane .focus-scroll { display:none; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) > .body > .list-pane .focus-pane { height:auto; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .focus-dock { padding:0 12px 12px; }
+.workspace-layout[data-artifact-layout="focus"]:not(.workspace-settings) .focus-dock-inner { max-width:none; }
+
+/* ═══ EMBER GRID, the Dark theme ═══. It works exactly as Light does and only
+   its colours differ (the owner, 2026-11-02); the colours are in its token
+   block in styles.css. The card is edged with one hairline. */
+:root[data-skin="ember-grid"] .workspace-layout::before {
+  box-shadow: inset 0 0 0 1px var(--skin-pane-line), var(--shadow-card);
+  background: var(--skin-pane);
+}
+.panel-marks { display: none; }
+
+/* GLASS ON A MAC (w-b4dbfc0f31), behind the Glass switch in Alpha features.
+   The window blurs the desktop behind it with the sidebar material
+   (main/window-glass.mts) in the look's own appearance, and Dark lays a light
+   tint of its own ground over it. The tint is on the app, never on html or body: Chromium
+   paints the root's colour as the window's own and sends it again with every
+   frame, which flickered with each key typed. The card is drawn solid. The top
+   band is twice the traffic lights' centre so they sit in its middle, and
+   carries back and forward, Home and Inbox, Search and New thread
+   (GlassBand.tsx); the right and the foot are an even 20px. phone.css comes
+   later and keeps the phone's full-bleed card. */
+html:root[data-glass], html:root[data-glass] body, html:root[data-glass][data-sky-frame] body { background: transparent !important; }
+:root[data-glass] body::before { content: none; }
+:root[data-glass] .app.workspace-layout { padding-top: 50px; padding-right: 20px; padding-bottom: 20px; }
+:root[data-glass] .workspace-layout::before { top: 50px; right: 20px; bottom: 20px; border-radius: 14px; }
+/* Not drawn: as the page's last element its drag rectangle beats every button
+   under it. The band is the drag strip instead. */
+:root[data-glass] .workspace-layout::after { content: none; }
+:root[data-glass] .workspace-navigation { top: 60px; bottom: 20px; }
+:root[data-glass] .home-sky { border-radius: 14px; }
+:root[data-glass] .home-sky::after { box-shadow: none; }
+:root[data-glass] .topbar > .back-forward { position: fixed; top: 12px; left: 94px; margin: 0; z-index: 3; }
+/* The band has its own New thread and Inbox, so the header's and Home's go. */
+:root[data-glass] .workspace-layout > .topbar .th-new[data-hint="new-task"] { display: none; }
+:root[data-glass] .back-forward .back-forward-inbox { display: none; }
+:root[data-glass] .hm-doors { display: none; }
+:root[data-glass] .app:has(> .glass-band[data-here="inbox"]) > .topbar { height: 0; min-height: 0; flex-basis: 0; padding: 0; border-bottom: 0; overflow: visible; }
+:root[data-glass] .app:has(> .glass-band[data-here="inbox"]) > .topbar .workspace-title { display: none; }
+:root[data-glass] .app:has(> .glass-band[data-here="inbox"]) > .topbar .topbar-right { position: absolute; top: 26px; right: 36px; z-index: 4; }
+:root[data-glass] .app:has(> .glass-band[data-here="inbox"]) .list-pane > .th-bar { padding-top: 27px; }
+:root[data-glass] .workspace-navigation .workspace-tab.active {
+  background: color-mix(in srgb, var(--text) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 7%, transparent);
+}
+:root[data-glass]:not([data-theme="light"]) .app.workspace-layout { background: color-mix(in srgb, var(--bg) 30%, transparent); }
+:root[data-glass]:not([data-theme="light"]) .workspace-layout::before {
+  background: linear-gradient(var(--skin-pane), var(--skin-pane)), var(--skin-image) center / cover no-repeat fixed var(--bg);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--text) 16%, transparent);
+}
+/* !important, the extra `html` and [data-sky-frame] because home.css paints a
+   light sky's frame colour over body and the app with !important. Light is
+   untinted: measured against its design, the light glass alone matches. */
+html:root[data-glass][data-theme="light"] .app.workspace-layout { background: transparent !important; }
+:root[data-glass][data-theme="light"] .workspace-layout::before { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent); }
+
+/* The whole band drags the window; it comes before the header in the page, so
+   the arrows' and its own no-drag buttons win over it. It lies over the
+   arrows, so it lets clicks through and only its buttons take them. */
+.glass-band { display: none; }
+:root[data-glass] .glass-band {
+  position: fixed; top: 0; left: 0; right: 0; height: 50px; box-sizing: border-box; padding: 12px 20px 0 160px;
+  display: flex; align-items: flex-start; gap: 4px; z-index: 3; -webkit-app-region: drag; pointer-events: none;
+}
+:root[data-glass] .app:not(.back-forward-on) .glass-band { padding-left: 94px; }
+.glass-band button {
+  height: 26px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 8px; background: none;
+  font: inherit; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; cursor: pointer; -webkit-app-region: no-drag; pointer-events: auto;
+}
+.glass-band button:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.glass-band button.on { color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent); }
+.glass-band .gb-count { color: var(--text-faint); font-family: var(--mono); font-size: 11px; }
+.glass-band .gb-tools { margin-left: auto; display: flex; gap: 8px; }
+.glass-band .gb-search { width: 220px; justify-content: space-between; color: var(--text-faint); background: color-mix(in srgb, var(--text) 6%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent); }
+.glass-band .gb-search small { font-family: var(--mono); font-size: 11px; }
+.glass-band .gb-new { color: var(--text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent); }
+:root[data-skin="ember-grid"] .modal { background: var(--bg-raised); border-color: var(--line-strong); }
+/* Solid: at .97 a thread's text read through the box behind its rows. */
+:root[data-skin="ember-grid"] .modal.palette { background: rgb(38, 36, 34); border-color: rgba(255, 255, 255, .08); }
+:root[data-skin="ember-grid"] .set-title { font-weight: 400; letter-spacing: -0.035em; }
+
+:root[data-skin="ember-grid"] .idle-zero-say { color: var(--text-dim); }
+:root[data-skin="ember-grid"] .workspace-navigation .workspace-search { background: transparent; }
+/* A faint fill and a hairline: the solid selected grey was too much (w-22da913d00). */
+:root[data-skin="ember-grid"] .workspace-navigation .workspace-tab.active {
+  background: rgba(40, 38, 37, .7); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07); font-weight: 400;
+}
+:root[data-skin="ember-grid"] .workspace-running { color: var(--accent); }
+
+/* EMBER'S ACCENTS, ON EVERY THEME (w-3fc39983be, approved on five themes
+   drawn this way). Ember's type goes on the small right-side details, such as
+   times, while the original font stays everywhere else and the main font
+   remains Avenir Next. So the chrome (search, section label, a row's project
+   and time, the running count, the keys, inbox zero's line) is Geist Mono in
+   spaced capitals on every theme, and the body face and weights stay each
+   theme's own. Ember keeps its colour, marks and Geist body above.
+   `:root:root` keeps the weight these rules had when they were Ember's
+   (:root[data-skin]), so nothing that used to lose to them now wins.
+   NOT RE-OFFERED: Geist as the body face on every theme with Ember's 400
+   weights (round two); its CSS is in decisions.md, 2026-09-28. */
+:root:root .workspace-search span,
+:root:root .workspace-section,
+:root:root .row-end .product,
+:root:root .row-end .time {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+}
+:root:root .workspace-running { font-family: var(--mono); }
+:root:root .idle-zero-say { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+:root:root .idle-key { font-family: var(--mono); font-weight: 400; }
+:root[data-skin="ember-grid"] .workspace-title { font-weight: 400; letter-spacing: -.03em; }
+:root[data-skin="ember-grid"] .row .subject { font-weight: 400; letter-spacing: -.01em; }
+
+/* EMBER GRID'S TYPE IN LIGHT TOO (w-9e434e8671). Geist sets lighter than Avenir
+   Next, so Ember took these down to 400 and tightened them. `:root:root` has
+   the same specificity as Ember's selectors, so Light wears exactly what Dark
+   does. */
+:root:root .set-title { font-weight: 400; letter-spacing: -0.035em; }
+:root:root .idle-zero { font-weight: 400; }
+:root:root .workspace-navigation .workspace-tab.active { font-weight: 400; }
+:root:root .workspace-title { font-weight: 400; letter-spacing: -.03em; }
+:root:root .row .subject { font-weight: 400; letter-spacing: -.01em; }
+
