@@ -109,9 +109,8 @@ pub struct RunFlags {
 
 /// Pure argv assembly. No execution, no shell, no process.
 pub fn worker_args(run: &RunFlags, req: &Request) -> Vec<String> {
-    let mut args = Vec::with_capacity(
-        run.prefix.len() + run.pre_payload.len() + run.post_payload.len() + 1,
-    );
+    let mut args =
+        Vec::with_capacity(run.prefix.len() + run.pre_payload.len() + run.post_payload.len() + 1);
     args.extend(run.prefix.iter().cloned());
     args.extend(run.pre_payload.iter().cloned());
     args.push(req.text.clone());
@@ -191,6 +190,14 @@ pub fn opencode_definition() -> HarnessDefinition {
     HarnessDefinition::new("opencode", "OpenCode")
         .with_capability(HarnessOperation::Status)
         .with_capability(HarnessOperation::Models)
+}
+
+/// The app-facing harness surface, derived from the registry's real
+/// definitions — no call-site hardcoding. herdr is admitted and spawn-capable;
+/// opencode is registered for legacy resolution only (Status + Models) and
+/// cannot create a managed pane.
+pub fn harness_listing() -> Vec<HarnessDefinition> {
+    vec![herdr_definition(), opencode_definition()]
 }
 
 /// Typed failures at the registry boundary. `Display` is wire-safe: no wrapper
@@ -389,10 +396,7 @@ fn validate(def: &HarnessDefinition) -> Result<(), HarnessError> {
                 return Err(invalid(format!("engine `{}` has an empty flag", def.id)));
             }
             if token.len() > MAX_ARGV_TOKEN_LEN {
-                return Err(invalid(format!(
-                    "engine `{}` has an overlong flag",
-                    def.id
-                )));
+                return Err(invalid(format!("engine `{}` has an overlong flag", def.id)));
             }
         }
         if count > MAX_ARGV_TOKENS {
@@ -407,9 +411,7 @@ fn validate(def: &HarnessDefinition) -> Result<(), HarnessError> {
     // `None` instead of inventing somebody else's flags. Only ADMISSION requires
     // a declared worker command line, because a picker must know how to start
     // an engine it offers.
-    if def.admitted
-        && (!def.supports(HarnessOperation::Spawn) || def.run.is_none())
-    {
+    if def.admitted && (!def.supports(HarnessOperation::Spawn) || def.run.is_none()) {
         return Err(invalid(format!(
             "engine `{}` cannot be offered without spawn + run flags",
             def.id
@@ -437,10 +439,7 @@ impl HarnessRegistry {
         }
     }
 
-    pub fn register<H: AgentHarness + 'static>(
-        &mut self,
-        harness: H,
-    ) -> Result<(), HarnessError> {
+    pub fn register<H: AgentHarness + 'static>(&mut self, harness: H) -> Result<(), HarnessError> {
         let def = harness.definition();
         validate(def)?;
         if self.entries.iter().any(|e| e.definition().id == def.id) {
@@ -512,7 +511,11 @@ impl HarnessRegistry {
                 op: HarnessOperation::Spawn,
             });
         }
-        Ok(harness.definition().run.as_ref().map(|run| worker_args(run, req)))
+        Ok(harness
+            .definition()
+            .run
+            .as_ref()
+            .map(|run| worker_args(run, req)))
     }
 
     /// Definitions callers may offer in a picker / plan. Registration alone

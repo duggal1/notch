@@ -74,7 +74,9 @@ impl SupervisorSink {
                 detail: detail.to_string(),
                 ts,
             })
-            .map_err(|_| crate::error::NotchError::Protocol("orchestrator inbox closed".to_string()))
+            .map_err(|_| {
+                crate::error::NotchError::Protocol("orchestrator inbox closed".to_string())
+            })
     }
 }
 
@@ -221,10 +223,14 @@ impl A2aBridgeIngress {
         body: &str,
     ) -> Result<(), NotchError> {
         if id.is_empty() || id.len() > 128 {
-            return Err(NotchError::Protocol("message id must be 1..128 chars".into()));
+            return Err(NotchError::Protocol(
+                "message id must be 1..128 chars".into(),
+            ));
         }
         if body.trim().is_empty() || body.chars().count() > 4000 {
-            return Err(NotchError::Protocol("body must be non-empty and <=4000 chars".into()));
+            return Err(NotchError::Protocol(
+                "body must be non-empty and <=4000 chars".into(),
+            ));
         }
         let known = self.known.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if !known.contains(from) {
@@ -416,7 +422,10 @@ impl A2aRegistry {
     }
 
     pub fn clear_events(&self) {
-        self.events.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Return and clear the pending events, for daemon glue that appends them
@@ -601,7 +610,11 @@ impl A2aRegistry {
     }
 
     pub fn seen_count(&self) -> usize {
-        self.seen.lock().unwrap_or_else(|e| e.into_inner()).set.len()
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set
+            .len()
     }
 
     // ---- validation ------------------------------------------------------
@@ -615,10 +628,8 @@ impl A2aRegistry {
         known: &HashSet<String>,
     ) -> Result<(), NotchError> {
         if !is_valid_message_type(kind) {
-            let err = NotchError::Protocol(format!(
-                "type must be one of {}",
-                MESSAGE_TYPES.join("|")
-            ));
+            let err =
+                NotchError::Protocol(format!("type must be one of {}", MESSAGE_TYPES.join("|")));
             self.log("reject", format!("rejected type={kind} to={to}: {err}"));
             return Err(err);
         }

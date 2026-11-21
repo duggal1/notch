@@ -4,8 +4,8 @@
 //! (`From<NotchError> for String`); the strings themselves are unchanged.
 use super::acks::{KillAck, KillSwitchAck, ModelsAck, OkAck, StatusInfo};
 use super::types::{agent_target, lock, push_warning, wire, Daemon, EVENTS_MAX_BYTES};
-use crate::error::NotchError;
 use crate::cleanup;
+use crate::error::NotchError;
 use crate::model::truncate;
 use crate::status::Status;
 
@@ -14,7 +14,11 @@ impl Daemon {
         wire(self.kill_inner(id, reason))
     }
 
-    pub(crate) fn kill_inner(&self, id: &str, reason: Option<String>) -> Result<KillAck, NotchError> {
+    pub(crate) fn kill_inner(
+        &self,
+        id: &str,
+        reason: Option<String>,
+    ) -> Result<KillAck, NotchError> {
         let reason = reason
             .map(|r| r.trim().to_string())
             .filter(|r| !r.is_empty())

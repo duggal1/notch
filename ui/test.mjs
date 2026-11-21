@@ -16,6 +16,18 @@ const t = await import(pathToFileURL(join(here, 'dist', 'testkit.mjs')).href + '
 let n = 0;
 const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} — ${name}`); };
 
+// Structural wire fixture (not seeded demo data): only the fields the validator reads.
+const wire = () => ({
+  version: 1, generatedAt: 42,
+  orchestrator: { id: 'ORCH', status: 'idle' },
+  supervisors: [{ id: 'SV-1', status: 'working', working: 1, idle: 0, failed: 0, done: 0 }],
+  sessions: [{ id: 'S1-OC01', sup: 'SV-1', status: 'working', title: 't', task: 't', cwd: '/', paneId: 'p', startedAt: 1, lastAction: null, lastRevision: null, latencyMs: null, failureReason: null }],
+  eps: 6.5, conflicts: [], attribution: [], warnings: [],
+  decisions: [{ at: 1, supervisor: 'SV-1', session: 'S1-OC01', action: 'backoff', reason: 'rate limit' }],
+  escalations: [{ id: 'e1', session: 'S1-OC01', supervisor: 'SV-1', kind: 'blocked', reason: 'r', at: 1 }],
+  busMessages: [{ id: 'm1', from: 'ORCH', to: 'S1-OC01', type: 'task', preview: 'p', at: 1 }],
+});
+
 // 1. spring open settles with ≤ 2% overshoot (target moved, like a mode change)
 {
   const sp = new t.Spring(320, t.SPRING.open);
@@ -57,8 +69,16 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
   assert.deepEqual(t.frameFor('rest', 640, n), { w: 288, h: 44, r: 12, e: 10 });
   assert.deepEqual(t.frameFor('peek', 640, n), { w: 296, h: 44, r: 16, e: 10 });
   assert.deepEqual(t.frameFor('open', 640, n), { w: 560, h: 640, r: 28, e: 12 });
-  ok('frameFor rest/peek/open');
+  assert.deepEqual(t.frameFor('open', 320, n), { w: 560, h: 320, r: 28, e: 12 });
+  ok('frameFor rest/peek/open and idle open');
 }
+
+// Pixel artwork stays on the same integer grid at all rendered sizes.
+for (const [name, rows] of Object.entries(t.PIXEL_ICONS)) {
+  assert.equal(rows.length, 12, name);
+  for (const row of rows) assert.match(row, /^[.#]{12}$/, name);
+}
+ok('pixel icons are hand-authored 12×12 grids');
 
 // 4. floating ids determinism + bounds
 {
@@ -151,19 +171,15 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
   ok('format helpers: fmtAge / middleTruncate / capitalizeSentence / decisionVerb');
 }
 
-// 12. demo snapshots validate against bridge.md §1.3
+// 12. a structurally valid wire snapshot validates against bridge.md §1.3
 {
-  for (const name of ['mixed', 'empty', 'failed', 'alldone', 'idle', 'big']) {
-    const snap = t.toSnapshot(name, name === 'empty' ? 0 : 6.5, 42);
-    const violations = t.validateSnapshot(snap);
-    assert.deepEqual(violations, [], `${name}: ${violations.join('; ')}`);
-  }
-  ok('all six demo snapshots pass structural validation');
+  const violations = t.validateSnapshot(wire());
+  assert.deepEqual(violations, [], violations.join('; '));
+  ok('valid wire snapshot passes structural validation');
 }
 
 // 13. the validator actually rejects shape violations (it is not a rubber stamp)
 {
-  const snap = t.toSnapshot('mixed', 6.5, 1);
   const cases = [
     (s) => { s.sessions[0].status = 'frobnicated'; },
     (s) => { s.sessions[0].id = 'NOT-AN-ID'; },
@@ -174,7 +190,7 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
     (s) => { s.escalations[0].kind = 'sleeping'; },
   ];
   for (const [i, mutate] of cases.entries()) {
-    const bad = t.toSnapshot('mixed', 6.5, 1);
+    const bad = wire();
     mutate(bad);
     const v = t.validateSnapshot(bad);
     assert.ok(v.length > 0, `case ${i + 1} must produce violations`);
@@ -191,9 +207,9 @@ const ok = (name) => { n += 1; console.log(`ok ${String(n).padStart(2, '0')} —
 
 // 15. decision wire values match bridge.md §1.3 exactly
 {
-  const snap = t.toSnapshot('mixed', 3, 7);
-  for (const d of snap.decisions ?? []) assert.ok(['reprompt', 'done', 'escalate', 'verify', 'assign'].includes(d.action));
+  const snap = wire();
+  for (const d of snap.decisions ?? []) assert.ok(['reprompt', 'done', 'escalate', 'verify', 'assign', 'backoff'].includes(d.action));
   ok('decision actions match the wire enum');
 }
 
-console.log(`\n${n}/15 checks passed`);
+console.log(`\n${n} checks passed`);

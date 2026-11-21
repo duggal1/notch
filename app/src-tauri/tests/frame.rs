@@ -68,17 +68,17 @@ fn mode_frame_table_with_notch() {
         height: 32.0,
     });
     let rest = frame_for_mode(Mode::Rest, 1512.0, notch);
-    assert_eq!(rest.width, 206.0 + 120.0);
+    assert_eq!(rest.width, 206.0 + 88.0);
     // P0: the whole pill is one real button, never shorter than 44px.
     assert_eq!(rest.height, 44.0);
     assert_eq!(rest.y, 0.0);
-    assert!((rest.x - (1512.0 - 326.0) / 2.0).abs() < 0.001);
+    assert!((rest.x - (1512.0 - 294.0) / 2.0).abs() < 0.001);
 
     let peek = frame_for_mode(Mode::Peek, 1512.0, notch);
-    assert_eq!(peek.width, 206.0 + 120.0 + 120.0);
-    assert_eq!(peek.height, 32.0 + 44.0);
+    assert_eq!(peek.width, 206.0 + 88.0 + 8.0);
+    assert_eq!(peek.height, 44.0);
     assert_eq!(peek.y, 0.0);
-    assert!((peek.x - (1512.0 - 446.0) / 2.0).abs() < 0.001);
+    assert!((peek.x - (1512.0 - 302.0) / 2.0).abs() < 0.001);
 
     let open = frame_for_mode(Mode::Open, 1512.0, notch);
     assert_eq!((open.width, open.height), (OPEN_WIDTH, OPEN_HEIGHT));
@@ -137,4 +137,13 @@ fn mode_parsing() {
     assert_eq!(Mode::Rest.as_str(), "rest");
     assert_eq!(Mode::Peek.as_str(), "peek");
     assert_eq!(Mode::Open.as_str(), "open");
+}
+
+#[test]
+fn compact_dashboard_leaves_clearance_for_the_notch() {
+    let frame = notch::frame::dashboard_frame(1200.0, 760.0);
+    let peek = frame_for_mode(Mode::Peek, 1200.0, None);
+    assert!(frame.y >= peek.height + 8.0);
+    assert!(frame.y + frame.height <= 760.0);
+    assert!(frame.x + frame.width <= 1200.0);
 }

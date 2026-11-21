@@ -11,22 +11,22 @@
 pub mod approvals;
 pub mod attribution;
 pub mod bus;
-pub mod decider;
-pub mod mcp_bridge;
-mod durable;
-pub mod error;
-pub mod eventsource;
-pub mod opencode;
 pub mod cleanup;
 pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod daemon;
+pub mod decider;
+mod durable;
+pub mod error;
 pub mod events;
-pub mod herdr;
+pub mod eventsource;
 pub mod harness_registry;
+pub mod herdr;
 pub mod ledger;
+pub mod mcp_bridge;
 pub mod model;
+pub mod opencode;
 pub mod paths;
 pub mod plan;
 pub mod proc;
@@ -41,10 +41,13 @@ pub mod ws;
 
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use config::Config;
-pub use daemon::{Daemon, KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, RunPlanAck, SpawnAck, StatusInfo, SubmitTaskAck};
+pub use daemon::{
+    Daemon, KillAck, KillSwitchAck, MessageAck, ModelsAck, OkAck, RunPlanAck, SpawnAck, StatusInfo,
+    SubmitTaskAck,
+};
 pub use error::NotchError;
-pub use opencode::{ApiSession, Opencode};
 pub use herdr::{AgentEntry, Herdr, HerdrError};
+pub use opencode::{ApiSession, Opencode};
 pub use snapshot::Snapshot;
 pub use status::Status;
 

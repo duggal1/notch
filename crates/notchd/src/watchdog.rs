@@ -96,7 +96,9 @@ impl Watchdog {
     /// Record this poll's monotonic instant and report the gap to the
     /// previous poll (None on the first observation).
     pub fn note_poll(&mut self, mono_ms: u64) -> Option<u64> {
-        let gap = self.last_poll_mono_ms.map(|prev| mono_ms.saturating_sub(prev));
+        let gap = self
+            .last_poll_mono_ms
+            .map(|prev| mono_ms.saturating_sub(prev));
         self.last_poll_mono_ms = Some(mono_ms);
         gap
     }

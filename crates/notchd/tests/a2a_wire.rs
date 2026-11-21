@@ -21,7 +21,16 @@ fn a2a_message_roundtrips_all_additive_fields() {
     assert_eq!(back, msg);
 
     let v: Value = serde_json::from_str(&json).unwrap();
-    for key in ["id", "at", "from", "to", "type", "body", "claimedPath", "deliveredAt"] {
+    for key in [
+        "id",
+        "at",
+        "from",
+        "to",
+        "type",
+        "body",
+        "claimedPath",
+        "deliveredAt",
+    ] {
         assert!(v.get(key).is_some(), "missing additive key {key}: {json}");
     }
     assert_eq!(v["type"], "handoff");
@@ -67,8 +76,9 @@ fn a2a_message_projects_into_the_frozen_bus_entry_shape() {
     let v = serde_json::to_value(&entry).unwrap();
     let keys: std::collections::BTreeSet<&str> =
         v.as_object().unwrap().keys().map(String::as_str).collect();
-    let expected: std::collections::BTreeSet<&str> =
-        ["id", "from", "to", "type", "preview", "at"].into_iter().collect();
+    let expected: std::collections::BTreeSet<&str> = ["id", "from", "to", "type", "preview", "at"]
+        .into_iter()
+        .collect();
     assert_eq!(keys, expected, "v1.3 busMessages shape changed: {v}");
 }
 

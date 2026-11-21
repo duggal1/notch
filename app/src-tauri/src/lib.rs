@@ -15,8 +15,8 @@ pub mod trayfmt;
 use std::sync::Arc;
 
 use tauri::webview::WebviewWindowBuilder;
-use tauri::{LogicalPosition, LogicalSize, TitleBarStyle, WebviewUrl};
 use tauri::window::Color;
+use tauri::{LogicalPosition, LogicalSize, TitleBarStyle, WebviewUrl};
 
 use notchd::{Config, Daemon, Herdr, SystemClock};
 
@@ -207,7 +207,7 @@ pub fn run() -> Result<(), String> {
             let tray_handle = app.handle().clone();
             tray::build(&tray_handle)?;
             engine::spawn_emit_thread(app.handle().clone(), snapshot_rx);
-            commands::spawn_fleet_emit_thread(app.handle().clone(), fleet_rx, daemon.config.state_dir.clone());
+            commands::spawn_fleet_emit_thread(app.handle().clone(), fleet_rx, Arc::clone(&daemon));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -217,15 +217,11 @@ pub fn run() -> Result<(), String> {
             commands::logs,
             commands::focus,
             commands::cleanup,
-            commands::spawn,
-            commands::run_plan,
             commands::submit_task,
-            commands::message,
             commands::pause_supervisor,
             commands::resume_supervisor,
             commands::kill_switch,
             commands::list_models,
-            commands::symbol,
             commands::open_dashboard,
             commands::set_frame,
             commands::haptic,

@@ -109,10 +109,10 @@ Each must land with evidence or it does not count. No `cargo clean` anywhere; no
 
 ## 5.1 The gate, twice, with exact numbers
 ```
-cargo test --workspace --no-fail-fast   → 294 passed, 0 failed, 7 ignored (exit 0)
+cargo test --workspace --no-fail-fast   → 387 passed, 0 failed, 7 ignored (exit 0)   [pinned baseline 7b29c4f]
 cargo clippy --workspace --all-targets -- -D warnings → finished, exit 0, zero diagnostics
 ```
-Two consecutive full passes with no code changes between them: pass 3 and pass 4 both `294/0/7`, log at `.proof/agents/final-gate-{3,4}.log`; clippy at `.proof/agents/final-clippy.log`. The 7 ignores are pre-existing and documented (watchdog frozen-revision probe, real-git cost probe, soak wall-time probe, two fault probes, perf benchmark, shared-cwd twin now proven passing and un-ignored in attribution).
+The pinned baseline is 387/0/7, recomputed from the raw audit run1 log (`.proof/audit-ledger.md:56`: 64 result summaries, `RUN1_EXIT` present). The former `294/0/7` figure came from the later hardening-round logs `.proof/agents/final-gate-{3,4}.log`; those are a different run and were wrongly presented as the pin baseline. Post-fix final counts come from `scripts/gate.sh` at phase 3 (raw output in `.proof/fix/`); neither figure above is the final number. The 7 ignores are pre-existing and documented (watchdog frozen-revision probe, real-git cost probe, soak wall-time probe, two fault probes, perf benchmark, shared-cwd twin now proven passing and un-ignored in attribution).
 
 ## 5.2 V1 hardening verifier — 10 defects, all now closed
 V1's pre-fix verdict: 2 PASS / 8 FAIL (`.proof/agents/verify-hardening/REPORT.md`, 313 lines). Every FAIL was routed red→green:

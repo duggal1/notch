@@ -36,8 +36,8 @@ fn t5_writer_child() {
     let path = dir.join("registry.json");
     let mut reg = Registry::load(&path, &SystemClock);
     if reg.ids().is_empty() {
-        reg.allocate_supervisor();
-        let _ = reg.allocate_session(1);
+        reg.allocate_supervisor().unwrap();
+        let _ = reg.allocate_session(1).unwrap();
     }
     // Establish live + bak1 before signalling readiness, so a kill at any
     // later instant always leaves a recoverable snapshot.
@@ -94,7 +94,10 @@ fn t5_1000_sigkills_no_repeats_no_tmp_adoption() {
 
         child.kill().expect("SIGKILL writer child");
         let status = child.wait().expect("reap writer child");
-        assert!(!status.success() || status.code().is_none(), "child must be killed");
+        assert!(
+            !status.success() || status.code().is_none(),
+            "child must be killed"
+        );
 
         // The writer uses temp + fsync + atomic rename, so a SIGKILL at any
         // byte offset cannot leave a torn live file. The live registry is
@@ -114,13 +117,19 @@ fn t5_1000_sigkills_no_repeats_no_tmp_adoption() {
         match Registry::load_strict(&path) {
             Ok(mut recovered) => {
                 for id in recovered.ids() {
-                    assert!(!canaries.contains(id), "recovered a canary id from .tmp: {id}");
+                    assert!(
+                        !canaries.contains(id),
+                        "recovered a canary id from .tmp: {id}"
+                    );
                 }
                 if recovered.ids().is_empty() {
-                    recovered.allocate_supervisor();
+                    recovered.allocate_supervisor().unwrap();
                 }
-                let id = recovered.allocate_session(1);
-                assert!(handed_out.insert(id.clone()), "duplicate id across crashes: {id}");
+                let id = recovered.allocate_session(1).unwrap();
+                assert!(
+                    handed_out.insert(id.clone()),
+                    "duplicate id across crashes: {id}"
+                );
                 recovered.save(&path).unwrap();
             }
             Err(_) => {
@@ -128,15 +137,22 @@ fn t5_1000_sigkills_no_repeats_no_tmp_adoption() {
                 // gone. With bak1 established before READY this should be rare.
                 hard_errors += 1;
                 let mut fresh = Registry::load(&dir.join("never-existed.json"), &SystemClock);
-                fresh.allocate_supervisor();
-                let id = fresh.allocate_session(1);
-                assert!(handed_out.insert(id.clone()), "duplicate id after hard error: {id}");
+                fresh.allocate_supervisor().unwrap();
+                let id = fresh.allocate_session(1).unwrap();
+                assert!(
+                    handed_out.insert(id.clone()),
+                    "duplicate id after hard error: {id}"
+                );
                 fresh.save(&path).unwrap();
             }
         }
     }
 
-    assert_eq!(handed_out.len(), 1000, "every crash round must hand out one fresh id");
+    assert_eq!(
+        handed_out.len(),
+        1000,
+        "every crash round must hand out one fresh id"
+    );
     assert!(hard_errors < 50, "too many hard errors: {hard_errors}/1000");
     // The live file may be truncated at the very end; recovery from a backup
     // must still yield ids that never repeat.
@@ -145,9 +161,15 @@ fn t5_1000_sigkills_no_repeats_no_tmp_adoption() {
         Err(_) => Registry::load(&path, &SystemClock),
     };
     for id in final_reg.ids() {
-        assert!(!canaries.contains(id), "final registry adopted a .tmp canary");
+        assert!(
+            !canaries.contains(id),
+            "final registry adopted a .tmp canary"
+        );
     }
-    println!("T5 measured: 1000 SIGKILL rounds, {} unique ids, {hard_errors} hard errors", handed_out.len());
+    println!(
+        "T5 measured: 1000 SIGKILL rounds, {} unique ids, {hard_errors} hard errors",
+        handed_out.len()
+    );
 }
 
 #[test]
@@ -155,8 +177,8 @@ fn t5_total_corruption_is_a_hard_error_not_a_reset() {
     let dir = tmp_root("t5hard");
     let path = dir.join("registry.json");
     let mut reg = Registry::load(&dir.join("never-existed.json"), &SystemClock);
-    reg.allocate_supervisor();
-    reg.allocate_session(1);
+    reg.allocate_supervisor().unwrap();
+    reg.allocate_session(1).unwrap();
     reg.save(&path).unwrap();
     std::fs::write(&path, b"{corrupt").unwrap();
     for n in 1..=3 {
@@ -166,7 +188,10 @@ fn t5_total_corruption_is_a_hard_error_not_a_reset() {
         Ok(_) => panic!("no tier is parseable -> must be a hard error"),
         Err(e) => e,
     };
-    assert!(err.to_string().contains("unrecoverable"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("unrecoverable"),
+        "unexpected error: {err}"
+    );
 
     // The lenient loader must not panic; it reports the failure as a warning.
     let lenient = Registry::load(&path, &SystemClock);

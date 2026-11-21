@@ -39,10 +39,22 @@ fn constant_time_eq_is_exact_including_length() {
 fn t8_auth_matrix_rejects_origin_token_and_host() {
     let bearer = format!("Bearer {TOKEN}");
     // Happy path: token + exact loopback host, no Origin.
-    assert!(auth_headers_ok(None, Some(&bearer), Some(HOST), TOKEN, HOST));
+    assert!(auth_headers_ok(
+        None,
+        Some(&bearer),
+        Some(HOST),
+        TOKEN,
+        HOST
+    ));
 
     // ANY Origin is rejected — including the innocuous-looking ones.
-    for origin in ["null", "http://127.0.0.1:7407", "https://example.com", "file://", ""] {
+    for origin in [
+        "null",
+        "http://127.0.0.1:7407",
+        "https://example.com",
+        "file://",
+        "",
+    ] {
         assert!(
             !auth_headers_ok(Some(origin), Some(&bearer), Some(HOST), TOKEN, HOST),
             "Origin must be rejected: {origin:?}"
@@ -52,16 +64,47 @@ fn t8_auth_matrix_rejects_origin_token_and_host() {
     // Token must be present, well-formed and exact.
     assert!(!auth_headers_ok(None, None, Some(HOST), TOKEN, HOST));
     assert!(!auth_headers_ok(None, Some(""), Some(HOST), TOKEN, HOST));
-    assert!(!auth_headers_ok(None, Some("Basic abc"), Some(HOST), TOKEN, HOST));
-    assert!(!auth_headers_ok(None, Some("Bearer wrong"), Some(HOST), TOKEN, HOST));
-    assert!(!auth_headers_ok(None, Some("bearer "), Some(HOST), TOKEN, HOST));
+    assert!(!auth_headers_ok(
+        None,
+        Some("Basic abc"),
+        Some(HOST),
+        TOKEN,
+        HOST
+    ));
+    assert!(!auth_headers_ok(
+        None,
+        Some("Bearer wrong"),
+        Some(HOST),
+        TOKEN,
+        HOST
+    ));
+    assert!(!auth_headers_ok(
+        None,
+        Some("bearer "),
+        Some(HOST),
+        TOKEN,
+        HOST
+    ));
     let mut wrong_last = TOKEN.to_string();
     wrong_last.pop();
     wrong_last.push('0');
-    assert!(!auth_headers_ok(None, Some(&format!("Bearer {wrong_last}")), Some(HOST), TOKEN, HOST));
+    assert!(!auth_headers_ok(
+        None,
+        Some(&format!("Bearer {wrong_last}")),
+        Some(HOST),
+        TOKEN,
+        HOST
+    ));
 
     // Host must be exactly 127.0.0.1:<bound port> (DNS rebinding defence).
-    for host in ["localhost:7407", "127.0.0.1:7408", "127.0.0.1", "[::1]:7407", "example.com:7407", ""] {
+    for host in [
+        "localhost:7407",
+        "127.0.0.1:7408",
+        "127.0.0.1",
+        "[::1]:7407",
+        "example.com:7407",
+        "",
+    ] {
         assert!(
             !auth_headers_ok(None, Some(&bearer), Some(host), TOKEN, HOST),
             "Host must be rejected: {host:?}"
@@ -77,13 +120,19 @@ fn token_file_is_0600_in_0700_state_dir_and_stable() {
     let b = load_or_create_token(&state).unwrap();
     assert_eq!(a, b, "token must be stable across reads");
     assert_eq!(a.len(), 64, "32 random bytes => 64 hex chars");
-    assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "token must be hex: {a}");
+    assert!(
+        a.chars().all(|c| c.is_ascii_hexdigit()),
+        "token must be hex: {a}"
+    );
 
     let dir_mode = std::fs::metadata(&state).unwrap().permissions().mode() & 0o777;
     assert_eq!(dir_mode, 0o700, "state dir must be 0700, got {dir_mode:o}");
     let file = state.join("ws.token");
     let file_mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
-    assert_eq!(file_mode, 0o600, "token file must be 0600, got {file_mode:o}");
+    assert_eq!(
+        file_mode, 0o600,
+        "token file must be 0600, got {file_mode:o}"
+    );
 
     // A corrupted token is regenerated rather than trusted.
     std::fs::write(&file, "short").unwrap();
@@ -105,11 +154,18 @@ fn ndjson_line_cap_drops_oversize_line_and_keeps_following_lines() {
     assert!(read_line_capped(&mut r, &mut line, cap).unwrap());
     assert_eq!(line.trim(), "{\"cmd\":\"ping\"}");
 
-    assert!(!read_line_capped(&mut r, &mut line, cap).unwrap(), "oversize line must be reported");
+    assert!(
+        !read_line_capped(&mut r, &mut line, cap).unwrap(),
+        "oversize line must be reported"
+    );
     assert!(line.len() <= cap, "no oversize buffer may be retained");
 
     assert!(read_line_capped(&mut r, &mut line, cap).unwrap());
-    assert_eq!(line.trim(), "{\"cmd\":\"status\"}", "cap must skip only the bad line");
+    assert_eq!(
+        line.trim(),
+        "{\"cmd\":\"status\"}",
+        "cap must skip only the bad line"
+    );
 
     // Exactly-at-cap is accepted.
     let exact = format!("{}\n", "y".repeat(cap));
